@@ -17,6 +17,7 @@ const (
 	DeploymentRejected        DeploymentStatus = "rejected"
 	DeploymentSuperseded      DeploymentStatus = "superseded"
 	DeploymentSuspended       DeploymentStatus = "suspended"
+	DeploymentArchived        DeploymentStatus = "archived"
 )
 
 // DefaultContainerPort is the port a service listens on when
@@ -104,4 +105,5 @@ var (
 	ErrApplicationNotRunning        = errors.New("application must be in the Running state for this operation")
 	ErrApplicationNotSuspended      = errors.New("application must be in the Suspended state to resume")
 	ErrInvalidRollbackTarget        = errors.New("rollback target is not a valid, retained, previously-successful deployment for this application")
+	ErrDeleteNotConfirmed           = errors.New(`deletion is irreversible and requires explicit confirmation ("confirm": true)`)
 )

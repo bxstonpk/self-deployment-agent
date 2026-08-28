@@ -215,3 +215,183 @@ func TestRestart_NotRunning_Rejected(t *testing.T) {
 		t.Errorf("expected ErrApplicationNotRunning, got %v", err)
 	}
 }
+
+func TestArchive_FromRunning_StopsContainersAndArchives(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	svc, apps, deployments, states, runtime := newLifecycleService(app, deployment, "owner-1")
+
+	apiContainer := "c-api"
+	apiPort := 222
+	states.byKey[stateKey("dep-1", "api")] = domain.ServiceRuntimeState{
+		DeploymentID: "dep-1", ServiceName: "api", Eligible: false, ContainerID: &apiContainer, HostPort: &apiPort,
+	}
+
+	result, err := svc.Archive(context.Background(), "app-1", "owner-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.LifecycleStatus != domain.StatusArchived {
+		t.Errorf("expected application Archived, got %q", result.LifecycleStatus)
+	}
+	if apps.apps["app-1"].LifecycleStatus != domain.StatusArchived {
+		t.Errorf("expected persisted application Archived, got %q", apps.apps["app-1"].LifecycleStatus)
+	}
+	if deployments.byID["dep-1"].Status != domain.DeploymentArchived {
+		t.Errorf("expected persisted deployment Archived, got %q", deployments.byID["dep-1"].Status)
+	}
+	if len(runtime.stopped) != 1 || runtime.stopped[0] != apiContainer {
+		t.Errorf("expected the running container stopped, got %v", runtime.stopped)
+	}
+	st, _ := states.Get(context.Background(), "dep-1", "api")
+	if !st.ScaledToZero() {
+		t.Error("expected no container recorded for api after archive")
+	}
+}
+
+func TestArchive_FromSuspended_NoContainersToStop(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	app.LifecycleStatus = domain.StatusSuspended
+	deployment.Status = domain.DeploymentSuspended
+	svc, apps, deployments, _, runtime := newLifecycleService(app, deployment, "owner-1")
+
+	result, err := svc.Archive(context.Background(), "app-1", "owner-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.LifecycleStatus != domain.StatusArchived {
+		t.Errorf("expected application Archived, got %q", result.LifecycleStatus)
+	}
+	if apps.apps["app-1"].LifecycleStatus != domain.StatusArchived {
+		t.Errorf("expected persisted application Archived, got %q", apps.apps["app-1"].LifecycleStatus)
+	}
+	if deployments.byID["dep-1"].Status != domain.DeploymentArchived {
+		t.Errorf("expected persisted deployment Archived, got %q", deployments.byID["dep-1"].Status)
+	}
+	if len(runtime.stopped) != 0 {
+		t.Errorf("expected nothing to stop — already suspended, got %v", runtime.stopped)
+	}
+}
+
+func TestArchive_NotRunningOrSuspended_Rejected(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	app.LifecycleStatus = domain.StatusBuild
+	svc, _, _, _, _ := newLifecycleService(app, deployment, "owner-1")
+
+	_, err := svc.Archive(context.Background(), "app-1", "owner-1")
+	if !errors.Is(err, domain.ErrInvalidLifecycleTransition) {
+		t.Errorf("expected ErrInvalidLifecycleTransition, got %v", err)
+	}
+}
+
+func TestArchive_DeploymentInFlight_Rejected(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	deployment.Status = domain.DeploymentHealthCheck // an in-progress redeploy attempt
+	svc, _, _, _, _ := newLifecycleService(app, deployment, "owner-1")
+
+	_, err := svc.Archive(context.Background(), "app-1", "owner-1")
+	if !errors.Is(err, domain.ErrDeploymentAlreadyInFlight) {
+		t.Errorf("expected ErrDeploymentAlreadyInFlight, got %v", err)
+	}
+}
+
+func TestArchive_NonOwner_Rejected(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	svc, _, _, _, _ := newLifecycleService(app, deployment, "owner-1")
+
+	_, err := svc.Archive(context.Background(), "app-1", "stranger")
+	if !errors.Is(err, domain.ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestDelete_FromArchived_Succeeds(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	app.LifecycleStatus = domain.StatusArchived
+	deployment.Status = domain.DeploymentArchived
+	svc, apps, _, _, _ := newLifecycleService(app, deployment, "owner-1")
+
+	result, err := svc.Delete(context.Background(), "app-1", "owner-1", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.LifecycleStatus != domain.StatusDeleted {
+		t.Errorf("expected application Deleted, got %q", result.LifecycleStatus)
+	}
+	if apps.apps["app-1"].LifecycleStatus != domain.StatusDeleted {
+		t.Errorf("expected persisted application Deleted, got %q", apps.apps["app-1"].LifecycleStatus)
+	}
+}
+
+func TestDelete_FromSuspended_Succeeds(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	app.LifecycleStatus = domain.StatusSuspended
+	deployment.Status = domain.DeploymentSuspended
+	svc, apps, _, _, _ := newLifecycleService(app, deployment, "owner-1")
+
+	_, err := svc.Delete(context.Background(), "app-1", "owner-1", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if apps.apps["app-1"].LifecycleStatus != domain.StatusDeleted {
+		t.Errorf("expected persisted application Deleted, got %q", apps.apps["app-1"].LifecycleStatus)
+	}
+}
+
+func TestDelete_DefensivelyStopsAnyRemainingContainer(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	app.LifecycleStatus = domain.StatusArchived
+	deployment.Status = domain.DeploymentArchived
+	svc, _, _, states, runtime := newLifecycleService(app, deployment, "owner-1")
+
+	// Simulates a container that, for whatever reason, wasn't cleaned up by
+	// a prior Suspend/Archive — Delete must not trust that blindly.
+	leftoverContainer := "c-leftover"
+	leftoverPort := 333
+	states.byKey[stateKey("dep-1", "api")] = domain.ServiceRuntimeState{
+		DeploymentID: "dep-1", ServiceName: "api", Eligible: false, ContainerID: &leftoverContainer, HostPort: &leftoverPort,
+	}
+
+	if _, err := svc.Delete(context.Background(), "app-1", "owner-1", true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runtime.stopped) != 1 || runtime.stopped[0] != leftoverContainer {
+		t.Errorf("expected the leftover container stopped, got %v", runtime.stopped)
+	}
+}
+
+func TestDelete_FromRunning_Rejected(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1") // Running, not Archived/Suspended
+	svc, _, _, _, _ := newLifecycleService(app, deployment, "owner-1")
+
+	_, err := svc.Delete(context.Background(), "app-1", "owner-1", true)
+	if !errors.Is(err, domain.ErrInvalidLifecycleTransition) {
+		t.Errorf("expected ErrInvalidLifecycleTransition (must Suspend/Archive first), got %v", err)
+	}
+}
+
+func TestDelete_WithoutConfirmation_Rejected(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	app.LifecycleStatus = domain.StatusArchived
+	deployment.Status = domain.DeploymentArchived
+	svc, apps, _, _, _ := newLifecycleService(app, deployment, "owner-1")
+
+	_, err := svc.Delete(context.Background(), "app-1", "owner-1", false)
+	if !errors.Is(err, domain.ErrDeleteNotConfirmed) {
+		t.Errorf("expected ErrDeleteNotConfirmed, got %v", err)
+	}
+	if apps.apps["app-1"].LifecycleStatus == domain.StatusDeleted {
+		t.Error("expected application NOT deleted without confirmation")
+	}
+}
+
+func TestDelete_NonOwner_Rejected(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	app.LifecycleStatus = domain.StatusArchived
+	deployment.Status = domain.DeploymentArchived
+	svc, _, _, _, _ := newLifecycleService(app, deployment, "owner-1")
+
+	_, err := svc.Delete(context.Background(), "app-1", "stranger", true)
+	if !errors.Is(err, domain.ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized, got %v", err)
+	}
+}
