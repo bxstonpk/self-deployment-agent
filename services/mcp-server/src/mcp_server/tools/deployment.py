@@ -4,6 +4,8 @@ get_deployment_status, rollback_application, restart_application.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Any
 
 from ..envelope import ErrorCode, ToolError, pending_approval, success
@@ -11,14 +13,11 @@ from ..idempotency import IdempotencyConflict, IdempotencyStore
 from ..platform_client import PlatformClient
 
 _NO_BUILD_MESSAGE = (
-    "no successful build exists for this application. Section 13.6 of the MCP "
-    "spec frames deploy_application as triggering Build -> Image Scan -> Deploy "
-    "-> Health Check -> Traffic Activation, but this Platform API keeps Build as "
-    "a separate step requiring a source-archive upload (POST "
-    "/applications/{id}/build), which is NOT exposed as an MCP tool (it isn't "
-    "one of the 12). Ask the employee to build via the Platform API/console "
-    "directly first — this is a genuine, documented gap in the AI-agent path, "
-    "not a transient failure worth retrying."
+    "no successful build exists for this application, and no source_archive_base64 "
+    "was given to build one. Pass the application's source as a base64-encoded "
+    "tar.gz (top-level directory per service name, matching deployment.yaml's "
+    "services keys) in source_archive_base64, or trigger a build via the Platform "
+    "API/console directly first."
 )
 
 
@@ -28,6 +27,7 @@ async def deploy_application(
     application_id: str,
     target_environment: str,
     version_reference: str | None = None,
+    source_archive_base64: str | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     # version_reference is accepted for shape-compliance with Section 13.6
@@ -37,7 +37,17 @@ async def deploy_application(
     # target). Silently accepting and ignoring it would hide the gap;
     # silently honoring only "latest"/None would be surprising if the
     # caller expected real version pinning. Documented here instead.
-    fingerprint = (application_id, target_environment, version_reference)
+    #
+    # source_archive_base64 is NOT part of Section 13.6's declared input
+    # shape, but closes the real gap documented in this module's git
+    # history: without it, there was no way for deploy_application to
+    # actually trigger Build the way its own Purpose text describes
+    # ("Build -> Image Scan -> Deploy -> Health Check -> Traffic
+    # Activation"). When given, this tool calls the Platform API's build
+    # endpoint first — which now accepts Validated (first build) OR
+    # Running/Failed (a rebuild) as of the fix alongside this one — then
+    # proceeds to deploy only if the build succeeded.
+    fingerprint = (application_id, target_environment, version_reference, source_archive_base64)
     if idempotency_key:
         try:
             cached = idempotency.get_cached(idempotency_key, fingerprint)
@@ -45,6 +55,24 @@ async def deploy_application(
             raise ToolError(ErrorCode.CONFLICT, str(exc)) from exc
         if cached is not None:
             return cached
+
+    if source_archive_base64:
+        try:
+            source_bytes = base64.b64decode(source_archive_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ToolError(
+                ErrorCode.VALIDATION_ERROR, f"source_archive_base64 is not valid base64: {exc}"
+            ) from exc
+        build = await client.trigger_build(application_id, source_bytes)
+        if build.get("status") == "failed":
+            category = build.get("error_category")
+            detail = build.get("error_detail") or "build failed for an unspecified reason"
+            if category == "source":
+                # FR-038: a source-category failure (compiler/dependency
+                # error) is the employee's/agent's problem to fix, not the
+                # platform's — VALIDATION_ERROR, not INTERNAL_ERROR.
+                raise ToolError(ErrorCode.VALIDATION_ERROR, f"build failed: {detail}")
+            raise ToolError(ErrorCode.INTERNAL_ERROR, f"build failed (platform-side): {detail}")
 
     try:
         deployment = await client.deploy_application(application_id, target_environment)

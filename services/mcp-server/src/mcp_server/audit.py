@@ -37,8 +37,9 @@ _PROCESS_SESSION_ID = str(uuid.uuid4())
 
 # Keys anywhere in input_parameters whose VALUE is redacted before logging —
 # Section 7: "input_parameters: Full request payload, with secret-shaped
-# values redacted before storage."
-_REDACT_KEYS = {"token", "password", "secret", "confirm_token", "deployment_yaml"}
+# values redacted before storage." deployment_yaml/source_archive_base64
+# aren't secrets, just large payloads not worth logging in full.
+_REDACT_KEYS = {"token", "password", "secret", "confirm_token", "deployment_yaml", "source_archive_base64"}
 
 
 def _redact(value: Any) -> Any:

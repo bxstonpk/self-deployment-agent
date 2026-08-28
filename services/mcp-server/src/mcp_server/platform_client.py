@@ -92,9 +92,14 @@ class PlatformClient:
             headers["X-Dev-Department"] = self._employee.department
         return headers
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    async def _request(
+        self, method: str, path: str, extra_headers: dict[str, str] | None = None, **kwargs: Any
+    ) -> dict[str, Any]:
+        headers = self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
         try:
-            resp = await self._client.request(method, path, headers=self._headers(), **kwargs)
+            resp = await self._client.request(method, path, headers=headers, **kwargs)
         except httpx.RequestError as exc:
             raise ToolError(
                 ErrorCode.INTERNAL_ERROR, f"could not reach the Platform API: {exc}"
@@ -153,6 +158,20 @@ class PlatformClient:
             "PUT",
             f"/applications/{application_id}/deployment-yaml",
             json={"deployment_yaml": deployment_yaml},
+        )
+
+    async def trigger_build(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        """Not one of Section 13's tools on its own — deploy_application
+        calls this internally when given source code, closing the gap
+        documented in tools/deployment.py's module doc. Callable now for a
+        Validated application (first build) OR a Running/Failed one (a
+        rebuild) — see build_service.go's TriggerBuild doc comment for why
+        that precondition was widened as part of this same fix."""
+        return await self._request(
+            "POST",
+            f"/applications/{application_id}/build",
+            extra_headers={"Content-Type": "application/gzip"},
+            content=source_archive,
         )
 
     async def validate_application(self, application_id: str) -> dict[str, Any]:

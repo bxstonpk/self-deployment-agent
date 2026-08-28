@@ -370,7 +370,17 @@ func (s *DeploymentService) markDeploymentFailed(ctx context.Context, app domain
 // Only a first-ever deploy failing (no prior good version) moves the
 // application to Failed.
 func (s *DeploymentService) markDeploymentFailedFrom(ctx context.Context, applicationID string, fromAppStatus domain.LifecycleStatus, wasAlreadyRunning bool, deployment domain.Deployment, reason string) (domain.Deployment, error) {
-	deployment, err := s.deployments.SetFailed(ctx, deployment.ID, reason)
+	// Detached, same reasoning as build_service.go's TriggerBuild failure
+	// path: this IS the failure-cleanup write, often reached because `ctx`
+	// was cancelled out from under a slow deploy attempt (health checks
+	// alone can take up to 15s) — using the same cancelled `ctx` here risks
+	// this write failing too, leaving the deployment/application stuck in
+	// a transient status (`deploying`/`health_check`) that nothing accepts
+	// as a valid starting state, permanently unrecoverable through the API.
+	detachedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	deployment, err := s.deployments.SetFailed(detachedCtx, deployment.ID, reason)
 	if err != nil {
 		return domain.Deployment{}, err
 	}
@@ -379,7 +389,7 @@ func (s *DeploymentService) markDeploymentFailedFrom(ctx context.Context, applic
 	if wasAlreadyRunning {
 		target = domain.StatusRunning
 	}
-	if _, err := s.apps.UpdateLifecycleStatus(ctx, applicationID, fromAppStatus, target, false); err != nil {
+	if _, err := s.apps.UpdateLifecycleStatus(detachedCtx, applicationID, fromAppStatus, target, false); err != nil {
 		return domain.Deployment{}, err
 	}
 	return deployment, nil

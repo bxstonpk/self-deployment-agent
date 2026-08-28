@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 
 from mcp_server.envelope import ErrorCode, ToolError
@@ -29,7 +31,7 @@ async def test_deploy_application_production_is_pending_approval_not_an_error():
     assert result["data"]["mcp_status"] == "PENDING_APPROVAL"
 
 
-async def test_deploy_application_no_successful_build_gives_actionable_gap_message():
+async def test_deploy_application_no_successful_build_and_no_source_gives_actionable_message():
     client = FakePlatformClient()
     idem = IdempotencyStore(ttl_seconds=60)
 
@@ -39,7 +41,63 @@ async def test_deploy_application_no_successful_build_gives_actionable_gap_messa
     client.deploy_application = fail_deploy  # type: ignore[method-assign]
     with pytest.raises(ToolError) as exc_info:
         await deployment.deploy_application(client, idem, "app-1", "dev")
-    assert "genuine, documented gap" in exc_info.value.message
+    assert "source_archive_base64" in exc_info.value.message
+
+
+async def test_deploy_application_with_source_triggers_build_then_deploys():
+    client = FakePlatformClient()
+    idem = IdempotencyStore(ttl_seconds=60)
+    app = await _registered_app(client)
+    source_b64 = base64.b64encode(b"fake-tar-gz-bytes").decode()
+
+    result = await deployment.deploy_application(
+        client, idem, app["id"], "dev", source_archive_base64=source_b64
+    )
+    assert result["status"] == "success"
+    assert result["data"]["status"] == "running"
+    build_calls = [c for c in client.calls if c[0] == "trigger_build"]
+    assert len(build_calls) == 1
+    assert build_calls[0][1] == (app["id"], b"fake-tar-gz-bytes")
+
+
+async def test_deploy_application_invalid_base64_is_rejected_before_any_platform_call():
+    client = FakePlatformClient()
+    idem = IdempotencyStore(ttl_seconds=60)
+    app = await _registered_app(client)
+
+    with pytest.raises(ToolError) as exc_info:
+        await deployment.deploy_application(
+            client, idem, app["id"], "dev", source_archive_base64="not-valid-base64!!"
+        )
+    assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
+    assert not any(c[0] in ("trigger_build", "deploy_application") for c in client.calls)
+
+
+async def test_deploy_application_source_build_failure_source_category_is_validation_error():
+    client = FakePlatformClient()
+    idem = IdempotencyStore(ttl_seconds=60)
+    app = await _registered_app(client)
+    client.next_build_result = {"status": "failed", "error_category": "source", "error_detail": "npm install failed"}
+    source_b64 = base64.b64encode(b"broken-source").decode()
+
+    with pytest.raises(ToolError) as exc_info:
+        await deployment.deploy_application(client, idem, app["id"], "dev", source_archive_base64=source_b64)
+    assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
+    assert "npm install failed" in exc_info.value.message
+    deploy_calls = [c for c in client.calls if c[0] == "deploy_application"]
+    assert not deploy_calls  # never reached deploy — build failed first
+
+
+async def test_deploy_application_source_build_failure_platform_category_is_internal_error():
+    client = FakePlatformClient()
+    idem = IdempotencyStore(ttl_seconds=60)
+    app = await _registered_app(client)
+    client.next_build_result = {"status": "failed", "error_category": "platform", "error_detail": "registry pull timeout"}
+    source_b64 = base64.b64encode(b"source").decode()
+
+    with pytest.raises(ToolError) as exc_info:
+        await deployment.deploy_application(client, idem, app["id"], "dev", source_archive_base64=source_b64)
+    assert exc_info.value.code == ErrorCode.INTERNAL_ERROR
 
 
 async def test_deploy_application_idempotency_key_prevents_double_deploy():

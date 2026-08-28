@@ -44,7 +44,7 @@ type BaseImage struct {
 }
 
 var (
-	ErrNotValidated          = errors.New("application must be in the Validated state to build")
+	ErrNotValidated          = errors.New("application must be Validated, Running, or Failed to build")
 	ErrBuildAlreadyInFlight  = errors.New("a build is already queued or in progress for this application")
 	ErrNoSourceArchive       = errors.New("a source archive (tar.gz) is required")
 	ErrNoBaseImageForRuntime = errors.New("no governed base image is published for this runtime")

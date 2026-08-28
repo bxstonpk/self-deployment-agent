@@ -69,7 +69,14 @@ def load_config() -> Config:
     full_name = os.environ.get("MCP_EMPLOYEE_NAME", "").strip() or None
     department = os.environ.get("MCP_EMPLOYEE_DEPARTMENT", "").strip() or None
 
-    timeout_raw = os.environ.get("PLATFORM_API_TIMEOUT_SECONDS", "30")
+    # 120s, not 30s: deploy_application's build step is a real `docker
+    # build` (compile + image export) that can legitimately take well
+    # past 30s, especially with a cold layer cache or a busy Docker
+    # daemon — found for real when a merely-slow (not hung) rebuild
+    # tripped a 30s client timeout during manual verification, which
+    # also surfaced a separate server-side bug (now fixed) where the
+    # resulting disconnect could leave the build/application stuck.
+    timeout_raw = os.environ.get("PLATFORM_API_TIMEOUT_SECONDS", "120")
     try:
         timeout = float(timeout_raw)
     except ValueError as exc:
