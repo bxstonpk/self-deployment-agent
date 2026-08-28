@@ -76,7 +76,15 @@ it can be swapped for real SSO without touching any handler — see `NFR-051`.
 
 ## Running locally
 
-From the repo root:
+From the repo root, first time only:
+
+```
+cp .env.example .env   # then edit POSTGRES_PASSWORD if you want a non-default value
+```
+
+`.env` is git-ignored — `docker-compose.yml` reads all credentials from it
+and refuses to start with a clear error if it's missing (see
+`.env.example` for what's needed). Then:
 
 ```
 docker compose up --build
