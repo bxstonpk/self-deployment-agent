@@ -1,0 +1,45 @@
+## Local development environment. NOT the production topology — see
+## docs/10_System_Architecture.md (production runs on self-hosted K3s +
+## Knative per DEC-004, docs/17_Decision_Log.md). This compose file exists
+## purely so `platform-api` and its dependencies can be run and tested on a
+## developer machine.
+##
+## All credentials come from a local .env file (git-ignored — see
+## .gitignore) and are never hardcoded here. Copy .env.example to .env
+## before running `docker compose up`. Non-secret values (host port
+## mappings) fall back to sane defaults via ${VAR:-default} so the stack
+## still starts with no .env at all, but POSTGRES_USER/PASSWORD/DB are
+## required — docker compose will fail fast with a clear error if .env is
+## missing rather than silently falling back to a hardcoded credential.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env — see .env.example}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — see .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env — see .env.example}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5436}:5432" # 5432-5435 are already used by other local projects on this machine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  platform-api:
+    build:
+      context: ./services/platform-api
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      PORT: "8080"
+      PLATFORM_ENV: ${PLATFORM_ENV:-dev}
+    ports:
+      - "${PLATFORM_API_HOST_PORT:-8090}:8080" # 8080 is already used by another local project on this machine
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
