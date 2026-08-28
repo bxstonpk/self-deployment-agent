@@ -16,6 +16,7 @@ type RouterConfig struct {
 	Deploys       *DeployHandler
 	ScaleEvents   *ScaleEventsHandler
 	Proxy         *ProxyHandler
+	Lifecycle     *LifecycleHandler
 	// PlatformEnv gates DevOnlyGuard. The only Authenticator implementation
 	// today is DevHeaderAuthenticator, so this is always enforced until a
 	// real one lands per DEC-001 (docs/17_Decision_Log.md).
@@ -48,6 +49,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Post("/{id}/deploy", cfg.Deploys.TriggerDeploy)
 		r.Get("/{id}/deployments/latest", cfg.Deploys.LatestDeployment)
 		r.Get("/{id}/scale-events", cfg.ScaleEvents.List)
+		r.Post("/{id}/suspend", cfg.Lifecycle.Suspend)
+		r.Post("/{id}/resume", cfg.Lifecycle.Resume)
+		r.Post("/{id}/restart", cfg.Lifecycle.Restart)
 	})
 
 	r.Route("/supported-stacks", func(r chi.Router) {

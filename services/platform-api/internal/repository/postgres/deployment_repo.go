@@ -77,6 +77,25 @@ func (r *DeploymentRepo) SetRejected(ctx context.Context, deploymentID, reason s
 		deploymentID, reason)
 }
 
+// UpdateContainers refreshes the point-in-time containers snapshot without
+// touching status — needed after Suspend/Resume/Restart
+// (lifecycle_service.go), which change the live container set but aren't
+// the original activation. Without this, the snapshot goes stale: found
+// for real when a resumed deployment's API response still showed the
+// pre-suspend container_id/host_port even though the actual routing
+// (service_runtime_state, which the proxy reads) was already correct.
+func (r *DeploymentRepo) UpdateContainers(ctx context.Context, deploymentID string, containers map[string]domain.RunningContainer) (domain.Deployment, error) {
+	containersJSON, err := json.Marshal(containers)
+	if err != nil {
+		return domain.Deployment{}, fmt.Errorf("marshal containers: %w", err)
+	}
+	return r.scanOne(ctx, `
+		UPDATE deployments SET containers = $2, updated_at = now()
+		WHERE id = $1
+		RETURNING `+deploymentColumns,
+		deploymentID, containersJSON)
+}
+
 func (r *DeploymentRepo) SetRunning(ctx context.Context, deploymentID string, containers map[string]domain.RunningContainer) (domain.Deployment, error) {
 	containersJSON, err := json.Marshal(containers)
 	if err != nil {

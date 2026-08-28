@@ -26,6 +26,11 @@ type ServiceRuntimeStateRepository interface {
 	ClearContainer(ctx context.Context, deploymentID, serviceName, expectedContainerID string) (bool, error)
 	TouchActive(ctx context.Context, deploymentID, serviceName string) error
 	ListEligibleActive(ctx context.Context) ([]domain.ServiceRuntimeState, error)
+	// ListForDeployment returns every service's state regardless of
+	// eligibility — used by Suspend/Resume/Restart (lifecycle_service.go),
+	// which must act on ALL services, not just the scale-to-zero-eligible
+	// ones ListEligibleActive is scoped to.
+	ListForDeployment(ctx context.Context, deploymentID string) ([]domain.ServiceRuntimeState, error)
 	DeleteForDeployment(ctx context.Context, deploymentID string) error
 }
 

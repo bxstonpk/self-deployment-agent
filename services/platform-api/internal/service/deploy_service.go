@@ -45,6 +45,7 @@ type DeploymentRepository interface {
 	SetRejected(ctx context.Context, deploymentID, reason string) (domain.Deployment, error)
 	SetRunning(ctx context.Context, deploymentID string, containers map[string]domain.RunningContainer) (domain.Deployment, error)
 	SetSuperseded(ctx context.Context, deploymentID string) (domain.Deployment, error)
+	UpdateContainers(ctx context.Context, deploymentID string, containers map[string]domain.RunningContainer) (domain.Deployment, error)
 	GetByID(ctx context.Context, deploymentID string) (domain.Deployment, error)
 	LatestForApplication(ctx context.Context, applicationID string) (domain.Deployment, error)
 	PreviousRunning(ctx context.Context, applicationID, excludeDeploymentID string) (domain.Deployment, error)

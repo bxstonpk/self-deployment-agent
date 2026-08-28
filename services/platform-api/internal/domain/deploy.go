@@ -16,6 +16,7 @@ const (
 	DeploymentFailed          DeploymentStatus = "failed"
 	DeploymentRejected        DeploymentStatus = "rejected"
 	DeploymentSuperseded      DeploymentStatus = "superseded"
+	DeploymentSuspended       DeploymentStatus = "suspended"
 )
 
 // DefaultContainerPort is the port a service listens on when
@@ -100,4 +101,6 @@ var (
 	ErrDeploymentAlreadyInFlight    = errors.New("a deployment is already in progress for this application")
 	ErrDeploymentNotPendingApproval = errors.New("deployment is not awaiting approval")
 	ErrInvalidEnvironment           = errors.New(`environment must be "dev" or "production"`)
+	ErrApplicationNotRunning        = errors.New("application must be in the Running state for this operation")
+	ErrApplicationNotSuspended      = errors.New("application must be in the Suspended state to resume")
 )
