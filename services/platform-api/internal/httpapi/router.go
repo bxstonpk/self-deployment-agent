@@ -54,6 +54,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Post("/{id}/suspend", cfg.Lifecycle.Suspend)
 		r.Post("/{id}/resume", cfg.Lifecycle.Resume)
 		r.Post("/{id}/restart", cfg.Lifecycle.Restart)
+		r.Post("/{id}/archive", cfg.Lifecycle.Archive)
+		r.Post("/{id}/delete", cfg.Lifecycle.Delete)
 	})
 
 	r.Route("/supported-stacks", func(r chi.Router) {

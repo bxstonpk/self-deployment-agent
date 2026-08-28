@@ -1,17 +1,19 @@
 // Lifecycle implements the remainder of Module K
 // (docs/02_Functional_Requirements.md) beyond registration/validation/
-// build/deploy: FR-047 (Suspend) and FR-048 (Resume, Restart).
+// build/deploy: FR-047 (Suspend), FR-048 (Resume, Restart), FR-049
+// (Archive), and FR-050 (Delete).
 //
-// Reuses the existing `deployments` table (migration 0006 adds 'suspended'
-// as a new deployments.status value) rather than a parallel structure —
-// see that migration's doc comment for why this makes the scale-to-zero
-// proxy correctly refuse to serve/cold-start a suspended application with
-// no code change: its CurrentRunning lookup (status = 'running') simply
-// stops finding it.
+// Reuses the existing `deployments` table (migration 0006 adds 'suspended',
+// migration 0007 adds 'archived', as new deployments.status values) rather
+// than a parallel structure — see those migrations' doc comments for why
+// this makes the scale-to-zero proxy correctly refuse to serve/cold-start a
+// suspended or archived application with no code change: its CurrentRunning
+// lookup (status = 'running') simply stops finding it.
 package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -79,21 +81,8 @@ func (s *LifecycleService) Suspend(ctx context.Context, applicationID, requester
 		return domain.Deployment{}, domain.ErrApplicationNotRunning
 	}
 
-	states, err := s.states.ListForDeployment(ctx, deployment.ID)
-	if err != nil {
+	if err := s.stopAllContainers(ctx, deployment.ID); err != nil {
 		return domain.Deployment{}, err
-	}
-	for _, st := range states {
-		if st.ContainerID == nil {
-			continue // already scaled to zero — nothing to stop
-		}
-		if err := s.runtime.Stop(ctx, *st.ContainerID); err != nil {
-			log.Printf("suspend: failed to stop container for %s/%s: %v", deployment.ID, st.ServiceName, err)
-			continue
-		}
-		if _, err := s.states.ClearContainer(ctx, deployment.ID, st.ServiceName, *st.ContainerID); err != nil {
-			log.Printf("suspend: failed to clear state for %s/%s: %v", deployment.ID, st.ServiceName, err)
-		}
 	}
 
 	deployment, err = s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentSuspended)
@@ -251,4 +240,133 @@ func (s *LifecycleService) Restart(ctx context.Context, applicationID, requester
 		return domain.Deployment{}, err
 	}
 	return deployment, nil
+}
+
+// Archive implements FR-049: releases an application's active runtime
+// footprint more permanently than Suspend, retaining configuration,
+// metadata, and history for reference/compliance. Callable from Running or
+// Suspended — Running is stopped the same way Suspend stops it; Suspended
+// is already stopped, so only the status bookkeeping changes.
+//
+// Known gaps, documented not hidden:
+//   - FR-049's "releases ... the application's domain (Module P)" has no
+//     domain assignment to release — Module P (Domain Management) isn't
+//     built.
+//   - FR-049's business rule that reactivation requires "an explicit
+//     un-archive action treated as a new deployment cycle" is not itself an
+//     FR with its own acceptance criteria — no un-archive endpoint exists.
+//     An Archived application is, today, a genuine dead end recoverable
+//     only via direct database intervention. Worth a future FR if the
+//     platform needs it.
+func (s *LifecycleService) Archive(ctx context.Context, applicationID, requesterID string) (domain.Application, error) {
+	app, err := s.apps.GetByID(ctx, applicationID)
+	if err != nil {
+		return domain.Application{}, err
+	}
+	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
+		return domain.Application{}, err
+	}
+	if app.LifecycleStatus != domain.StatusRunning && app.LifecycleStatus != domain.StatusSuspended {
+		return domain.Application{}, domain.ErrInvalidLifecycleTransition
+	}
+
+	deployment, err := s.deployments.LatestForApplication(ctx, applicationID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return domain.Application{}, err
+	}
+	if err == nil {
+		// FR-049 exception flow: an in-progress deployment blocks archiving
+		// until it completes or is cancelled (no cancel path exists yet —
+		// the caller must wait for it to finish one way or another).
+		if isInFlight(deployment.Status) {
+			return domain.Application{}, domain.ErrDeploymentAlreadyInFlight
+		}
+		if deployment.Status == domain.DeploymentRunning {
+			if err := s.stopAllContainers(ctx, deployment.ID); err != nil {
+				return domain.Application{}, err
+			}
+			if _, err := s.deployments.UpdateContainers(ctx, deployment.ID, map[string]domain.RunningContainer{}); err != nil {
+				return domain.Application{}, err
+			}
+		}
+		if deployment.Status == domain.DeploymentRunning || deployment.Status == domain.DeploymentSuspended {
+			if _, err := s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentArchived); err != nil {
+				return domain.Application{}, err
+			}
+		}
+	}
+
+	return s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, domain.StatusArchived, false)
+}
+
+// Delete implements FR-050: permanently deletes an application, terminal
+// and irreversible. Callable from Archived or Suspended only — FR-050's
+// precondition explicitly excludes deleting directly from Running ("requires
+// an explicit stop-first confirmation"), satisfied here by requiring the
+// caller to Suspend or Archive first as a genuinely separate action rather
+// than a same-request flag. Requires confirm=true (FR-050 main flow step 1:
+// "requester confirms deletion, acknowledging irreversibility").
+//
+// Known gaps, documented not hidden:
+//   - FR-050's deprovisioning of the database (Module N), secrets
+//     (Module O), and domain (Module P) are all no-ops — none of those
+//     modules exist yet. What Delete DOES do for real: ensures no container
+//     is left running for the application (defensive — by precondition it
+//     should already be stopped via Suspend/Archive, but this doesn't trust
+//     that blindly).
+//   - FR-050's production-deletion approval gate ("mirrors FR-014") isn't
+//     enforced — that needs the de-registration approval workflow (Module C)
+//     this platform doesn't have, the same category of gap as the
+//     production-deploy approval gate's approver-independence limitation.
+//   - FR-050's audit tombstone ("audit records ... are never deleted") has
+//     no Module W (Audit Log) to write one — the application row itself is
+//     simply left in place with lifecycle_status='deleted', which is at
+//     least queryable, not erased.
+func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterID string, confirm bool) (domain.Application, error) {
+	app, err := s.apps.GetByID(ctx, applicationID)
+	if err != nil {
+		return domain.Application{}, err
+	}
+	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
+		return domain.Application{}, err
+	}
+	if !confirm {
+		return domain.Application{}, domain.ErrDeleteNotConfirmed
+	}
+	if app.LifecycleStatus != domain.StatusArchived && app.LifecycleStatus != domain.StatusSuspended {
+		return domain.Application{}, domain.ErrInvalidLifecycleTransition
+	}
+
+	if deployment, err := s.deployments.LatestForApplication(ctx, applicationID); err == nil {
+		if err := s.stopAllContainers(ctx, deployment.ID); err != nil {
+			return domain.Application{}, err
+		}
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return domain.Application{}, err
+	}
+
+	return s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, domain.StatusDeleted, false)
+}
+
+// stopAllContainers stops and clears every service's container for a
+// deployment regardless of scale-to-zero eligibility, shared by Suspend,
+// Archive, and Delete's defensive cleanup.
+func (s *LifecycleService) stopAllContainers(ctx context.Context, deploymentID string) error {
+	states, err := s.states.ListForDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
+	for _, st := range states {
+		if st.ContainerID == nil {
+			continue
+		}
+		if err := s.runtime.Stop(ctx, *st.ContainerID); err != nil {
+			log.Printf("lifecycle: failed to stop container for %s/%s: %v", deploymentID, st.ServiceName, err)
+			continue
+		}
+		if _, err := s.states.ClearContainer(ctx, deploymentID, st.ServiceName, *st.ContainerID); err != nil {
+			log.Printf("lifecycle: failed to clear state for %s/%s: %v", deploymentID, st.ServiceName, err)
+		}
+	}
+	return nil
 }

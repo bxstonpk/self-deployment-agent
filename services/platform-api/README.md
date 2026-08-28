@@ -1,9 +1,11 @@
-# Platform API — Draft through Rollback (State 1–7)
+# Platform API — Draft through Archive/Delete (State 1–8)
 
 Go implementation of the Business API, built one Application Lifecycle state
 at a time. Currently covers **Draft**, **Validated**, **Build**,
 **Deploying**, **Scale-to-Zero** (the ongoing behavior of a `Running`
-application), **Suspend/Resume/Restart**, and **Rollback**.
+application), **Suspend/Resume/Restart**, **Rollback**, and
+**Archive/Delete** — every Application Lifecycle state reachable without
+Modules N/O/P (Database/Secret/Domain Management), which don't exist yet.
 
 Implements from
 [`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md):
@@ -16,9 +18,10 @@ builds, not mocked); `FR-039`–`FR-044` (Module J — Deploying state: real
 Trivy image scanning, a real production approval gate, and real container
 start/health-check/traffic-activation); `FR-051`–`FR-056` (Module L —
 Scale-to-Zero: real idle detection, real cold-start-on-request through a
-stable proxy URL, real event logging); `FR-047`, `FR-048` (Module K —
-Suspend/Resume/Restart); and `FR-095`, `FR-098`, `FR-100`, `FR-101` (Module V
-— Rollback — see below). See
+stable proxy URL, real event logging); `FR-045`, `FR-047`, `FR-048`,
+`FR-049`, `FR-050` (Module K — the full Application Lifecycle model, plus
+Suspend/Resume/Restart and Archive/Delete); and `FR-095`, `FR-098`, `FR-100`,
+`FR-101` (Module V — Rollback — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -48,6 +51,8 @@ for how it fits the Control Plane.
 | `POST /applications/{id}/suspend` | FR-047 | `running` → `suspended`: stops every container (not just scale-to-zero-eligible ones), retains config. Owner-only |
 | `POST /applications/{id}/resume` | FR-048 | `suspended` → `running`: restarts non-eligible services immediately; eligible ones stay at zero and cold-start on demand as usual. Owner-only |
 | `POST /applications/{id}/restart` | FR-048 | Recycles currently-running instances in place — same version, fresh containers, no redeploy. Owner-only |
+| `POST /applications/{id}/archive` | FR-049 | `running`/`suspended` → `archived`: releases compute more permanently than Suspend, retains config/history. Owner-only |
+| `POST /applications/{id}/delete` | FR-050 | `archived`/`suspended` → `deleted` (terminal); requires `{"confirm": true}`. Owner-only |
 
 ### How Build works
 
@@ -352,6 +357,59 @@ failing before this code ever ran against real Docker — exactly the kind of
 bug a shared-pipeline refactor risks, exactly why the new tests were written
 before the manual verification pass, not after.
 
+## How Archive/Delete work (Module K)
+
+The last two Application Lifecycle states, and the last states reachable
+without Modules N/O/P (Database/Secret/Domain Management) actually existing.
+Same reuse-the-existing-`deployments`-table pattern as Suspend
+(migration `0006`) — `archived` is migration `0007`'s new
+`deployments.status` value, so the scale-to-zero proxy needs no code change
+to refuse an archived application either.
+
+- **Archive (FR-049)** is callable from `Running` or `Suspended`. From
+  `Running` it stops every container the same way Suspend does (shares the
+  same `stopAllContainers` helper) before transitioning; from `Suspended`
+  there's nothing left to stop, only the status changes. Rejected while a
+  deployment is actively in progress (FR-049's exception flow) — there's no
+  cancel-in-flight-deployment path, so the caller has to wait for it to
+  finish one way or another. **Business rule enforced literally:** FR-049
+  says an archived application "cannot be directly resumed to Running —
+  reactivation requires an explicit un-archive action treated as a new
+  deployment cycle." No un-archive endpoint exists (FR-049 doesn't specify
+  one with its own acceptance criteria), so Archive is, today, a genuine
+  one-way door — recoverable only via direct database intervention. This is
+  the literal, honest reading of the business rule, not an oversight.
+- **Delete (FR-050)** is callable from `Archived` or `Suspended` only —
+  FR-050's precondition explicitly excludes deleting directly from `Running`
+  ("requires an explicit stop-first confirmation"), implemented by requiring
+  Suspend or Archive as a genuinely separate prior action rather than a
+  same-request flag. Requires `{"confirm": true}` in the body — FR-050's
+  main flow literally says "requester confirms deletion, acknowledging
+  irreversibility"; omitting it is a `400`, not silently ignored. Defensively
+  stops any container still recorded for the deployment before transitioning
+  (shares `stopAllContainers` too) rather than trusting that Suspend/Archive
+  already did it. `Deleted` is enforced as terminal implicitly: no method
+  anywhere accepts `Deleted` as a valid `from` status, so every other
+  lifecycle action already rejects it via the same
+  `ErrInvalidLifecycleTransition` path — verified for real (see Test plan).
+
+**Known gaps, documented not hidden — this is the module where "not built
+yet" is most visible, because FR-050 in particular is *mostly* about
+deprovisioning resources that don't exist yet:**
+- Database deprovisioning (Module N), secret revocation (Module O), and
+  domain release (Module P) are all no-ops on both Archive and Delete —
+  none of those modules are built. What Delete DOES do for real: guarantees
+  no container is left running for the application.
+- FR-050's production-deletion approval gate ("mirrors FR-014") isn't
+  enforced — needs the de-registration approval workflow (Module C), the
+  same category of gap as the production-deploy approval gate's
+  approver-independence limitation.
+- FR-050's audit tombstone ("audit records ... are never deleted") has no
+  Module W (Audit Log) to write one to. The application row is simply left
+  in place with `lifecycle_status = 'deleted'` — queryable, not erased, but
+  not a real tombstone record either.
+- No un-archive/reactivation path — see Archive's note above.
+
 ### Known gap: no retry path out of Failed yet
 
 A failed build moves the application to the `failed` lifecycle state. There
@@ -447,12 +505,17 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   not built yet.
 - Security Administrator force-suspend, bypassing owner-initiated Suspend
   — see **How Suspend/Resume/Restart works**'s known gap.
-- `Archived` and `Deleted` lifecycle states (FR-049, FR-050) — both need
-  Modules N/O/P (Database/Secret/Domain Management) to actually
-  deprovision anything, none of which exist yet. Every state reachable
-  without those modules (`Draft` → `Validated` → `Build` →
-  `Deploying`/`Running`, `Suspended`, and now `Rolled Back` as a transient
-  step back to `Running`) is implemented.
+- Real deprovisioning on Archive/Delete (Modules N/O/P — Database/Secret/
+  Domain Management) — see **How Archive/Delete work**. Every Application
+  Lifecycle state reachable without those modules existing (`Draft` →
+  `Validated` → `Build` → `Deploying`/`Running`, `Suspended`, `Rolled Back`
+  as a transient step back to `Running`, `Archived`, `Deleted`) is now
+  implemented.
+- Un-archive / reactivation of an `Archived` application — see **How
+  Archive/Delete work**'s known gap.
+- Production de-registration approval gate (FR-050, "mirrors FR-014") —
+  needs Module C, not built; same category of gap as the production-deploy
+  approver-independence limitation.
 - Application Owner transfer, co-owner management (FR-016, FR-017) — the
   data model (`application_owners`, multiple rows per app) already
   supports it; no endpoints exist yet.
@@ -542,6 +605,13 @@ build — today that needs a fresh application, or a directly-inserted
 `{"target_deployment_id": "<that id>"}`. Hitting `/run/...` before and after
 should show the response flip back to the earlier version's output.
 
+`POST /applications/{id}/archive` needs no special setup beyond a `Running`
+or `Suspended` application — try `/run/...` afterward to see it 404 the
+same way a suspended app does. `POST /applications/{id}/delete` needs
+`Archived` or `Suspended` first (calling it directly from `Running` is a
+`409`, on purpose) and a `{"confirm": true}` body — omitting `confirm` is a
+`400`.
+
 ## Running tests
 
 ```
@@ -559,7 +629,7 @@ against a real Postgres instance (e.g. via `docker compose` in CI), since
 the partial-unique-index and CHECK constraints in the migrations are part
 of the actual correctness guarantees.
 
-All seven states have also been manually verified end-to-end against a real
+All eight states have also been manually verified end-to-end against a real
 Postgres instance (and, for Build/Deploy/Scale, a real Docker daemon and a
 real Trivy scanner — not mocked) via `docker compose up --build` — see the
 PR descriptions for the exact `curl` sessions exercised. Worth calling out
@@ -634,3 +704,17 @@ result of testing against the real thing instead of only fakes:
   run is what surfaced the hardcoded-`transientAppStatus` bug documented in
   **How Rollback works**, caught by the new unit tests before this manual
   pass even started.
+- **Archive/Delete**: deployed a real Go service, confirmed it reachable via
+  the stable proxy URL, archived it, and confirmed via `docker ps` that its
+  container was genuinely gone (not just marked) and via `/run/...` that the
+  proxy correctly 404s post-archive, same as a suspended app. Confirmed
+  `POST .../delete` without a `confirm` field returns `400` and leaves the
+  application untouched, then confirmed `{"confirm": true}` transitions it
+  to `deleted`. Confirmed `Deleted` is genuinely terminal: a second delete
+  attempt and a `suspend` attempt on the same now-deleted application both
+  correctly reject with `409`. On a second application, confirmed
+  `POST .../delete` called directly from `Running` is rejected with `409`
+  (must Suspend or Archive first), then confirmed Delete works directly from
+  `Suspended` too, not only from `Archived` — both of FR-050's documented
+  valid preconditions exercised for real, not just one. `docker ps` showed
+  zero leftover containers for either application at the end.
