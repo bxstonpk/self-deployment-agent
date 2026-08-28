@@ -1,9 +1,9 @@
-# Platform API — Draft through Scale-to-Zero (State 1–5)
+# Platform API — Draft through Suspend/Resume/Restart (State 1–6)
 
 Go implementation of the Business API, built one Application Lifecycle state
 at a time. Currently covers **Draft**, **Validated**, **Build**,
-**Deploying**, and **Scale-to-Zero** (the ongoing behavior of a `Running`
-application).
+**Deploying**, **Scale-to-Zero** (the ongoing behavior of a `Running`
+application), and **Suspend/Resume/Restart**.
 
 Implements from
 [`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md):
@@ -14,9 +14,10 @@ is honestly reported as **skipped**, not faked — see below);
 `FR-035`, `FR-036`, `FR-037`, `FR-038` (Module I — Build state, real Docker
 builds, not mocked); `FR-039`–`FR-044` (Module J — Deploying state: real
 Trivy image scanning, a real production approval gate, and real container
-start/health-check/traffic-activation); and `FR-051`–`FR-056` (Module L —
+start/health-check/traffic-activation); `FR-051`–`FR-056` (Module L —
 Scale-to-Zero: real idle detection, real cold-start-on-request through a
-stable proxy URL, real event logging — see below). See
+stable proxy URL, real event logging); and `FR-047`, `FR-048` (Module K —
+Suspend/Resume/Restart — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -41,6 +42,9 @@ for how it fits the Control Plane.
 | `POST /deployments/{deploymentId}/approve` | FR-042 | Approve/reject a `pending_approval` production deployment. Owner-only |
 | `GET /applications/{id}/scale-events` | FR-056 | Every scale-up (incl. cold-start) / scale-down (incl. scale-to-zero) event for the app's current deployment |
 | `ANY /run/{appName}/{serviceName}/*` | FR-051–053 | **The public, stable URL for a deployed application.** Not behind platform auth — see below |
+| `POST /applications/{id}/suspend` | FR-047 | `running` → `suspended`: stops every container (not just scale-to-zero-eligible ones), retains config. Owner-only |
+| `POST /applications/{id}/resume` | FR-048 | `suspended` → `running`: restarts non-eligible services immediately; eligible ones stay at zero and cold-start on demand as usual. Owner-only |
+| `POST /applications/{id}/restart` | FR-048 | Recycles currently-running instances in place — same version, fresh containers, no redeploy. Owner-only |
 
 ### How Build works
 
@@ -207,6 +211,66 @@ well beyond this state's scope). `scaling.max` isn't enforced as a real
 ceiling above 1 for the same reason. This is a known simplification, not an
 oversight.
 
+## How Suspend/Resume/Restart works (Module K)
+
+Reuses the `deployments` table rather than a parallel one — `suspended` is
+just a new valid `deployments.status` (migration `0006`). This is why the
+scale-to-zero proxy needs **zero code changes** to correctly refuse a
+suspended application: its existing lookup filters `WHERE status =
+'running'`, so a suspended deployment simply stops being found — verified
+for real (see Test plan): hitting `/run/{app}/{service}/` on a suspended
+app returns a 404, it does not cold-start.
+
+- **Suspend (FR-047)** stops *every* service's container, not just
+  scale-to-zero-eligible ones — a suspended frontend shouldn't keep running
+  just because it was never scale-to-zero-managed. Config, build history,
+  and `service_runtime_state`'s per-service image/port metadata are all
+  retained for Resume.
+- **Resume (FR-048)** only immediately starts services that were *not*
+  scale-to-zero eligible (frontends, or backends with `scaling.min >= 1`)
+  — eligible services correctly stay at zero and cold-start on their next
+  request, exactly like any other idle period. This satisfies "at least
+  `scaling.min` running instances" without special-casing eligible
+  services, since their `min` is 0 by definition. A resume whose health
+  check fails reports the failure and leaves the app `Suspended` rather
+  than silently marking it `Running` (FR-048's alternative flow).
+- **Restart (FR-048)** recycles only services that currently *have* a
+  container — an idle scale-to-zero service has nothing to recycle, so
+  it's left alone. Same image, same port, fresh container id; status and
+  version never change.
+- Deterministic container naming (`platform-run-<deployment>-<service>`,
+  shared with the deploy pipeline and the scale-to-zero proxy) means
+  repeated suspend/resume/restart cycles never accumulate orphaned
+  containers — confirmed via `docker ps` after a full real cycle, not just
+  assumed.
+
+**Two real bugs found while testing this against Docker, both fixed:**
+1. The migration that adds `'suspended'` to `deployments.status`'s CHECK
+   constraint originally looked up the existing constraint by pattern-
+   matching `pg_get_constraintdef()`'s rendered text for `...IN...` —
+   but Postgres actually renders `CHECK (x IN (...))` back as
+   `CHECK ((x = ANY (ARRAY[...])))`, so the pattern never matched, the old
+   constraint was never dropped, and `ADD CONSTRAINT` then failed because
+   the (coincidentally identically-named) old one already existed. Fixed
+   to find the constraint by its actual constrained *column* (joining
+   `pg_constraint`/`pg_attribute`) instead of guessing at rendered SQL
+   text — a real lesson in not trusting a system catalog's pretty-printer
+   to preserve the original syntax.
+2. `Suspend`/`Resume`/`Restart` updated `service_runtime_state` correctly
+   (so routing was always right) but never refreshed
+   `deployments.containers` — the point-in-time snapshot `toDeploymentResponse`
+   serializes. Found by literally reading the API response after a resume
+   and noticing it still showed the pre-suspend `container_id`/`host_port`,
+   which no longer existed. Fixed by adding `UpdateContainers` and calling
+   it from all three operations.
+
+**Known gap, documented not hidden:** FR-047 names a Security Administrator
+force-suspend path (bypassing the owner-initiated flow, e.g. on a policy
+violation) as an alternative flow. There's no distinct Security
+Administrator role to check yet — same recurring RBAC gap as the
+production approval gate, blocked on `DEC-001`/`DEC-002`. Only
+owner-initiated suspend is implemented.
+
 ### Known gap: no retry path out of Failed yet
 
 A failed build moves the application to the `failed` lifecycle state. There
@@ -282,6 +346,16 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   mentions "potentially tunable per resource tier") — today it's one
   platform-wide constant; real tuning needs Module M (Resource Manager),
   not built yet.
+- Security Administrator force-suspend, bypassing owner-initiated Suspend
+  — see **How Suspend/Resume/Restart works**'s known gap.
+- `Archived` and `Deleted` lifecycle states (FR-049, FR-050) — both need
+  Modules N/O/P (Database/Secret/Domain Management) to actually
+  deprovision anything, none of which exist yet. Only the four states
+  reachable without those modules (`Draft` → `Validated` → `Build` →
+  `Deploying`/`Running`, plus `Suspended`) are implemented.
+- Application Owner transfer, co-owner management (FR-016, FR-017) — the
+  data model (`application_owners`, multiple rows per app) already
+  supports it; no endpoints exist yet.
 
 ## Dev-mode auth (temporary — see DEC-001)
 
@@ -355,6 +429,10 @@ scale-to-zero happen without waiting the default 5 minutes, lower
 `docker logs` for `scale sweeper: scaled 1 service(s) to zero` — then hit
 the `/run/...` URL again and watch it cold-start.
 
+`POST /applications/{id}/suspend`, `.../resume`, and `.../restart` need no
+special setup beyond a `Running` application — try hitting `/run/...`
+between suspend and resume to see it correctly 404 instead of cold-starting.
+
 ## Running tests
 
 ```
@@ -372,7 +450,7 @@ against a real Postgres instance (e.g. via `docker compose` in CI), since
 the partial-unique-index and CHECK constraints in the migrations are part
 of the actual correctness guarantees.
 
-All five states have also been manually verified end-to-end against a real
+All six states have also been manually verified end-to-end against a real
 Postgres instance (and, for Build/Deploy/Scale, a real Docker daemon and a
 real Trivy scanner — not mocked) via `docker compose up --build` — see the
 PR descriptions for the exact `curl` sessions exercised. Worth calling out
@@ -415,3 +493,18 @@ result of testing against the real thing instead of only fakes:
   unit test. The full event sequence (`initial_activation` →
   `scaled_to_zero`/`idle_timeout` → `scaled_up`/`cold_start`) was confirmed
   accurate and in order via `GET /applications/{id}/scale-events`.
+- **Suspend/Resume/Restart**: deployed a real Go service with
+  `scaling.min: 1` (deliberately not scale-to-zero eligible, so the test
+  wasn't confounded by the sweeper), confirmed it reachable via the stable
+  proxy URL, suspended it, confirmed via `docker ps` its container was
+  genuinely gone (not just marked), and confirmed the proxy correctly
+  returned a 404 instead of cold-starting it. Resumed it and confirmed
+  traffic was restored — this run is what surfaced both real bugs listed
+  in **How Suspend/Resume/Restart works** (the migration's constraint
+  lookup, and the stale `containers` snapshot; both fixed and re-verified
+  with a second full suspend→resume→restart cycle afterward). Restarted
+  the running app and confirmed a genuinely new container id/port while
+  traffic kept working throughout, and confirmed via `docker ps` that
+  exactly one `platform-run-*` container existed at the end of the whole
+  cycle — no orphaned containers accumulated across suspend, resume, and
+  restart.

@@ -91,6 +91,29 @@ func (r *ServiceRuntimeStateRepo) TouchActive(ctx context.Context, deploymentID,
 	return nil
 }
 
+// ListForDeployment returns every service's state for a deployment
+// regardless of eligibility — Suspend/Resume/Restart act on all services.
+func (r *ServiceRuntimeStateRepo) ListForDeployment(ctx context.Context, deploymentID string) ([]domain.ServiceRuntimeState, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+serviceRuntimeStateColumns+`
+		FROM service_runtime_state WHERE deployment_id = $1
+	`, deploymentID)
+	if err != nil {
+		return nil, fmt.Errorf("list services for deployment: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.ServiceRuntimeState
+	for rows.Next() {
+		s, err := scanServiceRuntimeStateRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan service runtime state row: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // ListEligibleActive returns every eligible service currently running a
 // container (candidates for the idle sweep) — filtered further by
 // last_active_at in the caller, since "idle threshold" is a Duration the

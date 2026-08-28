@@ -86,6 +86,13 @@ func (f *fakeDeploymentRepo) SetRunning(ctx context.Context, deploymentID string
 	return d, nil
 }
 
+func (f *fakeDeploymentRepo) UpdateContainers(ctx context.Context, deploymentID string, containers map[string]domain.RunningContainer) (domain.Deployment, error) {
+	d := f.byID[deploymentID]
+	d.Containers = containers
+	f.byID[deploymentID] = d
+	return d, nil
+}
+
 func (f *fakeDeploymentRepo) SetSuperseded(ctx context.Context, deploymentID string) (domain.Deployment, error) {
 	d := f.byID[deploymentID]
 	d.Status = domain.DeploymentSuperseded

@@ -70,6 +70,7 @@ func main() {
 	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine)
 	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime)
 	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService)
+	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
@@ -81,6 +82,7 @@ func main() {
 		Deploys:       httpapi.NewDeployHandler(deployService),
 		ScaleEvents:   httpapi.NewScaleEventsHandler(deployService, scaleService),
 		Proxy:         httpapi.NewProxyHandler(scaleService),
+		Lifecycle:     httpapi.NewLifecycleHandler(lifecycleService),
 		PlatformEnv:   cfg.PlatformEnv,
 	})
 
