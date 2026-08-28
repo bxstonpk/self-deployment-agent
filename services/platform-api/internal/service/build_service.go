@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -83,12 +84,32 @@ func (s *BuildService) requireOwner(ctx context.Context, applicationID, userID s
 	return domain.ErrUnauthorized
 }
 
-// TriggerBuild implements FR-035: only callable on a Validated application,
-// with no build already queued/in-progress (FR-036's attributability
-// business rule, enforced first in code here and again by the DB's partial
-// unique index as a safety net — see migration 0003). On completion the
-// application moves to Build (success) or Failed (failure); a failed build
-// is a normal, fully-reported outcome (FR-038), not an error return.
+// TriggerBuild implements FR-035: callable on a Validated application (the
+// first-ever build), or on a Running/Failed one — a *rebuild* of new source
+// code for an application that's already live, with no build already
+// queued/in-progress (FR-036's attributability business rule, enforced
+// first in code here and again by the DB's partial unique index as a
+// safety net — see migration 0003).
+//
+// Allowing Running/Failed here closes a real gap found while building the
+// MCP server (services/mcp-server): deploy_application (MCP Section 13.6)
+// is specced to trigger Build -> Image Scan -> Deploy as one pipeline, but
+// there was previously no way to build a SECOND version for an
+// already-`running` application at all — not even directly, only for the
+// very first build. This mirrors deploy_service.go's InitiateDeploy, which
+// already allows redeploying while Running; a rebuild is the same kind of
+// operation one step earlier in the pipeline.
+//
+// On completion the application moves to Build (success — the SAME
+// transient status a first-ever build uses; a previously-Running
+// application's earlier deployment is untouched and still serving traffic
+// until a subsequent deploy_application/InitiateDeploy call activates the
+// new build, exactly like "Deploying" doesn't mean traffic is already
+// down) or, on failure, back to whatever it was before (FR-044's same
+// "a failed attempt must not take down an already-good version" principle,
+// applied one step earlier than InitiateDeploy's own version of it — a
+// failed BUILD never touches running infrastructure at all, so there's
+// even less reason to move a Running application to Failed over it).
 func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requesterID string, sourceArchive []byte) (domain.Build, error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
@@ -97,7 +118,8 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
 		return domain.Build{}, err
 	}
-	if app.LifecycleStatus != domain.StatusValidated {
+	fromStatus := app.LifecycleStatus
+	if fromStatus != domain.StatusValidated && fromStatus != domain.StatusRunning && fromStatus != domain.StatusFailed {
 		return domain.Build{}, domain.ErrNotValidated
 	}
 	if len(sourceArchive) == 0 {
@@ -138,7 +160,7 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 	if err != nil {
 		return domain.Build{}, err
 	}
-	if _, err := s.apps.UpdateLifecycleStatus(ctx, applicationID, domain.StatusValidated, domain.StatusBuild, false); err != nil {
+	if _, err := s.apps.UpdateLifecycleStatus(ctx, applicationID, fromStatus, domain.StatusBuild, false); err != nil {
 		return domain.Build{}, err
 	}
 	build, err = s.builds.MarkInProgress(ctx, build.ID)
@@ -155,11 +177,40 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 		if errors.As(buildErr, &bf) {
 			category = bf.Category
 		}
-		build, err = s.builds.MarkFailed(ctx, build.ID, category, buildErr.Error())
+		// Recording the failure must not itself be cancellable by the
+		// same signal that caused the failure — a slow build whose caller
+		// disconnects/times out cancels `ctx`, and `s.engine.Build` above
+		// returns an error as a direct result of that cancellation. Using
+		// the still-cancelled `ctx` for this cleanup write would then make
+		// THIS write fail too, leaving the build stuck `in_progress`
+		// forever and the application stuck at `Build` — unrecoverable
+		// through the API, since neither TriggerBuild nor anything else
+		// accepts `Build` as a valid starting state. Found for real: a
+		// client-side timeout during a genuinely slow (not hung) rebuild
+		// produced exactly this stuck state, confirmed via direct
+		// inspection (`builds.status = 'in_progress'`, no `completed_at`,
+		// `applications.lifecycle_status = 'build'`). detachedCtx keeps
+		// this write's identity/values but survives the parent's
+		// cancellation, with its own bounded timeout so a genuinely dead
+		// database doesn't hang forever either.
+		detachedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+
+		build, err = s.builds.MarkFailed(detachedCtx, build.ID, category, buildErr.Error())
 		if err != nil {
 			return domain.Build{}, err
 		}
-		if _, err := s.apps.UpdateLifecycleStatus(ctx, applicationID, domain.StatusBuild, domain.StatusFailed, false); err != nil {
+		// A failed build never touches running infrastructure — if the
+		// application was already Running (this was a rebuild attempt, not
+		// the first build), its still-live previous deployment is entirely
+		// unaffected, so there's no reason to move it to Failed. Only a
+		// first-ever build (fromStatus == Validated) or a rebuild attempted
+		// while already Failed has nothing good to fall back to.
+		target := domain.StatusFailed
+		if fromStatus == domain.StatusRunning {
+			target = domain.StatusRunning
+		}
+		if _, err := s.apps.UpdateLifecycleStatus(detachedCtx, applicationID, domain.StatusBuild, target, false); err != nil {
 			return domain.Build{}, err
 		}
 		return build, nil

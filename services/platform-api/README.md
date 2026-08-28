@@ -105,6 +105,44 @@ testing (a base-image registry pull timeout was originally reported as
 `source`, blaming the employee for a network blip) and fixed — see
 `classifyBuildError` in `internal/buildengine/docker.go`.
 
+**`TriggerBuild` accepts `Validated` (first build), or `Running`/`Failed`
+(a rebuild)** — not just `Validated`. This closes a real gap found while
+building `../mcp-server`: `deploy_application`'s MCP spec assumes Build
+happens invisibly as the first stage of its own pipeline, but there was
+previously no way to build a *second* version for an already-`running`
+application at all, through the API or otherwise. Mirrors
+`deploy_service.go`'s `InitiateDeploy`, which already allows redeploying
+while `Running` — a rebuild is the same category of operation one step
+earlier. A failed rebuild attempt leaves a previously-`running`
+application exactly as it was (a failed *build* never touches running
+infrastructure in the first place, so there's even less reason to move it
+to `Failed` than a failed redeploy has); only a first-ever build or a
+retry from `Failed` has nothing good to fall back to.
+
+**A real concurrency/robustness bug found and fixed alongside that
+change:** the failure-cleanup path (`MarkFailed` + reverting the
+application's status) used the same request-scoped `context.Context` as
+the build attempt itself. A client that disconnects or times out during a
+genuinely slow (not hung) build cancels that context — which is *why*
+`s.engine.Build` returns an error in the first place — but the cleanup
+write meant to *record* that failure then used the same already-cancelled
+context too, so it failed as well. Confirmed for real: a client-side
+timeout during manual verification left a `builds` row stuck
+`in_progress` forever (no `completed_at`) and the application stuck at
+`lifecycle_status = 'build'` — a status nothing else accepts as a valid
+starting point, making the application permanently unrecoverable through
+the API. Fixed by giving the cleanup write its own
+`context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)` — it
+keeps the parent context's values but survives the parent's cancellation,
+with its own bound so a genuinely dead database doesn't hang forever
+either. The identical pattern was found and fixed in
+`deploy_service.go`'s `markDeploymentFailedFrom` too (health checks alone
+can take up to 15s, the same failure mode applies). The same category of
+bug likely exists in other failure/cleanup paths across this codebase that
+weren't specifically exercised by a slow-enough operation during
+verification — worth an audit, not something this fix claims to have
+swept comprehensively.
+
 ## How Deploy works (Module J)
 
 `POST /applications/{id}/deploy` — body `{"environment": "dev"}` (or
@@ -459,18 +497,6 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   catalog only tracks active/deprecated/blocked per whole runtime name, not
   per version range yet.
 - Retry path out of `failed` — see **Known gap** above (Build section).
-- No way to trigger a *new* build once an application is `running` —
-  `POST .../build` only accepts `validated` as its source state (found for
-  real while manually verifying Rollback: getting a genuine second version
-  deployed required inserting a `builds` row directly, since there's no API
-  path from `running` back through Build for an already-live application).
-  This is a real gap in Module G/I, not Module V — an employee/agent
-  presumably needs to re-save/re-validate `deployment.yaml` to loop back to
-  `validated` for iteration, but `PUT .../deployment-yaml` also only accepts
-  `draft`/`validated` as source states, same restriction as the Failed-retry
-  gap above. A future increment should let a `running` application cycle
-  back to `draft` deliberately (distinct from FR-044's automatic in-flight
-  failure handling, which must *not* touch a `running` app).
 - Build/deploy status streaming/notifications (FR-036/FR-043 alternative
   flows) — status is poll-only for now; both the build and the deploy
   pipeline also run synchronously within the triggering HTTP request rather

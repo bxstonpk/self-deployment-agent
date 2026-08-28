@@ -84,3 +84,32 @@ async def test_list_departments_normalizes_go_pascal_case_keys():
     assert departments == [
         {"id": "d1", "name": "Engineering", "cost_center_code": "ENG-01", "status": "active"}
     ]
+
+
+async def test_trigger_build_sends_raw_bytes_with_gzip_content_type():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["content_type"] = request.headers.get("content-type")
+        seen["body"] = request.content
+        seen["dev_email"] = request.headers.get("x-dev-user-email")
+        return httpx.Response(200, json={"id": "b1", "status": "succeeded"})
+
+    client = _client_with_transport(handler)
+    result = await client.trigger_build("app-1", b"raw-tar-gz-bytes")
+    assert seen["content_type"] == "application/gzip"
+    assert seen["body"] == b"raw-tar-gz-bytes"
+    assert seen["dev_email"] == "alice@example.com"  # dev-auth headers still attached
+    assert result["status"] == "succeeded"
+
+
+async def test_trigger_build_failure_is_a_normal_200_response_not_a_toolerror():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"id": "b1", "status": "failed", "error_category": "source", "error_detail": "boom"}
+        )
+
+    client = _client_with_transport(handler)
+    result = await client.trigger_build("app-1", b"bytes")
+    assert result["status"] == "failed"
+    assert result["error_category"] == "source"

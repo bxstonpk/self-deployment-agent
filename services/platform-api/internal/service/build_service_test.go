@@ -212,6 +212,91 @@ func TestTriggerBuild_EmptyArchive_Rejected(t *testing.T) {
 	}
 }
 
+func TestTriggerBuild_FromRunning_RebuildSucceeds(t *testing.T) {
+	app := validatedApp("app-1", "overtime")
+	app.LifecycleStatus = domain.StatusRunning
+	svc, lifecycle, _, engine := newBuildService(app, "owner-1")
+
+	build, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("v2-archive"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if build.Status != domain.BuildSucceeded {
+		t.Errorf("expected build to succeed, got %q", build.Status)
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusBuild {
+		t.Errorf("expected application lifecycle status Build (ready to deploy), got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+	if !engine.called {
+		t.Error("expected the build engine to be invoked for the rebuild")
+	}
+}
+
+func TestTriggerBuild_FromRunning_FailedRebuildLeavesApplicationRunning(t *testing.T) {
+	app := validatedApp("app-1", "overtime")
+	app.LifecycleStatus = domain.StatusRunning
+	svc, lifecycle, _, engine := newBuildService(app, "owner-1")
+	engine.err = &domain.BuildFailure{Category: domain.ErrorCategorySource, Service: "frontend", Detail: "npm install failed"}
+
+	build, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("v2-archive"))
+	if err != nil {
+		t.Fatalf("a failed build is a normal outcome, expected nil error, got: %v", err)
+	}
+	if build.Status != domain.BuildFailed {
+		t.Errorf("expected build status Failed, got %q", build.Status)
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusRunning {
+		t.Errorf("FR-044-style guarantee: a failed rebuild must not take down the currently Running version, got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+}
+
+func TestTriggerBuild_FromFailed_RebuildSucceeds(t *testing.T) {
+	app := validatedApp("app-1", "overtime")
+	app.LifecycleStatus = domain.StatusFailed
+	svc, lifecycle, _, _ := newBuildService(app, "owner-1")
+
+	build, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("retry-archive"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if build.Status != domain.BuildSucceeded {
+		t.Errorf("expected build to succeed, got %q", build.Status)
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusBuild {
+		t.Errorf("expected application lifecycle status Build, got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+}
+
+func TestTriggerBuild_FromFailed_FailedRebuildLeavesApplicationFailed(t *testing.T) {
+	app := validatedApp("app-1", "overtime")
+	app.LifecycleStatus = domain.StatusFailed
+	svc, lifecycle, _, engine := newBuildService(app, "owner-1")
+	engine.err = &domain.BuildFailure{Category: domain.ErrorCategorySource, Service: "frontend", Detail: "npm install failed"}
+
+	_, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("retry-archive"))
+	if err != nil {
+		t.Fatalf("a failed build is a normal outcome, expected nil error, got: %v", err)
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusFailed {
+		t.Errorf("expected application to remain Failed — there was no good version to protect, got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+}
+
+func TestTriggerBuild_FromDraftOrBuildOrSuspended_StillRejected(t *testing.T) {
+	for _, status := range []domain.LifecycleStatus{domain.StatusDraft, domain.StatusBuild, domain.StatusSuspended, domain.StatusArchived, domain.StatusDeleted} {
+		t.Run(string(status), func(t *testing.T) {
+			app := validatedApp("app-1", "overtime")
+			app.LifecycleStatus = status
+			svc, _, _, _ := newBuildService(app, "owner-1")
+
+			_, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("archive"))
+			if !errors.Is(err, domain.ErrNotValidated) {
+				t.Errorf("expected ErrNotValidated from status %q, got %v", status, err)
+			}
+		})
+	}
+}
+
 func TestTriggerBuild_UnsupportedOrBlockedRuntime_Rejected(t *testing.T) {
 	app := validatedApp("app-1", "overtime")
 	app.DeploymentYAMLDraft = `

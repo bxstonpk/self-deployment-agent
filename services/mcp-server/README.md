@@ -29,7 +29,7 @@ something this server works around by dropping one):
 | `get_deployment_requirements` | 13.3 | `GET /applications/{id}` (optional), `GET /supported-stacks` | `deployment_yaml` shape is hand-encoded, not served as data anywhere — see **Known gaps** |
 | `create_application` | 13.4 | `GET /departments`, `POST /applications`, `PUT .../deployment-yaml` | Resolves a department **name** to the UUID `POST /applications` needs |
 | `validate_application` | 13.5 | `PUT .../deployment-yaml` (optional), `POST .../validate` | A failed validation is `status: success` with `passed: false` findings — not a transport error |
-| `deploy_application` | 13.6 | `POST .../deploy` | Requires an existing successful build — see **Known gaps**, this is the big one |
+| `deploy_application` | 13.6 | `POST .../build` (if `source_archive_base64` given), `POST .../deploy` | Builds first when given source — see **How deploy_application closes the build gap** |
 | `get_application_status` | 13.7 | `GET /applications/{id}`, `GET .../deployments/latest` | |
 | `get_deployment_status` | 13.8 | `GET /deployments/{id}` | New Platform API endpoint added in this PR — see below |
 | `get_application_logs` | 13.9 | *(none)* | Always a clear `INTERNAL_ERROR` — Module S doesn't exist |
@@ -126,6 +126,55 @@ Section 13's tool boundary is coarser than the Business API's:
   never trigger deletion" — as a real check in addition to, not instead
   of, the Platform API's own `confirm: true` boolean.
 
+### How `deploy_application` closes the build gap
+
+Section 13.6 frames deployment as triggering "Build -> Image Scan ->
+Deploy -> Health Check -> Traffic Activation" as one pipeline, but this
+Platform API kept Build as a separate step requiring a source-archive
+upload — and uploading source wasn't (and still isn't) a field in 13.6's
+declared input shape, nor one of the 13 tools on its own. Rather than add
+a 14th tool (Section 1 is explicit that a capability not expressible as
+one of the fixed tool set is out of scope for the MCP, not a gap to fill
+with a lower-level tool), `deploy_application` gained an **optional**
+`source_archive_base64` parameter: a base64-encoded `tar.gz`, same
+top-level-directory-per-service convention `platform-api`'s direct
+`POST /applications/{id}/build` endpoint already uses. When given, this
+tool calls `trigger_build` first and only proceeds to deploy if it
+succeeded; a `source`-category build failure (compiler/dependency error)
+comes back as `VALIDATION_ERROR` with the actual build output, a
+`platform`-category one as `INTERNAL_ERROR` — mirroring FR-038's
+source-vs-platform distinction rather than collapsing both into one
+generic failure.
+
+This also required a real Platform API change:
+`build_service.go`'s `TriggerBuild` used to only accept a `Validated`
+application (the first-ever build). It now accepts `Running`/`Failed`
+too — a *rebuild* of new source for an application that's already live —
+mirroring how `InitiateDeploy` already allows redeploying while `Running`.
+Without that change, this parameter would only ever work for an
+application's very first deploy; every subsequent `deploy_application`
+call with new source on an already-`running` application would still hit
+the same wall. Verified for real (see below): a v1 built-and-deployed via
+one `deploy_application` call, then a v2 with different source deployed
+via a *second* `deploy_application` call on the same, already-`running`
+application — genuinely rebuilding and redeploying, not a workaround.
+
+**A real concurrency/robustness bug found and fixed alongside this
+change**, in `platform-api` (see its own README for the full account):
+the failure-cleanup write for a failed build used the same
+request-scoped context as the build attempt itself, so a client
+disconnect/timeout during a genuinely slow (not hung) build could leave
+the build stuck `in_progress` and the application stuck at
+`lifecycle_status = 'build'` — a status nothing accepts as a valid
+starting point, permanently unrecoverable through the API. Confirmed for
+real during this server's own manual verification: an early attempt at
+the v2-rebuild check above tripped a client-side timeout and produced
+exactly that stuck state. Fixed on the `platform-api` side, and this
+server's own default `PLATFORM_API_TIMEOUT_SECONDS` was raised from 30s
+to 120s to match how long a real `docker build` can legitimately take
+under load, rather than disconnecting prematurely on a merely-slow
+operation in the first place.
+
 ## Known gaps (documented, not hidden)
 
 Several of these mirror gaps already documented in
@@ -133,19 +182,6 @@ Several of these mirror gaps already documented in
 logging, and monitoring don't exist on the Go side either, so nothing here
 can paper over them.
 
-- **`deploy_application` cannot trigger a build.** Section 13.6 frames
-  deployment as triggering "Build -> Image Scan -> Deploy -> Health Check
-  -> Traffic Activation" as one pipeline. This Platform API keeps Build as
-  a separate step requiring a **source-archive upload**
-  (`POST /applications/{id}/build`) — and uploading source isn't one of
-  the 13 tools, nor does 13.6's input shape have a field for it. Calling
-  `deploy_application` with no successful build returns a `VALIDATION_ERROR`
-  with a message explaining exactly this, not a generic "not validated."
-  This is the single biggest gap in the AI-agent path as currently scoped
-  — an employee/agent cannot get from source code to a running application
-  through the MCP alone; building still requires direct Platform API/console
-  access. Confirmed for real during manual verification (see below), not
-  just reasoned about.
 - **Dev-mode identity, not real MCP session tokens** (`config.py`,
   `platform_client.py`). Section 3 wants a short-lived, per-call,
   revocable, IdP-backed token; `DEC-003` (the mechanism) is still Open, the
@@ -287,22 +323,27 @@ MCP stdio protocol (not calling Python functions directly):
    with `VALIDATION_ERROR` before any Platform API mutation.
 4. `create_application` (real), `validate_application` (real, `passed:
    true`) for a real Go "hello world" service.
-5. Builds v1 via **direct HTTP** (the documented build gap — deliberately
-   not through the MCP), then `deploy_application` — confirmed `running`,
-   confirmed `get_application_status` reports a live URL, confirmed
-   `get_deployment_status` reports `COMPLETED`.
-6. `restart_application` — confirmed `COMPLETED`.
+5. `deploy_application` with `source_archive_base64` set to a real Go
+   "hello world" service — builds **and** deploys v1 in one MCP call,
+   confirmed `running`, confirmed `get_application_status` reports a live
+   URL whose actual HTTP response is v1's text (not just a status field),
+   confirmed `get_deployment_status` reports `COMPLETED` with a real
+   `updated_at` (previously always `null` — see **How
+   `deploy_application` closes the build gap**).
+6. `restart_application` — confirmed `COMPLETED` with a real
+   `restarted_at` (same previously-`null` bug, same fix).
 7. `get_application_logs`/`get_application_metrics` — confirmed both
    return the honest Module-S/Module-T-doesn't-exist `INTERNAL_ERROR`,
    not a crash or a fabricated empty result.
-8. Confirms the build gap again via direct HTTP even once `running`
-   (`not_validated`) — the same wall `deploy_application`'s error message
-   describes.
-9. Builds a real v2 image (`docker build`), inserts its build record
-   directly (simulating the second Build-state run that's unreachable
-   through the MCP path — same technique used to verify
-   `platform-api`'s own Rollback PR), then `deploy_application` again —
-   confirmed the live URL's actual HTTP response changed to v2's text.
+8. `deploy_application` again, different source, **same already-`running`
+   application** — a genuine rebuild-and-redeploy of v2, confirmed the
+   live URL's actual HTTP response changed to v2's text. This is the
+   closed gap exercised directly, not a workaround around it.
+9. `deploy_application` a third time with deliberately broken Go source —
+   confirmed rejected as `VALIDATION_ERROR` carrying the real compiler
+   error, confirmed the application stayed `running` and traffic kept
+   serving v2's response throughout (a failed rebuild attempt never
+   touches the still-live previous version).
 10. `rollback_application` with `target_version="previous"` — confirmed
     it resolved to v1's actual deployment id (not a guess), confirmed the
     live URL's response flipped back to v1's text.
@@ -314,6 +355,8 @@ MCP stdio protocol (not calling Python functions directly):
 
 Every one of the 13 tools was exercised for real in this run — including
 both the two that will never succeed (`get_application_logs`,
-`get_application_metrics`) and the one whose main success path always
-requires a workaround today (`deploy_application`'s missing build step) —
-not just the ones that were easy to make pass.
+`get_application_metrics`) — not just the ones that were easy to make
+pass. The first full run of this exact script is also what surfaced the
+context-cancellation bug described above: it failed partway through step
+8 with a stuck build, which is what led to finding and fixing the root
+cause rather than just retrying past it.

@@ -8,18 +8,18 @@ run manually:
     cd services/mcp-server
     python scripts/e2e_verify.py
 
-Requires: a source archive already built for the app being deployed (see
-this script's own BUILD step, which — same documented gap as
-tools/deployment.py's _NO_BUILD_MESSAGE — goes around the MCP layer via
-direct HTTP, since building isn't one of the 12 MCP tools).
+Exercises deploy_application's source_archive_base64 path end to end,
+including a REBUILD of a running application (a real gap that used to make
+this impossible through the MCP, closed alongside this script) — not a
+workaround, this is the actual intended path now.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -44,85 +44,26 @@ def _check(cond: bool, msg: str) -> None:
     print(f"OK: {msg}")
 
 
-async def _build_via_direct_http(app_id: str, source: str) -> None:
-    """Bypasses the MCP layer on purpose — see this module's doc comment."""
+def _source_archive_base64(main_go_body: str) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         api_dir = Path(tmp) / "api"
         api_dir.mkdir()
-        (api_dir / "main.go").write_text(source)
+        (api_dir / "main.go").write_text(main_go_body)
         (api_dir / "go.mod").write_text("module mcptest\n\ngo 1.25\n")
         archive_path = Path(tmp) / "src.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(api_dir, arcname="api")
-
-        async with httpx.AsyncClient(timeout=120) as http:
-            resp = await http.post(
-                f"{PLATFORM_API_BASE_URL}/applications/{app_id}/build",
-                headers={
-                    "X-Dev-User-Email": EMPLOYEE_EMAIL,
-                    "Content-Type": "application/gzip",
-                },
-                content=archive_path.read_bytes(),
-            )
-        body = resp.json()
-        _check(resp.status_code == 200 and body.get("status") == "succeeded", f"direct build succeeded: {body}")
+        return base64.b64encode(archive_path.read_bytes()).decode()
 
 
-def _insert_v2_build_row(app_id: str, employee_user_id: str, image_ref: str) -> str:
-    """Simulates a second Build-state run the way the equivalent Go
-    verification for the Rollback PR did: inserts a `builds` row directly
-    via psql. This is a STAND-IN for the real gap documented in
-    tools/deployment.py's module doc (deploy_application requires an
-    existing successful build, and there's no MCP-reachable way to trigger
-    one for an already-`running` application) — not something an actual
-    employee/agent could do, only how this script exercises
-    rollback_application against two genuinely different real deployments.
-    """
-    out = subprocess.run(
-        [
-            "docker", "exec", "self-deployment_agent-postgres-1",
-            "psql", "-U", "postgres", "-d", "platform", "-t", "-c",
-            (
-                "INSERT INTO builds (application_id, triggered_by, status, image_refs, started_at, completed_at) "
-                f"VALUES ('{app_id}', '{employee_user_id}', 'succeeded', "
-                f"'{{\"api\": \"{image_ref}\"}}'::jsonb, now(), now()) RETURNING id;"
-            ),
-        ],
-        capture_output=True, text=True, check=True,
-    )
-    build_id = out.stdout.strip()
-    _check(bool(build_id), f"inserted v2 build row: {build_id}")
-    return build_id
-
-
-def _lookup_employee_user_id() -> str:
-    out = subprocess.run(
-        [
-            "docker", "exec", "self-deployment_agent-postgres-1",
-            "psql", "-U", "postgres", "-d", "platform", "-t", "-c",
-            f"SELECT id FROM users WHERE email = '{EMPLOYEE_EMAIL}';",
-        ],
-        capture_output=True, text=True, check=True,
-    )
-    return out.stdout.strip()
-
-
-def _docker_build_v2_image(image_ref: str) -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        api_dir = Path(tmp)
-        (api_dir / "main.go").write_text(
-            'package main\n\nimport (\n\t"fmt"\n\t"net/http"\n)\n\nfunc main() {\n'
-            '\thttp.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {\n'
-            '\t\tfmt.Fprintln(w, "hello from mcptest v2")\n\t})\n'
-            '\thttp.ListenAndServe(":8080", nil)\n}\n'
-        )
-        (api_dir / "go.mod").write_text("module mcptest\n\ngo 1.25\n")
-        (api_dir / "Dockerfile").write_text(
-            "FROM golang:1.25-alpine AS build\nWORKDIR /src\nCOPY . .\n"
-            "RUN go build -o /out/app .\n\nFROM alpine:3.21\n"
-            "COPY --from=build /out/app /app\nEXPOSE 8080\nCMD [\"/app\"]\n"
-        )
-        subprocess.run(["docker", "build", "-t", image_ref, str(api_dir)], check=True)
+_V1_SOURCE = (
+    'package main\n\nimport (\n\t"fmt"\n\t"net/http"\n)\n\nfunc main() {\n'
+    '\thttp.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {\n'
+    '\t\tfmt.Fprintln(w, "hello from mcptest v1")\n\t})\n'
+    '\thttp.ListenAndServe(":8080", nil)\n}\n'
+)
+_V2_SOURCE = _V1_SOURCE.replace("v1", "v2")
+_BROKEN_SOURCE = "package main\n\nthis is not valid go at all\n"
 
 
 def _print_result(label: str, result) -> dict:
@@ -204,16 +145,19 @@ async def main() -> None:
             _check(validated["data"]["validation_result"]["passed"] is True, "validate_application passed")
             _check(validated["data"]["lifecycle_state"] == "validated", "application moved to validated")
 
-            print("--- building v1 via direct HTTP (documented gap: no MCP build tool) ---")
-            await _build_via_direct_http(app_id, 'package main\n\nimport (\n\t"fmt"\n\t"net/http"\n)\n\nfunc main() {\n\thttp.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {\n\t\tfmt.Fprintln(w, "hello from mcptest v1")\n\t})\n\thttp.ListenAndServe(":8080", nil)\n}\n')
-
+            print("--- deploying v1: build + deploy in ONE MCP call via source_archive_base64 (the closed gap) ---")
             deployed = _print_result(
-                "deploy_application (v1, dev)",
+                "deploy_application (v1, dev, with source)",
                 await session.call_tool(
-                    "deploy_application", {"application_id": app_id, "target_environment": "dev"}
+                    "deploy_application",
+                    {
+                        "application_id": app_id,
+                        "target_environment": "dev",
+                        "source_archive_base64": _source_archive_base64(_V1_SOURCE),
+                    },
                 ),
             )
-            _check(deployed["status"] == "success" and deployed["data"]["status"] == "running", "v1 deployed and running")
+            _check(deployed["status"] == "success" and deployed["data"]["status"] == "running", "v1 built and deployed via a single MCP call")
             v1_deployment_id = deployed["data"]["deployment_id"]
 
             status = _print_result(
@@ -221,16 +165,21 @@ async def main() -> None:
             )
             _check(status["data"]["current_lifecycle_state"] == "running", "application status reports running")
             _check(bool(status["data"]["url"]), "application status reports a live URL")
+            async with httpx.AsyncClient(timeout=10) as http:
+                live_v1 = await http.get(status["data"]["url"])
+            _check("v1" in live_v1.text, f"live traffic serves v1's response: {live_v1.text.strip()!r}")
 
             dep_status = _print_result(
                 "get_deployment_status", await session.call_tool("get_deployment_status", {"deployment_id": v1_deployment_id})
             )
             _check(dep_status["data"]["phase"] == "COMPLETED", "deployment status phase is COMPLETED")
+            _check(bool(dep_status["data"]["updated_at"]), "deployment status reports a real updated_at (was always null before this fix)")
 
             restarted = _print_result(
                 "restart_application", await session.call_tool("restart_application", {"application_id": app_id})
             )
             _check(restarted["data"]["status"] == "COMPLETED", "restart_application completed")
+            _check(bool(restarted["data"]["restarted_at"]), "restart_application reports a real restarted_at (was always null before this fix)")
 
             logs = _print_result(
                 "get_application_logs (expected honest not-implemented error)",
@@ -244,36 +193,51 @@ async def main() -> None:
             )
             _check(metrics["status"] == "error" and "Module T" in metrics["error"]["message"], "metrics tool honestly reports Module T doesn't exist")
 
-            print("--- confirming the documented gap: build is unreachable via direct HTTP once running too ---")
-            async with httpx.AsyncClient(timeout=30) as http:
-                resp = await http.post(
-                    f"{PLATFORM_API_BASE_URL}/applications/{app_id}/build",
-                    headers={"X-Dev-User-Email": EMPLOYEE_EMAIL},
-                )
-            _check(resp.status_code != 200, "build correctly rejected once running (not_validated) — matches deploy_application's documented gap")
-
-            print("--- exercising rollback_application for real: v2 build (docker build) + deploy via MCP + rollback via MCP ---")
-            image_ref = "platform-build/mcptest-api:v2-e2e"
-            _docker_build_v2_image(image_ref)
-            employee_user_id = _lookup_employee_user_id()
-            _check(bool(employee_user_id), f"looked up employee user id: {employee_user_id}")
-            _insert_v2_build_row(app_id, employee_user_id, image_ref)
-
-            v2 = _print_result(
-                "deploy_application (v2, dev)",
+            print("--- deploying v2: REBUILD of an already-`running` application via the SAME MCP call shape ---")
+            print("--- (this used to be entirely impossible - Build required Validated - now fixed at the source) ---")
+            deployed_v2 = _print_result(
+                "deploy_application (v2, dev, with source, app already running)",
                 await session.call_tool(
-                    "deploy_application", {"application_id": app_id, "target_environment": "dev"}
+                    "deploy_application",
+                    {
+                        "application_id": app_id,
+                        "target_environment": "dev",
+                        "source_archive_base64": _source_archive_base64(_V2_SOURCE),
+                    },
                 ),
             )
-            _check(v2["status"] == "success" and v2["data"]["status"] == "running", "v2 deployed and running")
+            _check(deployed_v2["status"] == "success" and deployed_v2["data"]["status"] == "running", "v2 rebuilt and deployed via MCP while app was already running")
 
-            status_url = _print_result(
+            status_v2 = _print_result(
                 "get_application_status (v2 live)",
                 await session.call_tool("get_application_status", {"application_id": app_id}),
             )
             async with httpx.AsyncClient(timeout=10) as http:
-                live = await http.get(status_url["data"]["url"])
-            _check("v2" in live.text, f"live traffic serves v2's response: {live.text.strip()!r}")
+                live_v2 = await http.get(status_v2["data"]["url"])
+            _check("v2" in live_v2.text, f"live traffic serves v2's response: {live_v2.text.strip()!r}")
+
+            print("--- source-category build failure: broken Go source rejected as VALIDATION_ERROR, not a crash ---")
+            broken = _print_result(
+                "deploy_application (broken source -> VALIDATION_ERROR)",
+                await session.call_tool(
+                    "deploy_application",
+                    {
+                        "application_id": app_id,
+                        "target_environment": "dev",
+                        "source_archive_base64": _source_archive_base64(_BROKEN_SOURCE),
+                    },
+                ),
+            )
+            _check(broken["status"] == "error" and broken["error"]["code"] == "VALIDATION_ERROR", "broken source rejected as VALIDATION_ERROR (source-category build failure)")
+
+            status_after_broken = _print_result(
+                "get_application_status (after failed rebuild attempt)",
+                await session.call_tool("get_application_status", {"application_id": app_id}),
+            )
+            _check(status_after_broken["data"]["current_lifecycle_state"] == "running", "app stays Running after a failed rebuild attempt — v2 untouched")
+            async with httpx.AsyncClient(timeout=10) as http:
+                live_after_broken = await http.get(status_after_broken["data"]["url"])
+            _check("v2" in live_after_broken.text, "traffic still serves v2 — the failed rebuild attempt never touched it")
 
             rolled_back = _print_result(
                 "rollback_application (target_version='previous')",

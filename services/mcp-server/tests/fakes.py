@@ -24,6 +24,9 @@ class FakePlatformClient:
         ]
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self._clock = 0
+        # Overridable per-test: what trigger_build returns next. Defaults
+        # to a successful build.
+        self.next_build_result: dict[str, Any] = {"status": "succeeded", "image_refs": {"api": "platform-build/x:1"}}
 
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -65,6 +68,10 @@ class FakePlatformClient:
         if not app:
             raise ToolError(ErrorCode.NOT_FOUND, "application not found")
         return dict(app)
+
+    async def trigger_build(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        self._record("trigger_build", application_id, source_archive)
+        return dict(self.next_build_result)
 
     async def save_deployment_yaml(self, application_id: str, deployment_yaml: str) -> dict[str, Any]:
         self._record("save_deployment_yaml", application_id, deployment_yaml)

@@ -132,18 +132,26 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
         application_id: str,
         target_environment: str,
         version_reference: str | None = None,
+        source_archive_base64: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         params = {
             "application_id": application_id,
             "target_environment": target_environment,
             "version_reference": version_reference,
+            "source_archive_base64": source_archive_base64,
             "idempotency_key": idempotency_key,
         }
         return await _run_tool(
             audit("deploy_application", params, application_id),
             deployment.deploy_application(
-                client, idempotency, application_id, target_environment, version_reference, idempotency_key
+                client,
+                idempotency,
+                application_id,
+                target_environment,
+                version_reference,
+                source_archive_base64,
+                idempotency_key,
             ),
         )
 
