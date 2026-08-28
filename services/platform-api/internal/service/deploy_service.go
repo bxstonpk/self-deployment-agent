@@ -389,6 +389,14 @@ func (s *DeploymentService) LatestDeployment(ctx context.Context, applicationID 
 	return s.deployments.LatestForApplication(ctx, applicationID)
 }
 
+// GetDeployment looks up a single deployment by its own id, independent of
+// which application it belongs to — needed by the MCP server's
+// get_deployment_status tool (docs/07_MCP_Requirements.md Section 13.8),
+// which polls by deployment_id, not application_id.
+func (s *DeploymentService) GetDeployment(ctx context.Context, deploymentID string) (domain.Deployment, error) {
+	return s.deployments.GetByID(ctx, deploymentID)
+}
+
 // DeploymentHistory implements FR-095's read path: every deployment ever
 // attempted for the application, newest first, so a rollback requester
 // (FR-098 step 1) has something to pick a target from.

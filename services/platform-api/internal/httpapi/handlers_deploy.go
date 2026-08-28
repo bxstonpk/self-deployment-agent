@@ -44,6 +44,7 @@ type deploymentResponse struct {
 	FailureReason     string                             `json:"failure_reason,omitempty"`
 	Containers        map[string]domain.RunningContainer `json:"containers,omitempty"`
 	CreatedAt         string                             `json:"created_at"`
+	UpdatedAt         string                             `json:"updated_at"`
 	CompletedAt       string                             `json:"completed_at,omitempty"`
 }
 
@@ -54,6 +55,7 @@ func toDeploymentResponse(d domain.Deployment) deploymentResponse {
 		ScanPassed: d.ScanPassed, ScanCriticalCount: d.ScanCriticalCount, ScanHighCount: d.ScanHighCount,
 		ScanReports: d.ScanReports, Containers: d.Containers,
 		CreatedAt: d.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt: d.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 	if d.RejectionReason != nil {
 		resp.RejectionReason = *d.RejectionReason
@@ -100,6 +102,19 @@ func (h *DeployHandler) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 func (h *DeployHandler) LatestDeployment(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	deployment, err := h.svc.LatestDeployment(r.Context(), id)
+	if err != nil {
+		writeDeployError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
+}
+
+// GetDeployment handles GET /deployments/{deploymentId} — the deployment_id
+// -keyed lookup docs/07_MCP_Requirements.md Section 13.8's
+// get_deployment_status tool polls by.
+func (h *DeployHandler) GetDeployment(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "deploymentId")
+	deployment, err := h.svc.GetDeployment(r.Context(), deploymentID)
 	if err != nil {
 		writeDeployError(w, err)
 		return
