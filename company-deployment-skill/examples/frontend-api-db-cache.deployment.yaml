@@ -1,0 +1,47 @@
+# Application shape: frontend + api + database + cache
+#
+# REAL GAP, not an oversight: deployment.yaml has NO `cache:` top-level key
+# today. Checked directly against services/platform-api's actual schema
+# (internal/domain/deployment_yaml.go) and validation logic
+# (internal/service/validation_service.go) — only these six top-level keys
+# are ever accepted: app, services, database, scaling, resources, domain.
+# `redis` exists in the Supported Stack catalog (get_supported_stacks will
+# list it under category="cache") but there is currently no way to declare
+# a cache service in deployment.yaml at all — it cannot be requested
+# through validate_application/deploy_application no matter how it's
+# phrased.
+#
+# If an employee asks for this shape: tell them honestly that cache
+# provisioning isn't expressible in deployment.yaml yet, rather than
+# submitting a `cache:` block below (it would be rejected outright by the
+# security precheck — any top-level field outside the six above fails
+# validation, "cache" included) or silently omitting the cache requirement
+# and hoping they don't notice.
+#
+# What such a definition is INTENDED to look like once this lands
+# (matching the naming convention of the other blocks) — NOT valid today,
+# do not submit as-is:
+#
+# app:
+#   name: session-service
+#   owner: Platform
+# services:
+#   frontend:
+#     runtime: react
+#   api:
+#     runtime: go
+#     port: 8080
+# database:
+#   type: postgres
+# cache:
+#   type: redis   # <-- not a real field yet
+# scaling:
+#   min: 0
+#   max: 3
+# resources:
+#   tier: medium
+# domain:
+#   visibility: internal
+#
+# Until cache support exists, the closest submittable definition for this
+# shape is identical to frontend-api-db.deployment.yaml — see that file.

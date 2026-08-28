@@ -1,0 +1,16 @@
+# Application shape: frontend-only (static)
+# Example: an internal documentation/status site with no backend of its own.
+app:
+  name: team-handbook
+  owner: Engineering
+services:
+  frontend:
+    runtime: react
+    # No `port` — frontend-kind services never declare one.
+scaling:
+  min: 0
+  max: 1
+resources:
+  tier: small
+domain:
+  visibility: internal

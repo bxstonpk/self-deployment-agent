@@ -1,0 +1,18 @@
+# Application shape: frontend + api (no database)
+# Example: a small internal calculator/utility tool with a stateless API.
+app:
+  name: expense-estimator
+  owner: Finance
+services:
+  frontend:
+    runtime: react
+  api:
+    runtime: go   # NOT "golang" — the platform's runtime name is exactly "go"
+    port: 8080
+scaling:
+  min: 0
+  max: 2
+resources:
+  tier: small
+domain:
+  visibility: internal

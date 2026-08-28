@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://company-deployment-skill/schemas/deployment.schema.json",
+  "title": "deployment.yaml",
+  "description": "Structural schema mirroring services/platform-api/internal/domain/deployment_yaml.go and the checks in internal/service/validation_service.go, as of this package's last update. This is a fast, offline, first-pass check ONLY — it never substitutes for the server-side validate_application result. If this schema and validate_application ever disagree, validate_application is correct and this file is stale; see SKILL.md's 'Staying in sync' section.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["app", "services"],
+  "properties": {
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "owner"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must exactly match the application's registered name. Also must independently satisfy the DNS-label naming rule enforced at registration time (lowercase letters, digits, hyphens; starts with a letter)."
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Confirmed with the employee, never inferred silently — an accountability field."
+        }
+      }
+    },
+    "services": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "At least one service is required. Each key is a service name; becomes the top-level directory expected in the source_archive_base64 tar.gz passed to deploy_application.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runtime"],
+        "properties": {
+          "runtime": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Must be an exact, active entry name from the live get_supported_stacks result — see docs/supported-stack.md for a cached snapshot, but the live call is authoritative."
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "description": "REQUIRED if runtime resolves to a backend-kind stack entry (validated server-side, not by this schema — this schema can't know a runtime's kind without calling get_supported_stacks). Omit for frontend-kind runtimes."
+          }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["postgres"],
+          "description": "Only 'postgres' is supported as of this package's last update — confirm against the live catalog."
+        }
+      }
+    },
+    "scaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 (default) makes the service scale-to-zero eligible if it's a backend-kind service; >=1 opts out and keeps at least one instance always warm."
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Must be >= min if both are set. There is currently no real horizontal scaling above 1 instance regardless of this value."
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["small", "medium", "large"]
+        }
+      }
+    },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "visibility": {
+          "type": "string",
+          "enum": ["internal", "external"],
+          "description": "Explicitly confirmed with the employee, never guessed — a classification decision."
+        }
+      }
+    }
+  }
+}

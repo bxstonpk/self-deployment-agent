@@ -1,0 +1,21 @@
+# Application shape: frontend + api + database
+# The platform's canonical worked example (see SKILL.md's linked walkthrough):
+# an HR overtime-tracking tool — React frontend, Go API, Postgres.
+app:
+  name: overtime
+  owner: HR
+services:
+  frontend:
+    runtime: react
+  api:
+    runtime: go   # NOT "golang" — the platform's runtime name is exactly "go"
+    port: 8080
+database:
+  type: postgres
+scaling:
+  min: 0
+  max: 3
+resources:
+  tier: small
+domain:
+  visibility: internal
