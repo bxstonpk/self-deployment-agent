@@ -107,6 +107,22 @@ func (r *DeploymentRepo) LatestForApplication(ctx context.Context, applicationID
 	`, applicationID)
 }
 
+// CurrentRunning finds the (at most one, by construction — see
+// deploy_service.go's supersede logic) deployment currently serving live
+// traffic for an application. Used by the scale-to-zero proxy to route a
+// public request by application name to the right deployment.
+func (r *DeploymentRepo) CurrentRunning(ctx context.Context, applicationID string) (domain.Deployment, error) {
+	d, err := r.scanOne(ctx, `
+		SELECT `+deploymentColumns+` FROM deployments
+		WHERE application_id = $1 AND status = 'running'
+		ORDER BY created_at DESC LIMIT 1
+	`, applicationID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return domain.Deployment{}, domain.ErrNoRunningDeployment
+	}
+	return d, err
+}
+
 func (r *DeploymentRepo) PreviousRunning(ctx context.Context, applicationID, excludeDeploymentID string) (domain.Deployment, error) {
 	return r.scanOne(ctx, `
 		SELECT `+deploymentColumns+` FROM deployments

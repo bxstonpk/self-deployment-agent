@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -54,6 +55,16 @@ type DeploymentApprovalRepository interface {
 	Decide(ctx context.Context, deploymentID, decidedBy string, decision domain.ApprovalDecision, reason string) (domain.DeploymentApproval, error)
 }
 
+// ScaleInitializer is the seam into Module L (scale_service.go): a newly
+// Running deployment needs its per-service scale-to-zero eligibility
+// determined and recorded, and a superseded deployment needs that state
+// torn down so neither the idle sweeper nor the cold-start proxy consider
+// it anymore.
+type ScaleInitializer interface {
+	InitializeForDeployment(ctx context.Context, deploymentID string, deploymentYAML string, imageRefs map[string]string, containers map[string]domain.RunningContainer) error
+	CleanupForDeployment(ctx context.Context, deploymentID string) error
+}
+
 type DeploymentService struct {
 	apps        ApplicationLifecycleRepository
 	owners      ApplicationOwnerRepository
@@ -62,16 +73,17 @@ type DeploymentService struct {
 	approvals   DeploymentApprovalRepository
 	scanner     ImageScanner
 	runtime     RuntimeEngine
+	scale       ScaleInitializer
 }
 
 func NewDeploymentService(
 	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository,
 	deployments DeploymentRepository, approvals DeploymentApprovalRepository,
-	scanner ImageScanner, runtime RuntimeEngine,
+	scanner ImageScanner, runtime RuntimeEngine, scale ScaleInitializer,
 ) *DeploymentService {
 	return &DeploymentService{
 		apps: apps, owners: owners, builds: builds, deployments: deployments,
-		approvals: approvals, scanner: scanner, runtime: runtime,
+		approvals: approvals, scanner: scanner, runtime: runtime, scale: scale,
 	}
 }
 
@@ -309,12 +321,23 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 		return domain.Deployment{}, err
 	}
 
+	// Module L (FR-051): determine and persist each service's
+	// scale-to-zero eligibility now that the deployment is live. Not
+	// pipeline-fatal if it fails — the deployment already succeeded and is
+	// serving traffic; a scale-management gap is logged, not rolled back.
+	if err := s.scale.InitializeForDeployment(ctx, deployment.ID, app.DeploymentYAMLDraft, build.ImageRefs, containers); err != nil {
+		log.Printf("deploy: scale-to-zero initialization failed for deployment %s: %v", deployment.ID, err)
+	}
+
 	if previous, err := s.deployments.PreviousRunning(ctx, app.ID, deployment.ID); err == nil {
 		for _, c := range previous.Containers {
 			_ = s.runtime.Stop(ctx, c.ContainerID)
 		}
 		if _, err := s.deployments.SetSuperseded(ctx, previous.ID); err != nil {
 			return domain.Deployment{}, err
+		}
+		if err := s.scale.CleanupForDeployment(ctx, previous.ID); err != nil {
+			log.Printf("deploy: scale-to-zero cleanup failed for superseded deployment %s: %v", previous.ID, err)
 		}
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return domain.Deployment{}, err

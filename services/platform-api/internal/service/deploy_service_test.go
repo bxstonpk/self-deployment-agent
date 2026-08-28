@@ -203,6 +203,21 @@ func (f *fakeRuntime) Stop(ctx context.Context, containerID string) error {
 	return nil
 }
 
+type fakeScaleInitializer struct {
+	initialized []string
+	cleaned     []string
+}
+
+func (f *fakeScaleInitializer) InitializeForDeployment(ctx context.Context, deploymentID string, deploymentYAML string, imageRefs map[string]string, containers map[string]domain.RunningContainer) error {
+	f.initialized = append(f.initialized, deploymentID)
+	return nil
+}
+
+func (f *fakeScaleInitializer) CleanupForDeployment(ctx context.Context, deploymentID string) error {
+	f.cleaned = append(f.cleaned, deploymentID)
+	return nil
+}
+
 func newDeployService(app domain.Application, build domain.Build, ownerID string) (
 	*service.DeploymentService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeRuntime, *fakeScanner,
 ) {
@@ -218,8 +233,9 @@ func newDeployService(app domain.Application, build domain.Build, ownerID string
 	approvals := newFakeApprovalRepo()
 	scanner := newPassingScanner()
 	runtime := newHealthyRuntime()
+	scale := &fakeScaleInitializer{}
 
-	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime)
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale)
 	return svc, apps, deployments, runtime, scanner
 }
 

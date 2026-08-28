@@ -54,6 +54,8 @@ func main() {
 	baseImageRepo := postgres.NewBaseImageRepo(pool)
 	deploymentRepo := postgres.NewDeploymentRepo(pool)
 	approvalRepo := postgres.NewDeploymentApprovalRepo(pool)
+	serviceStateRepo := postgres.NewServiceRuntimeStateRepo(pool)
+	scaleEventRepo := postgres.NewScaleEventRepo(pool)
 
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
@@ -66,7 +68,8 @@ func main() {
 	applicationService := service.NewApplicationService(applicationRepo, ownerRepo, departmentRepo)
 	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo)
 	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine)
-	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime)
+	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime)
+	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
@@ -76,8 +79,12 @@ func main() {
 		Stacks:        httpapi.NewStackHandler(stackRepo),
 		Builds:        httpapi.NewBuildHandler(buildService),
 		Deploys:       httpapi.NewDeployHandler(deployService),
+		ScaleEvents:   httpapi.NewScaleEventsHandler(deployService, scaleService),
+		Proxy:         httpapi.NewProxyHandler(scaleService),
 		PlatformEnv:   cfg.PlatformEnv,
 	})
+
+	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -99,5 +106,29 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
+	}
+}
+
+// runScaleSweeper implements FR-052's idle-detection loop: periodically
+// scales down every eligible service that's had no activity for the
+// platform's idle timeout. Runs until ctx is cancelled (server shutdown).
+func runScaleSweeper(ctx context.Context, scaleService *service.ScaleService, interval, idleTimeout time.Duration) {
+	log.Printf("scale-to-zero sweeper running every %s, idle timeout %s", interval, idleTimeout)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			scaledDown, err := scaleService.SweepIdle(ctx, idleTimeout)
+			if err != nil {
+				log.Printf("scale sweeper: %v", err)
+				continue
+			}
+			if scaledDown > 0 {
+				log.Printf("scale sweeper: scaled %d service(s) to zero", scaledDown)
+			}
+		}
 	}
 }
