@@ -57,6 +57,14 @@ func (f *fakeBuildRepo) MarkFailed(ctx context.Context, buildID string, category
 	return b, nil
 }
 
+func (f *fakeBuildRepo) GetByID(ctx context.Context, buildID string) (domain.Build, error) {
+	b, ok := f.byID[buildID]
+	if !ok {
+		return domain.Build{}, domain.ErrNotFound
+	}
+	return b, nil
+}
+
 func (f *fakeBuildRepo) LatestForApplication(ctx context.Context, applicationID string) (domain.Build, error) {
 	id, ok := f.byApp[applicationID]
 	if !ok {

@@ -13,6 +13,7 @@ type RouterConfig struct {
 	Validation    *ValidationHandler
 	Stacks        *StackHandler
 	Builds        *BuildHandler
+	Deploys       *DeployHandler
 	// PlatformEnv gates DevOnlyGuard. The only Authenticator implementation
 	// today is DevHeaderAuthenticator, so this is always enforced until a
 	// real one lands per DEC-001 (docs/17_Decision_Log.md).
@@ -42,12 +43,20 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Post("/{id}/validate", cfg.Validation.Validate)
 		r.Post("/{id}/build", cfg.Builds.TriggerBuild)
 		r.Get("/{id}/builds/latest", cfg.Builds.LatestBuild)
+		r.Post("/{id}/deploy", cfg.Deploys.TriggerDeploy)
+		r.Get("/{id}/deployments/latest", cfg.Deploys.LatestDeployment)
 	})
 
 	r.Route("/supported-stacks", func(r chi.Router) {
 		r.Use(DevOnlyGuard(cfg.PlatformEnv))
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Stacks.List)
+	})
+
+	r.Route("/deployments", func(r chi.Router) {
+		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		r.Use(RequireAuth(cfg.Authenticator))
+		r.Post("/{deploymentId}/approve", cfg.Deploys.DecideApproval)
 	})
 
 	return r

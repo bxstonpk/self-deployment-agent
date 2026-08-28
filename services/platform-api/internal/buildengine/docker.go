@@ -28,12 +28,12 @@ type DockerEngine struct {
 	cli *client.Client
 }
 
-func NewDockerEngine() (*DockerEngine, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return nil, fmt.Errorf("create docker client: %w", err)
-	}
-	return &DockerEngine{cli: cli}, nil
+// NewDockerEngine wraps a shared *client.Client — see
+// cmd/api/main.go, which constructs one Docker client and hands it to this
+// package, internal/imagescan, and internal/runtimeengine alike, rather
+// than each opening its own connection to the daemon.
+func NewDockerEngine(cli *client.Client) *DockerEngine {
+	return &DockerEngine{cli: cli}
 }
 
 func (e *DockerEngine) Build(ctx context.Context, req service.BuildEngineRequest) (map[string]string, error) {
@@ -58,7 +58,7 @@ func (e *DockerEngine) Build(ctx context.Context, req service.BuildEngineRequest
 		buildErr := drainBuildOutput(resp.Body)
 		_ = resp.Body.Close()
 		if buildErr != nil {
-			return nil, &domain.BuildFailure{Category: domain.ErrorCategorySource, Service: name, Detail: buildErr.Error()}
+			return nil, &domain.BuildFailure{Category: classifyBuildError(buildErr), Service: name, Detail: buildErr.Error()}
 		}
 
 		imageRefs[name] = tag
@@ -174,6 +174,24 @@ func drainBuildOutput(r io.Reader) error {
 		return errors.New(buildError)
 	}
 	return nil
+}
+
+// classifyBuildError implements FR-038's source-vs-platform distinction
+// for failures that happen *during* the Docker build (as opposed to
+// context-preparation failures, already source, or request-setup
+// failures, already platform — see the call sites in Build). Found for
+// real, not assumed: an early version categorized every build-stream
+// error as "source", which meant a transient base-image pull failure
+// (a TLS handshake timeout pulling from the registry) was reported as if
+// it were the employee's fault. Docker's own phrasing distinguishes the
+// two cases reliably: a failing RUN/CMD instruction always says "returned
+// a non-zero code"; anything else during the build (pulling the base
+// image, daemon-side errors) doesn't.
+func classifyBuildError(err error) domain.ErrorCategory {
+	if strings.Contains(err.Error(), "returned a non-zero code") {
+		return domain.ErrorCategorySource
+	}
+	return domain.ErrorCategoryPlatform
 }
 
 var nonTagChars = regexp.MustCompile(`[^a-z0-9._-]+`)
