@@ -35,6 +35,8 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
       PORT: "8080"
       PLATFORM_ENV: ${PLATFORM_ENV:-dev}
+      SCALE_TO_ZERO_IDLE_SECONDS: ${SCALE_TO_ZERO_IDLE_SECONDS:-300}
+      SCALE_SWEEP_INTERVAL_SECONDS: ${SCALE_SWEEP_INTERVAL_SECONDS:-30}
     ports:
       - "${PLATFORM_API_HOST_PORT:-8090}:8080" # 8080 is already used by another local project on this machine
     volumes:

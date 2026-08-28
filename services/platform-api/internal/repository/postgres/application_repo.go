@@ -36,6 +36,17 @@ func (r *ApplicationRepo) GetByID(ctx context.Context, id string) (domain.Applic
 	return r.scanOne(ctx, `SELECT `+applicationColumns+` FROM applications WHERE id = $1`, id)
 }
 
+// GetByName supports the scale-to-zero proxy (internal/scaleproxy), which
+// routes public traffic by application name (readable in a URL) rather
+// than UUID.
+func (r *ApplicationRepo) GetByName(ctx context.Context, name string) (domain.Application, error) {
+	app, err := r.scanOne(ctx, `SELECT `+applicationColumns+` FROM applications WHERE name = $1`, name)
+	if errors.Is(err, domain.ErrNotFound) {
+		return domain.Application{}, domain.ErrApplicationNotFound
+	}
+	return app, err
+}
+
 func (r *ApplicationRepo) NameExists(ctx context.Context, name string) (bool, error) {
 	var exists bool
 	err := r.pool.QueryRow(ctx,

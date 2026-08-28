@@ -1,8 +1,9 @@
-# Platform API — Draft, Validated, Build & Deploying States (State 1–4)
+# Platform API — Draft through Scale-to-Zero (State 1–5)
 
 Go implementation of the Business API, built one Application Lifecycle state
-at a time. Currently covers **Draft**, **Validated**, **Build**, and
-**Deploying**.
+at a time. Currently covers **Draft**, **Validated**, **Build**,
+**Deploying**, and **Scale-to-Zero** (the ongoing behavior of a `Running`
+application).
 
 Implements from
 [`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md):
@@ -11,9 +12,11 @@ Implements from
 `FR-033`, `FR-034` (Modules F/G/H — Validated state; `FR-032` resource quota
 is honestly reported as **skipped**, not faked — see below);
 `FR-035`, `FR-036`, `FR-037`, `FR-038` (Module I — Build state, real Docker
-builds, not mocked); and `FR-039`–`FR-044` (Module J — Deploying state: real
+builds, not mocked); `FR-039`–`FR-044` (Module J — Deploying state: real
 Trivy image scanning, a real production approval gate, and real container
-start/health-check/traffic-activation — see below). See
+start/health-check/traffic-activation); and `FR-051`–`FR-056` (Module L —
+Scale-to-Zero: real idle detection, real cold-start-on-request through a
+stable proxy URL, real event logging — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -36,6 +39,8 @@ for how it fits the Control Plane.
 | `POST /applications/{id}/deploy` | FR-039–044 | Runs the deploy pipeline (Image Scan → [prod approval gate] → Deploy → Health Check → Traffic Activation). Only callable with a successful build. Owner-only |
 | `GET /applications/{id}/deployments/latest` | FR-043 | Queryable deployment status |
 | `POST /deployments/{deploymentId}/approve` | FR-042 | Approve/reject a `pending_approval` production deployment. Owner-only |
+| `GET /applications/{id}/scale-events` | FR-056 | Every scale-up (incl. cold-start) / scale-down (incl. scale-to-zero) event for the app's current deployment |
+| `ANY /run/{appName}/{serviceName}/*` | FR-051–053 | **The public, stable URL for a deployed application.** Not behind platform auth — see below |
 
 ### How Build works
 
@@ -144,6 +149,64 @@ instead — see the comment in `deploy_service.go` and the `extra_hosts` entry
 in `docker-compose.yml` (needed for portability to Linux Docker Engine,
 where that hostname isn't automatic like it is on Docker Desktop).
 
+## How Scale-to-Zero works (Module L)
+
+**The core problem this solves:** once deployed, a service's Docker-published
+host port changes every time it stops and starts (`StartContainer` in
+`internal/runtimeengine` always asks Docker for a free port). Nothing can
+hand out that port as "the" URL for a scale-to-zero-managed service — it
+won't be the same port next time. `ANY /run/{appName}/{serviceName}/*`
+(`internal/httpapi/handlers_proxy.go`) is the fixed address that stays
+constant across scale events; it resolves to the current live container on
+every request, cold-starting one first if needed. This is deliberately
+**not** behind platform auth — it's the deployed application's own public
+traffic path, not a platform management endpoint.
+
+1. **Eligibility (FR-051)**, determined once when a deployment activates and
+   never re-derived from later employee input: a service is scale-to-zero
+   eligible only if its runtime is `backend`-kind (per the Supported Stack
+   catalog) **and** the app-wide `scaling.min` is `0` or unset. Static
+   frontend services are never eligible, full stop — matching FR-051's
+   business rule that this "cannot be overridden by configuration."
+   `scaling.min >= 1` is FR-055's opt-out, already implicit in this same
+   rule — no separate code path needed.
+2. **Idle detection (FR-052)** — a background sweeper
+   (`runScaleSweeper` in `cmd/api/main.go`) ticks every
+   `SCALE_SWEEP_INTERVAL_SECONDS` (default 300s/30s — see `.env.example`;
+   both configurable, since FR-052's business rule frames the idle
+   threshold as a *platform-defined* default, not something
+   `deployment.yaml` should expose to employees) and stops the container
+   for any eligible service idle past `SCALE_TO_ZERO_IDLE_SECONDS`.
+3. **Cold-start (FR-053)** — `ScaleService.EnsureRunning` starts a fresh
+   container (reusing a deterministic name — Docker's port/name get freed
+   on stop, so this is safe across repeated scale cycles), health-checks it
+   the same way the deploy pipeline does, then hands the request through.
+   Concurrent requests during a cold start are coalesced via
+   `golang.org/x/sync/singleflight` — verified for real (see Test plan):
+   5 simultaneous requests during one cold start produced exactly one
+   `cold_start` scale event, not five.
+4. **Scale events (FR-056)** — every transition (`initial_activation`,
+   `cold_start`, `idle_timeout`) is recorded and queryable via
+   `GET /applications/{id}/scale-events`.
+
+**A documented race, not a hidden one:** the idle sweeper and a concurrent
+cold-start aren't coordinated by a shared lock (see the comment on
+`ScaleService.coldStart` for why that would actually be wrong — singleflight
+sharing one result across *different* intended operations is unsafe here).
+The actual data-safety guard is a compare-and-swap in
+`ServiceRuntimeStateRepo.ClearContainer`: it only clears a row if
+`container_id` still matches what the sweeper observed, so a concurrent
+cold-start's new container can never be silently lost from the database —
+worst case is a narrow, logged window where a request lands right at a
+sweep boundary.
+
+**FR-054 (min/max), scoped honestly:** this implementation only ever runs 0
+or 1 instance per service — there's no real horizontal multi-instance
+scaling built (that would need a load balancer in front of N containers,
+well beyond this state's scope). `scaling.max` isn't enforced as a real
+ceiling above 1 for the same reason. This is a known simplification, not an
+oversight.
+
 ### Known gap: no retry path out of Failed yet
 
 A failed build moves the application to the `failed` lifecycle state. There
@@ -204,6 +267,21 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   RUNTIME-stage image per runtime, both IT-governed) — today only the
   build-stage image is catalog-driven; the minimal runtime-stage image for
   `go`/`react`/`vue` is a fixed platform constant (see **How Build works**).
+- True horizontal scaling above 1 instance (FR-054's `scaling.max` ceiling)
+  — see **How Scale-to-Zero works** above.
+- Continuous post-activation health monitoring feeding scale decisions —
+  the idle sweeper only ever *scales down*; nothing currently restarts a
+  service that crashes on its own after activation (that's the other half
+  of FR-044, already noted above, not duplicated here).
+- Graceful in-flight-request draining before a scale-to-zero shutdown
+  (FR-052's alternative flow) — the sweeper stops a container based on
+  idle time only; a request that arrives in the same instant as a sweep
+  decision isn't specially drained, just subject to the same narrow race
+  window documented in **How Scale-to-Zero works**.
+- Per-application/per-tier idle timeout tuning (FR-052's business rule
+  mentions "potentially tunable per resource tier") — today it's one
+  platform-wide constant; real tuning needs Module M (Resource Manager),
+  not built yet.
 
 ## Dev-mode auth (temporary — see DEC-001)
 
@@ -269,6 +347,14 @@ CRITICAL finding in the current base image — that's the gate doing its job,
 not a bug; see `internal/db/migrations/0003_build_engine.sql`'s comments for
 what was actually found and fixed while exercising this for real.
 
+Once `running`, hit the app at `GET /run/{appName}/{serviceName}/` (no
+platform auth needed — see **How Scale-to-Zero works**). To actually watch
+scale-to-zero happen without waiting the default 5 minutes, lower
+`SCALE_TO_ZERO_IDLE_SECONDS`/`SCALE_SWEEP_INTERVAL_SECONDS` in `.env` (e.g.
+`20`/`5`) before starting the stack, stop sending requests, and watch
+`docker logs` for `scale sweeper: scaled 1 service(s) to zero` — then hit
+the `/run/...` URL again and watch it cold-start.
+
 ## Running tests
 
 ```
@@ -286,10 +372,10 @@ against a real Postgres instance (e.g. via `docker compose` in CI), since
 the partial-unique-index and CHECK constraints in the migrations are part
 of the actual correctness guarantees.
 
-All four states have also been manually verified end-to-end against a real
-Postgres instance (and, for Build/Deploy, a real Docker daemon and a real
-Trivy scanner — not mocked) via `docker compose up --build` — see the PR
-descriptions for the exact `curl` sessions exercised. Worth calling out
+All five states have also been manually verified end-to-end against a real
+Postgres instance (and, for Build/Deploy/Scale, a real Docker daemon and a
+real Trivy scanner — not mocked) via `docker compose up --build` — see the
+PR descriptions for the exact `curl` sessions exercised. Worth calling out
 specifically, because each surfaced a real bug that got fixed as a direct
 result of testing against the real thing instead of only fakes:
 
@@ -316,3 +402,16 @@ result of testing against the real thing instead of only fakes:
   successful redeploy correctly stopped and superseded the previous `dev`
   deployment's container. A rejection of a further redeploy attempt was also
   verified to leave the still-`running` application untouched.
+- **Scale-to-Zero**: with a short idle timeout for testing (`20s`, 5s sweep
+  interval), a real deployed Go service was left idle and the sweeper
+  correctly stopped its container within one sweep cycle (confirmed both in
+  `service_runtime_state` and via `docker ps` — the container was actually
+  gone, not just marked). Hitting the stable `/run/{app}/{service}/` URL
+  while scaled to zero correctly cold-started a *new* container on a *new*
+  host port (0.6s) and served the real response. Firing 5 concurrent
+  requests during a second cold start produced exactly one `cold_start`
+  scale event (confirmed by counting `scale_events` rows), not five —
+  `singleflight` coalescing verified for real, not just asserted in a
+  unit test. The full event sequence (`initial_activation` →
+  `scaled_to_zero`/`idle_timeout` → `scaled_up`/`cold_start`) was confirmed
+  accurate and in order via `GET /applications/{id}/scale-events`.

@@ -14,6 +14,8 @@ type RouterConfig struct {
 	Stacks        *StackHandler
 	Builds        *BuildHandler
 	Deploys       *DeployHandler
+	ScaleEvents   *ScaleEventsHandler
+	Proxy         *ProxyHandler
 	// PlatformEnv gates DevOnlyGuard. The only Authenticator implementation
 	// today is DevHeaderAuthenticator, so this is always enforced until a
 	// real one lands per DEC-001 (docs/17_Decision_Log.md).
@@ -45,6 +47,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{id}/builds/latest", cfg.Builds.LatestBuild)
 		r.Post("/{id}/deploy", cfg.Deploys.TriggerDeploy)
 		r.Get("/{id}/deployments/latest", cfg.Deploys.LatestDeployment)
+		r.Get("/{id}/scale-events", cfg.ScaleEvents.List)
 	})
 
 	r.Route("/supported-stacks", func(r chi.Router) {
@@ -58,6 +61,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Post("/{deploymentId}/approve", cfg.Deploys.DecideApproval)
 	})
+
+	// Deliberately outside any auth middleware — see the package doc
+	// comment on ProxyHandler for why.
+	r.Handle("/run/*", cfg.Proxy)
 
 	return r
 }
