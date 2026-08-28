@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"platform-api/internal/buildengine"
 	"platform-api/internal/config"
 	"platform-api/internal/db"
 	"platform-api/internal/httpapi"
@@ -45,9 +46,17 @@ func main() {
 	applicationRepo := postgres.NewApplicationRepo(pool)
 	ownerRepo := postgres.NewApplicationOwnerRepo(pool)
 	stackRepo := postgres.NewStackRepo(pool)
+	buildRepo := postgres.NewBuildRepo(pool)
+	baseImageRepo := postgres.NewBaseImageRepo(pool)
+
+	dockerEngine, err := buildengine.NewDockerEngine()
+	if err != nil {
+		log.Fatalf("build engine: %v", err)
+	}
 
 	applicationService := service.NewApplicationService(applicationRepo, ownerRepo, departmentRepo)
 	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo)
+	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
@@ -55,6 +64,7 @@ func main() {
 		Applications:  httpapi.NewApplicationHandler(applicationService),
 		Validation:    httpapi.NewValidationHandler(validationService),
 		Stacks:        httpapi.NewStackHandler(stackRepo),
+		Builds:        httpapi.NewBuildHandler(buildService),
 		PlatformEnv:   cfg.PlatformEnv,
 	})
 
