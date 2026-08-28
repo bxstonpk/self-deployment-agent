@@ -1,0 +1,34 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Go
+services/*/bin/
+services/*/*.exe
+services/*/*.test
+services/*/vendor/
+
+# Python
+mcp-server/__pycache__/
+mcp-server/.venv/
+mcp-server/*.egg-info/
+mcp-server/.pytest_cache/
+__pycache__/
+*.pyc
+
+# Node / React
+apps/*/node_modules/
+apps/*/dist/
+apps/*/build/
+apps/*/.env.local
+
+# Env / secrets — never commit real values
+.env
+.env.*
+!.env.example
+
+# Local DB data
+db/data/
+*.db
