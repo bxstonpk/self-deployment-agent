@@ -12,6 +12,7 @@ type RouterConfig struct {
 	Applications  *ApplicationHandler
 	Validation    *ValidationHandler
 	Stacks        *StackHandler
+	Builds        *BuildHandler
 	// PlatformEnv gates DevOnlyGuard. The only Authenticator implementation
 	// today is DevHeaderAuthenticator, so this is always enforced until a
 	// real one lands per DEC-001 (docs/17_Decision_Log.md).
@@ -39,6 +40,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{id}/owners", cfg.Applications.ListOwners)
 		r.Put("/{id}/deployment-yaml", cfg.Validation.SaveDeploymentYAML)
 		r.Post("/{id}/validate", cfg.Validation.Validate)
+		r.Post("/{id}/build", cfg.Builds.TriggerBuild)
+		r.Get("/{id}/builds/latest", cfg.Builds.LatestBuild)
 	})
 
 	r.Route("/supported-stacks", func(r chi.Router) {

@@ -37,6 +37,21 @@ services:
       PLATFORM_ENV: ${PLATFORM_ENV:-dev}
     ports:
       - "${PLATFORM_API_HOST_PORT:-8090}:8080" # 8080 is already used by another local project on this machine
+    volumes:
+      # MOD-05 Build Engine talks to the Docker daemon directly to build
+      # application images (FR-035) — this is the platform's OWN internal
+      # build component, not something employees/applications ever get (see
+      # docs/11_Security_Requirements.md's "no Docker socket access" rule,
+      # which applies to hosted applications, not this control-plane
+      # service). In production this becomes a real, isolated build
+      # cluster, not a host socket mount — see docs/10_System_Architecture.md.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The image's default user (nonroot, see Dockerfile) can't open the
+    # mounted socket — its host-side group ownership varies by platform and
+    # isn't something to chase for a dev-only compose override. Root here is
+    # scoped to local dev; it does not change the image's own default user
+    # for any other context it runs in.
+    user: root
     depends_on:
       postgres:
         condition: service_healthy
