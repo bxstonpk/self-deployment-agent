@@ -11,10 +11,9 @@ services/*/*.test
 services/*/vendor/
 
 # Python
-mcp-server/__pycache__/
-mcp-server/.venv/
-mcp-server/*.egg-info/
-mcp-server/.pytest_cache/
+services/mcp-server/.venv/
+services/mcp-server/**/*.egg-info/
+services/mcp-server/.pytest_cache/
 __pycache__/
 *.pyc
 

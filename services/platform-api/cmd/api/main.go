@@ -76,6 +76,7 @@ func main() {
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator: authenticator,
 		Applications:  httpapi.NewApplicationHandler(applicationService),
+		Departments:   httpapi.NewDepartmentHandler(departmentRepo),
 		Validation:    httpapi.NewValidationHandler(validationService),
 		Stacks:        httpapi.NewStackHandler(stackRepo),
 		Builds:        httpapi.NewBuildHandler(buildService),

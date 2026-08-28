@@ -10,6 +10,7 @@ import (
 type RouterConfig struct {
 	Authenticator Authenticator
 	Applications  *ApplicationHandler
+	Departments   *DepartmentHandler
 	Validation    *ValidationHandler
 	Stacks        *StackHandler
 	Builds        *BuildHandler
@@ -64,9 +65,16 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/", cfg.Stacks.List)
 	})
 
+	r.Route("/departments", func(r chi.Router) {
+		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		r.Use(RequireAuth(cfg.Authenticator))
+		r.Get("/", cfg.Departments.List)
+	})
+
 	r.Route("/deployments", func(r chi.Router) {
 		r.Use(DevOnlyGuard(cfg.PlatformEnv))
 		r.Use(RequireAuth(cfg.Authenticator))
+		r.Get("/{deploymentId}", cfg.Deploys.GetDeployment)
 		r.Post("/{deploymentId}/approve", cfg.Deploys.DecideApproval)
 	})
 
