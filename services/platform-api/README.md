@@ -1,9 +1,9 @@
-# Platform API — Draft through Suspend/Resume/Restart (State 1–6)
+# Platform API — Draft through Rollback (State 1–7)
 
 Go implementation of the Business API, built one Application Lifecycle state
 at a time. Currently covers **Draft**, **Validated**, **Build**,
 **Deploying**, **Scale-to-Zero** (the ongoing behavior of a `Running`
-application), and **Suspend/Resume/Restart**.
+application), **Suspend/Resume/Restart**, and **Rollback**.
 
 Implements from
 [`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md):
@@ -16,8 +16,9 @@ builds, not mocked); `FR-039`–`FR-044` (Module J — Deploying state: real
 Trivy image scanning, a real production approval gate, and real container
 start/health-check/traffic-activation); `FR-051`–`FR-056` (Module L —
 Scale-to-Zero: real idle detection, real cold-start-on-request through a
-stable proxy URL, real event logging); and `FR-047`, `FR-048` (Module K —
-Suspend/Resume/Restart — see below). See
+stable proxy URL, real event logging); `FR-047`, `FR-048` (Module K —
+Suspend/Resume/Restart); and `FR-095`, `FR-098`, `FR-100`, `FR-101` (Module V
+— Rollback — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -39,6 +40,8 @@ for how it fits the Control Plane.
 | `GET /applications/{id}/builds/latest` | FR-036 | Queryable build status |
 | `POST /applications/{id}/deploy` | FR-039–044 | Runs the deploy pipeline (Image Scan → [prod approval gate] → Deploy → Health Check → Traffic Activation). Only callable with a successful build. Owner-only |
 | `GET /applications/{id}/deployments/latest` | FR-043 | Queryable deployment status |
+| `GET /applications/{id}/deployments` | FR-095 | Full deployment/version history, newest first — what a Rollback target is picked from |
+| `POST /applications/{id}/rollback` | FR-098, FR-100, FR-101 | Redeploys a previously-successful deployment's build artifact; requires `{"target_deployment_id": "..."}`. Owner-only |
 | `POST /deployments/{deploymentId}/approve` | FR-042 | Approve/reject a `pending_approval` production deployment. Owner-only |
 | `GET /applications/{id}/scale-events` | FR-056 | Every scale-up (incl. cold-start) / scale-down (incl. scale-to-zero) event for the app's current deployment |
 | `ANY /run/{appName}/{serviceName}/*` | FR-051–053 | **The public, stable URL for a deployed application.** Not behind platform auth — see below |
@@ -140,9 +143,11 @@ never touches that previous version — the application's `lifecycle_status`
 only moves to `failed` when there was no prior good version to protect. This
 was unit-tested explicitly (`TestInitiateDeploy_HealthCheckFailure_Redeploy_LeavesAppRunning`).
 Full continuous post-activation health monitoring triggering an *automatic*
-rollback of an already-live version (the other half of FR-044) is out of
-scope — it needs ongoing background monitoring infrastructure this
-synchronous-per-request pipeline doesn't have.
+rollback of an already-live version (FR-099, Module V) is out of scope — it
+needs ongoing background monitoring infrastructure this
+synchronous-per-request pipeline doesn't have. The deliberate,
+requester-initiated rollback path (FR-098) is implemented — see **How
+Rollback works** below.
 
 **A subtle networking fix worth knowing about:** health checks happen
 *from inside* the `platform-api` container, so `http://localhost:<port>`
@@ -271,6 +276,82 @@ Administrator role to check yet — same recurring RBAC gap as the
 production approval gate, blocked on `DEC-001`/`DEC-002`. Only
 owner-initiated suspend is implemented.
 
+## How Rollback works (Module V)
+
+Mechanically, a rollback **is** a forward deploy — `Rollback` sources its
+build/image refs from a previously-successful `deployments` row instead of
+the application's latest build, then runs through the exact same
+Deploy/HealthCheck/Activate pipeline (`deployAndActivate`, shared with
+`InitiateDeploy`/`DecideApproval`) rather than a separate code path. FR-101
+itself frames rollback this way — "redeploying the target version's build
+artifact" — so reusing the pipeline isn't a shortcut, it's the literal
+requirement. The only difference is the application's transient
+lifecycle status: `rolled_back` instead of `deploying`, per FR-101's business
+rule (`Running` → `Rolled Back` → `Running`, mirroring how `Deploying` is
+already transient for a forward deploy).
+
+- **`GET /applications/{id}/deployments`** (FR-095) lists every deployment
+  ever attempted for the application, newest first — this is what a caller
+  picks a `target_deployment_id` from. Each `deployments` row already *is* a
+  version record (build, config-at-the-time via the linked build, timestamps,
+  outcome); no separate `ApplicationVersion` table was needed.
+- **`POST /applications/{id}/rollback`** (FR-098) is callable from `Running`
+  (rolling away from a live-but-misbehaving version) or `Failed` (the
+  forward deploy attempt itself failed outright) — not from a transient
+  pipeline state, and not from `Suspended`, which has no live traffic to
+  roll back in the first place.
+- **Target validation** (FR-100) rejects a target that wasn't itself a
+  successfully-completed deployment (`running` or `superseded` only — never
+  `failed`/`rejected`/still in flight) or whose build artifact is no longer
+  available.
+- **Execution** (FR-101) creates a **new** `deployments` row rather than
+  reactivating the old one — the old row's stale container id/host port are
+  long gone by rollback time, and a fresh row keeps deployment history
+  fully auditable (matches how a normal redeploy already works, never
+  mutating a past row's identity). On success, whatever was previously
+  `running` is superseded and its container stopped, same clean cutover as
+  any other successful deploy.
+
+**Scope adaptations, documented not hidden:**
+- Rollback **skips** the Image Scan and production approval gates that a
+  forward deploy goes through — the target was already a completed,
+  previously-`running` deployment, so it passed both gates the first time.
+  FR-098's alternative flow allows requiring the same approval gate for a
+  production rollback depending on policy severity classification, which
+  needs policy-tier modeling this platform doesn't have (same RBAC/policy
+  gap as the approval gate's approver-independence gap, blocked on
+  `DEC-001`/`DEC-002`).
+- **FR-099** (fully *automatic* rollback triggered by a post-activation
+  health regression) isn't wired to any trigger — that needs continuous
+  runtime health monitoring (Module T), not built. What's already true
+  without any Module V code at all: FR-044's existing pre-activation failure
+  handling means a failed forward-deploy attempt never touches an
+  already-`running` previous version in the first place (see **How Deploy
+  works**). FR-098 (this feature) covers the deliberate,
+  requester-initiated path; FR-099's fully-automatic trigger remains a
+  documented gap.
+- FR-102 (rollback notification) isn't implemented — Module X (Notification)
+  doesn't exist yet, same gap as every other module that would notify on an
+  event.
+
+**A real bug found via the new unit tests, not just manual testing:**
+`deployAndActivate`'s final `apps.UpdateLifecycleStatus` call (the one that
+lands the application on `Running`) had `domain.StatusDeploying` hardcoded
+as the transition's `from` value, left over from before the function took a
+`transientAppStatus` parameter. For every *forward* deploy this was
+invisible — `transientAppStatus` is always `StatusDeploying` there too, so
+the hardcoded value happened to match. Rollback was the first caller to pass
+a *different* transient status (`StatusRolledBack`), which made the
+mismatch concrete: the CAS update failed with `ErrInvalidLifecycleTransition`
+and the whole rollback errored out even though every precondition was
+correctly satisfied. Fixed by using `transientAppStatus` consistently at
+all three call sites in `deployAndActivate`/`markDeploymentFailedFrom`, not
+just two of them. Caught immediately by
+`TestRollback_ToSupersededVersion_ReactivatesItAndSupersedesCurrent`
+failing before this code ever ran against real Docker — exactly the kind of
+bug a shared-pipeline refactor risks, exactly why the new tests were written
+before the manual verification pass, not after.
+
 ### Known gap: no retry path out of Failed yet
 
 A failed build moves the application to the `failed` lifecycle state. There
@@ -279,7 +360,12 @@ is currently no endpoint to get it back to `draft`/`validated` for a retry —
 FR-038's alternative flow ("Claude Code parses the failure and attempts a
 fix before resubmitting") implies this should exist; it's an honest gap for
 a future increment (likely part of a fuller Module K lifecycle-transition
-implementation), not something silently worked around here.
+implementation), not something silently worked around here. Hit directly
+while manually verifying Rollback: a build failure (bad source archive
+layout) left a test application stuck `failed` with no successful
+deployment behind it — Rollback correctly can't help here either, since
+there's nothing to roll back *to*. The verification continued with a fresh
+application rather than working around this gap.
 
 ### Validation report shape
 
@@ -315,15 +401,28 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   catalog only tracks active/deprecated/blocked per whole runtime name, not
   per version range yet.
 - Retry path out of `failed` — see **Known gap** above (Build section).
+- No way to trigger a *new* build once an application is `running` —
+  `POST .../build` only accepts `validated` as its source state (found for
+  real while manually verifying Rollback: getting a genuine second version
+  deployed required inserting a `builds` row directly, since there's no API
+  path from `running` back through Build for an already-live application).
+  This is a real gap in Module G/I, not Module V — an employee/agent
+  presumably needs to re-save/re-validate `deployment.yaml` to loop back to
+  `validated` for iteration, but `PUT .../deployment-yaml` also only accepts
+  `draft`/`validated` as source states, same restriction as the Failed-retry
+  gap above. A future increment should let a `running` application cycle
+  back to `draft` deliberately (distinct from FR-044's automatic in-flight
+  failure handling, which must *not* touch a `running` app).
 - Build/deploy status streaming/notifications (FR-036/FR-043 alternative
   flows) — status is poll-only for now; both the build and the deploy
   pipeline also run synchronously within the triggering HTTP request rather
   than being queued asynchronously, which is fine for small internal-tool
   builds/deploys but won't scale to slow ones without a background
   job/worker model.
-- Continuous post-activation health monitoring / automatic rollback of an
-  already-`running` version (the second half of FR-044) — needs background
-  monitoring infrastructure this request-scoped pipeline doesn't have.
+- Fully-automatic rollback triggered by a post-activation health regression
+  (FR-099) — needs continuous background health monitoring (Module T) this
+  request-scoped pipeline doesn't have. The deliberate, requester-initiated
+  rollback path (FR-098) is implemented — see **How Rollback works** above.
 - Image-scan severity threshold is hardcoded to "any CRITICAL blocks" —
   FR-041 says this should be Security Administrator policy; no such policy
   exists yet to read from (worth a `DEC-xxx` entry).
@@ -335,8 +434,8 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   — see **How Scale-to-Zero works** above.
 - Continuous post-activation health monitoring feeding scale decisions —
   the idle sweeper only ever *scales down*; nothing currently restarts a
-  service that crashes on its own after activation (that's the other half
-  of FR-044, already noted above, not duplicated here).
+  service that crashes on its own after activation (that's FR-099, already
+  noted above, not duplicated here).
 - Graceful in-flight-request draining before a scale-to-zero shutdown
   (FR-052's alternative flow) — the sweeper stops a container based on
   idle time only; a request that arrives in the same instant as a sweep
@@ -350,9 +449,10 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   — see **How Suspend/Resume/Restart works**'s known gap.
 - `Archived` and `Deleted` lifecycle states (FR-049, FR-050) — both need
   Modules N/O/P (Database/Secret/Domain Management) to actually
-  deprovision anything, none of which exist yet. Only the four states
-  reachable without those modules (`Draft` → `Validated` → `Build` →
-  `Deploying`/`Running`, plus `Suspended`) are implemented.
+  deprovision anything, none of which exist yet. Every state reachable
+  without those modules (`Draft` → `Validated` → `Build` →
+  `Deploying`/`Running`, `Suspended`, and now `Rolled Back` as a transient
+  step back to `Running`) is implemented.
 - Application Owner transfer, co-owner management (FR-016, FR-017) — the
   data model (`application_owners`, multiple rows per app) already
   supports it; no endpoints exist yet.
@@ -433,6 +533,15 @@ the `/run/...` URL again and watch it cold-start.
 special setup beyond a `Running` application — try hitting `/run/...`
 between suspend and resume to see it correctly 404 instead of cold-starting.
 
+To exercise a real rollback: deploy, then deploy again so there are two
+successful deployments (see the note above on how to trigger a *second*
+build — today that needs a fresh application, or a directly-inserted
+`builds` row, since there's no API path back into Build once `running`).
+`GET /applications/{id}/deployments` to find the earlier one's id, then
+`POST /applications/{id}/rollback` with
+`{"target_deployment_id": "<that id>"}`. Hitting `/run/...` before and after
+should show the response flip back to the earlier version's output.
+
 ## Running tests
 
 ```
@@ -450,7 +559,7 @@ against a real Postgres instance (e.g. via `docker compose` in CI), since
 the partial-unique-index and CHECK constraints in the migrations are part
 of the actual correctness guarantees.
 
-All six states have also been manually verified end-to-end against a real
+All seven states have also been manually verified end-to-end against a real
 Postgres instance (and, for Build/Deploy/Scale, a real Docker daemon and a
 real Trivy scanner — not mocked) via `docker compose up --build` — see the
 PR descriptions for the exact `curl` sessions exercised. Worth calling out
@@ -508,3 +617,20 @@ result of testing against the real thing instead of only fakes:
   exactly one `platform-run-*` container existed at the end of the whole
   cycle — no orphaned containers accumulated across suspend, resume, and
   restart.
+- **Rollback**: built and deployed a real "version 1" Go service, confirmed
+  it reachable via the stable proxy URL, then deployed a real "version 2"
+  onto the same application (this is where the Build-from-`running` gap
+  above was found and worked around). Confirmed version 2 was live via the
+  proxy and version 1's deployment record correctly `superseded`. Called
+  `POST .../rollback` with version 1's deployment id as the target and
+  confirmed: the response's `build_id` matched version 1's build, a *new*
+  deployment record was created (not a reactivation of the old one), the
+  proxy immediately started serving version 1's response again, `docker ps`
+  showed exactly one running container (version 2's was genuinely stopped,
+  not just marked), and version 2's deployment record flipped to
+  `superseded`. Also verified the negative paths for real over HTTP: an
+  unknown `target_deployment_id` returns 404, a non-owner caller gets 403,
+  and an empty request body gets 400 — not just asserted in unit tests. This
+  run is what surfaced the hardcoded-`transientAppStatus` bug documented in
+  **How Rollback works**, caught by the new unit tests before this manual
+  pass even started.

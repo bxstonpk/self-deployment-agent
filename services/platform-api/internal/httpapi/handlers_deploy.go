@@ -2,6 +2,8 @@
 //
 //	POST /applications/{id}/deploy               (FR-039)
 //	GET  /applications/{id}/deployments/latest   (FR-043)
+//	GET  /applications/{id}/deployments          (FR-095)
+//	POST /applications/{id}/rollback             (FR-098)
 //	POST /deployments/{deploymentId}/approve     (FR-042)
 package httpapi
 
@@ -105,6 +107,54 @@ func (h *DeployHandler) LatestDeployment(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
 }
 
+// DeploymentHistory handles GET /applications/{id}/deployments — FR-095:
+// every deployment ever attempted for the application, newest first, which
+// is what a caller picks a Rollback target from.
+func (h *DeployHandler) DeploymentHistory(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	history, err := h.svc.DeploymentHistory(r.Context(), id)
+	if err != nil {
+		writeDeployError(w, err)
+		return
+	}
+	resp := make([]deploymentResponse, len(history))
+	for i, d := range history {
+		resp[i] = toDeploymentResponse(d)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+type rollbackRequest struct {
+	TargetDeploymentID string `json:"target_deployment_id"`
+}
+
+// Rollback handles POST /applications/{id}/rollback — FR-098.
+func (h *DeployHandler) Rollback(w http.ResponseWriter, r *http.Request) {
+	caller, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing authenticated caller")
+		return
+	}
+	id := chi.URLParam(r, "id")
+
+	var req rollbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be valid JSON")
+		return
+	}
+	if req.TargetDeploymentID == "" {
+		writeError(w, http.StatusBadRequest, "missing_target", "target_deployment_id is required")
+		return
+	}
+
+	deployment, err := h.svc.Rollback(r.Context(), id, caller.ID, req.TargetDeploymentID)
+	if err != nil {
+		writeDeployError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
+}
+
 type approveRequest struct {
 	Decision string `json:"decision"` // "approve" | "reject"
 	Reason   string `json:"reason"`
@@ -157,6 +207,10 @@ func writeDeployError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "not_pending_approval", err.Error())
 	case errors.Is(err, domain.ErrInvalidEnvironment):
 		writeError(w, http.StatusBadRequest, "invalid_environment", err.Error())
+	case errors.Is(err, domain.ErrInvalidLifecycleTransition):
+		writeError(w, http.StatusConflict, "invalid_lifecycle_transition", err.Error())
+	case errors.Is(err, domain.ErrInvalidRollbackTarget):
+		writeError(w, http.StatusConflict, "invalid_rollback_target", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "unexpected error")
 	}

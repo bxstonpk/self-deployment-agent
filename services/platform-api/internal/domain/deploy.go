@@ -103,4 +103,5 @@ var (
 	ErrInvalidEnvironment           = errors.New(`environment must be "dev" or "production"`)
 	ErrApplicationNotRunning        = errors.New("application must be in the Running state for this operation")
 	ErrApplicationNotSuspended      = errors.New("application must be in the Suspended state to resume")
+	ErrInvalidRollbackTarget        = errors.New("rollback target is not a valid, retained, previously-successful deployment for this application")
 )
