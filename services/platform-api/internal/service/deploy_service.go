@@ -1,0 +1,371 @@
+// Deploy implements Module J (docs/02_Functional_Requirements.md):
+// FR-039 (initiate), FR-040 (ordered pipeline: Image Scan -> [production
+// approval gate] -> Deployment -> Health Check -> Traffic Activation ->
+// Completed), FR-041 (image scan gate), FR-042 (production approval gate),
+// FR-043 (status tracking, via the persisted Deployment record), and the
+// pre-activation half of FR-044 (a failed deploy/redeploy attempt never
+// touches an already-Running version — see markDeploymentFailed).
+//
+// Scope adaptation: this platform already has a standalone Build state
+// (see build_service.go), so deploying consumes the application's LATEST
+// SUCCESSFUL build rather than re-triggering one inline, per the doc
+// comment on migration 0004.
+package service
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"platform-api/internal/domain"
+)
+
+type ImageScanner interface {
+	Scan(ctx context.Context, imageRef string) (domain.ScanReport, error)
+}
+
+type RuntimeEngine interface {
+	StartContainer(ctx context.Context, name, imageRef string, containerPort int) (domain.RunningContainer, error)
+	HealthCheck(ctx context.Context, url string, timeout time.Duration) error
+	Stop(ctx context.Context, containerID string) error
+}
+
+type DeploymentRepository interface {
+	Create(ctx context.Context, applicationID, buildID, requestedBy string, environment domain.Environment) (domain.Deployment, error)
+	UpdateScanResult(ctx context.Context, deploymentID string, reports map[string]domain.ScanReport) (domain.Deployment, error)
+	SetStatus(ctx context.Context, deploymentID string, status domain.DeploymentStatus) (domain.Deployment, error)
+	SetFailed(ctx context.Context, deploymentID, reason string) (domain.Deployment, error)
+	SetRejected(ctx context.Context, deploymentID, reason string) (domain.Deployment, error)
+	SetRunning(ctx context.Context, deploymentID string, containers map[string]domain.RunningContainer) (domain.Deployment, error)
+	SetSuperseded(ctx context.Context, deploymentID string) (domain.Deployment, error)
+	GetByID(ctx context.Context, deploymentID string) (domain.Deployment, error)
+	LatestForApplication(ctx context.Context, applicationID string) (domain.Deployment, error)
+	PreviousRunning(ctx context.Context, applicationID, excludeDeploymentID string) (domain.Deployment, error)
+}
+
+type DeploymentApprovalRepository interface {
+	Create(ctx context.Context, deploymentID, requestedBy string) (domain.DeploymentApproval, error)
+	Decide(ctx context.Context, deploymentID, decidedBy string, decision domain.ApprovalDecision, reason string) (domain.DeploymentApproval, error)
+}
+
+type DeploymentService struct {
+	apps        ApplicationLifecycleRepository
+	owners      ApplicationOwnerRepository
+	builds      BuildRepository
+	deployments DeploymentRepository
+	approvals   DeploymentApprovalRepository
+	scanner     ImageScanner
+	runtime     RuntimeEngine
+}
+
+func NewDeploymentService(
+	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository,
+	deployments DeploymentRepository, approvals DeploymentApprovalRepository,
+	scanner ImageScanner, runtime RuntimeEngine,
+) *DeploymentService {
+	return &DeploymentService{
+		apps: apps, owners: owners, builds: builds, deployments: deployments,
+		approvals: approvals, scanner: scanner, runtime: runtime,
+	}
+}
+
+func (s *DeploymentService) requireOwner(ctx context.Context, applicationID, userID string) error {
+	owners, err := s.owners.ListForApplication(ctx, applicationID)
+	if err != nil {
+		return err
+	}
+	for _, o := range owners {
+		if o.UserID == userID && o.Status == "active" {
+			return nil
+		}
+	}
+	return domain.ErrUnauthorized
+}
+
+func isInFlight(status domain.DeploymentStatus) bool {
+	switch status {
+	case domain.DeploymentScanning, domain.DeploymentPendingApproval, domain.DeploymentDeploying, domain.DeploymentHealthCheck:
+		return true
+	default:
+		return false
+	}
+}
+
+// InitiateDeploy implements FR-039: accepts a deployment request for an
+// application with a successful build and drives it through Image Scan
+// and, depending on environment, either the production approval gate or
+// straight through to Deploy/HealthCheck/Activate (FR-042's alternative
+// flow: dev skips the gate entirely).
+func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, requesterID string, environment domain.Environment) (domain.Deployment, error) {
+	if environment != domain.EnvironmentDev && environment != domain.EnvironmentProduction {
+		return domain.Deployment{}, domain.ErrInvalidEnvironment
+	}
+
+	app, err := s.apps.GetByID(ctx, applicationID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
+		return domain.Deployment{}, err
+	}
+
+	build, err := s.builds.LatestForApplication(ctx, applicationID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return domain.Deployment{}, domain.ErrNoSuccessfulBuild
+		}
+		return domain.Deployment{}, err
+	}
+	if build.Status != domain.BuildSucceeded {
+		return domain.Deployment{}, domain.ErrNoSuccessfulBuild
+	}
+
+	if latest, err := s.deployments.LatestForApplication(ctx, applicationID); err == nil {
+		if isInFlight(latest.Status) {
+			return domain.Deployment{}, domain.ErrDeploymentAlreadyInFlight
+		}
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return domain.Deployment{}, err
+	}
+
+	deployment, err := s.deployments.Create(ctx, applicationID, build.ID, requesterID, environment)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+
+	return s.runScanThenBeyond(ctx, app, build, deployment, requesterID)
+}
+
+// runScanThenBeyond implements FR-041 (Image Scan Gate) and, on a pass,
+// either pauses at the FR-042 production approval checkpoint or continues
+// straight to deployAndActivate.
+func (s *DeploymentService) runScanThenBeyond(ctx context.Context, app domain.Application, build domain.Build, deployment domain.Deployment, requesterID string) (domain.Deployment, error) {
+	reports := make(map[string]domain.ScanReport, len(build.ImageRefs))
+	allPassed := true
+	for serviceName, imageRef := range build.ImageRefs {
+		report, err := s.scanner.Scan(ctx, imageRef)
+		if err != nil {
+			return s.markDeploymentFailed(ctx, app, deployment,
+				fmt.Sprintf("image scan error for service %s: %v", serviceName, err))
+		}
+		reports[serviceName] = report
+		if !report.Passed {
+			allPassed = false
+		}
+	}
+
+	deployment, err := s.deployments.UpdateScanResult(ctx, deployment.ID, reports)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+
+	if !allPassed {
+		return s.markDeploymentFailed(ctx, app, deployment,
+			"image scan found blocking-severity (CRITICAL) vulnerabilities — see scan_reports for detail")
+	}
+
+	if deployment.Environment == domain.EnvironmentProduction {
+		deployment, err = s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentPendingApproval)
+		if err != nil {
+			return domain.Deployment{}, err
+		}
+		if _, err := s.approvals.Create(ctx, deployment.ID, requesterID); err != nil {
+			return domain.Deployment{}, err
+		}
+		return deployment, nil // pipeline pauses here — FR-042 main flow step 1
+	}
+
+	return s.deployAndActivate(ctx, app, build, deployment)
+}
+
+// DecideApproval implements FR-042's approval decision handling.
+//
+// Known gap (documented, not silently skipped): this does not enforce
+// approver != requester. FR-042's business rule says production deploys
+// "can never bypass this gate regardless of requester role" — properly
+// guaranteeing a genuinely independent approver needs the RBAC/Platform
+// Administrator role modeling that Module A/B doesn't have yet (blocked on
+// DEC-001/DEC-002, docs/17_Decision_Log.md). Requiring a *different* owner
+// today would make single-owner applications undeployable to production,
+// which is a worse outcome than documenting the gap honestly.
+func (s *DeploymentService) DecideApproval(ctx context.Context, deploymentID, approverID string, approve bool, reason string) (domain.Deployment, error) {
+	deployment, err := s.deployments.GetByID(ctx, deploymentID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if deployment.Status != domain.DeploymentPendingApproval {
+		return domain.Deployment{}, domain.ErrDeploymentNotPendingApproval
+	}
+	if err := s.requireOwner(ctx, deployment.ApplicationID, approverID); err != nil {
+		return domain.Deployment{}, err
+	}
+
+	decision := domain.ApprovalRejected
+	if approve {
+		decision = domain.ApprovalApproved
+	}
+	if _, err := s.approvals.Decide(ctx, deploymentID, approverID, decision, reason); err != nil {
+		return domain.Deployment{}, err
+	}
+
+	app, err := s.apps.GetByID(ctx, deployment.ApplicationID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+
+	if !approve {
+		deployment, err = s.deployments.SetRejected(ctx, deploymentID, reason)
+		if err != nil {
+			return domain.Deployment{}, err
+		}
+		if app.LifecycleStatus != domain.StatusRunning {
+			if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, domain.StatusFailed, false); err != nil {
+				return domain.Deployment{}, err
+			}
+		}
+		return deployment, nil
+	}
+
+	build, err := s.builds.GetByID(ctx, deployment.BuildID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	return s.deployAndActivate(ctx, app, build, deployment)
+}
+
+// deployAndActivate implements the Deployment, Health Check, and Traffic
+// Activation pipeline steps. On success the application moves to Running;
+// if a different deployment was already Running for this application, its
+// containers are stopped as a clean cutover to the new version.
+func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Application, build domain.Build, deployment domain.Deployment) (domain.Deployment, error) {
+	fromAppStatus := app.LifecycleStatus
+	wasAlreadyRunning := fromAppStatus == domain.StatusRunning
+
+	var parsed domain.DeploymentYAML
+	if err := yaml.NewDecoder(bytes.NewReader([]byte(app.DeploymentYAMLDraft))).Decode(&parsed); err != nil {
+		return s.markDeploymentFailed(ctx, app, deployment, fmt.Sprintf("deployment.yaml no longer parses: %v", err))
+	}
+
+	deployment, err := s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentDeploying)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, fromAppStatus, domain.StatusDeploying, false); err != nil {
+		return domain.Deployment{}, err
+	}
+	app.LifecycleStatus = domain.StatusDeploying // keep local copy consistent for the failure helper below
+
+	containers := make(map[string]domain.RunningContainer, len(build.ImageRefs))
+	for serviceName, imageRef := range build.ImageRefs {
+		containerPort := parsed.Services[serviceName].Port
+		if containerPort <= 0 {
+			containerPort = domain.DefaultContainerPort
+		}
+		containerName := fmt.Sprintf("platform-run-%s-%s-%s", sanitizeName(app.Name), sanitizeName(serviceName), shortID(deployment.ID))
+
+		running, err := s.runtime.StartContainer(ctx, containerName, imageRef, containerPort)
+		if err != nil {
+			return s.markDeploymentFailedFrom(ctx, app.ID, domain.StatusDeploying, wasAlreadyRunning, deployment,
+				fmt.Sprintf("failed to start container for service %s: %v", serviceName, err))
+		}
+		containers[serviceName] = running
+	}
+
+	deployment, err = s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentHealthCheck)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+
+	for serviceName, running := range containers {
+		// NOT running.URL: that's "http://localhost:<hostPort>", meaningful
+		// only from the *host* machine's browser (what gets reported back
+		// to the employee). From inside the platform-api container itself,
+		// "localhost" means platform-api's own network namespace, not the
+		// sibling container just started — health checks go through
+		// host.docker.internal instead. See docker-compose.yml's
+		// extra_hosts entry (needed for portability to Linux Docker Engine,
+		// where that name isn't automatic like it is on Docker Desktop).
+		internalCheckURL := fmt.Sprintf("http://host.docker.internal:%d", running.HostPort)
+		if err := s.runtime.HealthCheck(ctx, internalCheckURL, 15*time.Second); err != nil {
+			for _, c := range containers {
+				_ = s.runtime.Stop(ctx, c.ContainerID)
+			}
+			return s.markDeploymentFailedFrom(ctx, app.ID, domain.StatusDeploying, wasAlreadyRunning, deployment,
+				fmt.Sprintf("service %s failed health check: %v", serviceName, err))
+		}
+	}
+
+	deployment, err = s.deployments.SetRunning(ctx, deployment.ID, containers)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, domain.StatusDeploying, domain.StatusRunning, false); err != nil {
+		return domain.Deployment{}, err
+	}
+
+	if previous, err := s.deployments.PreviousRunning(ctx, app.ID, deployment.ID); err == nil {
+		for _, c := range previous.Containers {
+			_ = s.runtime.Stop(ctx, c.ContainerID)
+		}
+		if _, err := s.deployments.SetSuperseded(ctx, previous.ID); err != nil {
+			return domain.Deployment{}, err
+		}
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return domain.Deployment{}, err
+	}
+
+	return deployment, nil
+}
+
+// markDeploymentFailed is the pre-Deploying failure path (scan failures):
+// the application never left its original state, so that's what "from" is.
+func (s *DeploymentService) markDeploymentFailed(ctx context.Context, app domain.Application, deployment domain.Deployment, reason string) (domain.Deployment, error) {
+	return s.markDeploymentFailedFrom(ctx, app.ID, app.LifecycleStatus, app.LifecycleStatus == domain.StatusRunning, deployment, reason)
+}
+
+// markDeploymentFailedFrom implements FR-044's alternative flow: a failure
+// that happens while a PREVIOUS version was already Running (a redeploy
+// attempt) must leave that previous version's Running status untouched —
+// there is no employee-visible downtime from a failed redeploy attempt.
+// Only a first-ever deploy failing (no prior good version) moves the
+// application to Failed.
+func (s *DeploymentService) markDeploymentFailedFrom(ctx context.Context, applicationID string, fromAppStatus domain.LifecycleStatus, wasAlreadyRunning bool, deployment domain.Deployment, reason string) (domain.Deployment, error) {
+	deployment, err := s.deployments.SetFailed(ctx, deployment.ID, reason)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+
+	target := domain.StatusFailed
+	if wasAlreadyRunning {
+		target = domain.StatusRunning
+	}
+	if _, err := s.apps.UpdateLifecycleStatus(ctx, applicationID, fromAppStatus, target, false); err != nil {
+		return domain.Deployment{}, err
+	}
+	return deployment, nil
+}
+
+func (s *DeploymentService) LatestDeployment(ctx context.Context, applicationID string) (domain.Deployment, error) {
+	return s.deployments.LatestForApplication(ctx, applicationID)
+}
+
+var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)
+
+func sanitizeName(s string) string {
+	s = strings.ToLower(s)
+	s = nonNameChars.ReplaceAllString(s, "-")
+	return strings.Trim(s, "-")
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}

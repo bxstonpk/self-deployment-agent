@@ -4,10 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
+	"platform-api/internal/domain"
 	"platform-api/internal/service"
 )
 
@@ -135,6 +137,38 @@ func TestDrainBuildOutput_ErrorLine_ReturnsError(t *testing.T) {
 	// preceding stream output (the actual npm error) must be included too.
 	if !strings.Contains(err.Error(), "npm ERR! missing script: start") {
 		t.Errorf("expected the error to include the actual failure output from the stream, got: %v", err)
+	}
+}
+
+func TestClassifyBuildError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  string
+		want domain.ErrorCategory
+	}{
+		{
+			name: "failing RUN instruction is the employee's fault",
+			err:  "The command '/bin/sh -c go build -o /app/server .' returned a non-zero code: 1",
+			want: domain.ErrorCategorySource,
+		},
+		{
+			name: "base image pull failure is a platform problem",
+			err:  `failed to copy: httpReadSeeker: failed open: failed to do request: Get "https://registry-1.docker.io/v2/library/golang/manifests/...": net/http: TLS handshake timeout`,
+			want: domain.ErrorCategoryPlatform,
+		},
+		{
+			name: "unrecognized daemon error defaults to platform, not blaming the employee",
+			err:  "unexpected daemon error",
+			want: domain.ErrorCategoryPlatform,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := classifyBuildError(errors.New(c.err))
+			if got != c.want {
+				t.Errorf("classifyBuildError(%q) = %q, want %q", c.err, got, c.want)
+			}
+		})
 	}
 }
 

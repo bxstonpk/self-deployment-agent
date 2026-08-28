@@ -20,8 +20,18 @@ CREATE TABLE base_images (
 -- One governed base image per supported runtime (docs/06_System_Requirements.md
 -- Supported Stack v1). Pinned to real, pullable public images so builds can
 -- be exercised for real, not mocked.
+-- Note on the go tag specifically, learned the hard way while exercising
+-- the Image Scan gate (FR-041, Module J) for real against this catalog:
+-- golang:1.23-alpine's OS packages (openssl) carried 23 CRITICALs; after
+-- fixing the Dockerfile template to multi-stage (dropping the Go SDK
+-- toolchain out of the runtime image entirely), the compiled binary's
+-- EMBEDDED stdlib (from that same 1.23.4 toolchain) still carried a
+-- CRITICAL TLS session-resumption CVE. golang:1.25-alpine scanned clean at
+-- both layers when this migration was written. Per FR-022, base image
+-- versions need ONGOING IT governance, not a one-time pin — this is a
+-- starting point, not a guarantee it stays clean indefinitely.
 INSERT INTO base_images (runtime, image_reference) VALUES
-    ('go',      'golang:1.23-alpine'),
+    ('go',      'golang:1.25-alpine'),
     ('nodejs',  'node:20-alpine'),
     ('python',  'python:3.12-alpine'),
     ('react',   'node:20-alpine'),

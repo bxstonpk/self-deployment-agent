@@ -46,6 +46,13 @@ services:
       # service). In production this becomes a real, isolated build
       # cluster, not a host socket mount — see docs/10_System_Architecture.md.
       - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      # Deployment health checks (Module J) reach a just-started sibling
+      # container via this host, since the container's own "localhost"
+      # published-port URL isn't reachable from platform-api's network
+      # namespace. Automatic on Docker Desktop; explicit here for Linux
+      # Docker Engine, where it isn't.
+      - "host.docker.internal:host-gateway"
     # The image's default user (nonroot, see Dockerfile) can't open the
     # mounted socket — its host-side group ownership varies by platform and
     # isn't something to chase for a dev-only compose override. Root here is

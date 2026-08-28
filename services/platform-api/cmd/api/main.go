@@ -14,11 +14,15 @@ import (
 	"syscall"
 	"time"
 
+	dockerclient "github.com/docker/docker/client"
+
 	"platform-api/internal/buildengine"
 	"platform-api/internal/config"
 	"platform-api/internal/db"
 	"platform-api/internal/httpapi"
+	"platform-api/internal/imagescan"
 	"platform-api/internal/repository/postgres"
+	"platform-api/internal/runtimeengine"
 	"platform-api/internal/service"
 )
 
@@ -48,15 +52,21 @@ func main() {
 	stackRepo := postgres.NewStackRepo(pool)
 	buildRepo := postgres.NewBuildRepo(pool)
 	baseImageRepo := postgres.NewBaseImageRepo(pool)
+	deploymentRepo := postgres.NewDeploymentRepo(pool)
+	approvalRepo := postgres.NewDeploymentApprovalRepo(pool)
 
-	dockerEngine, err := buildengine.NewDockerEngine()
+	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
-		log.Fatalf("build engine: %v", err)
+		log.Fatalf("create docker client: %v", err)
 	}
+	dockerEngine := buildengine.NewDockerEngine(dockerCli)
+	scanner := imagescan.NewTrivyScanner(dockerCli)
+	runtime := runtimeengine.NewDockerRuntime(dockerCli)
 
 	applicationService := service.NewApplicationService(applicationRepo, ownerRepo, departmentRepo)
 	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo)
 	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine)
+	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
@@ -65,6 +75,7 @@ func main() {
 		Validation:    httpapi.NewValidationHandler(validationService),
 		Stacks:        httpapi.NewStackHandler(stackRepo),
 		Builds:        httpapi.NewBuildHandler(buildService),
+		Deploys:       httpapi.NewDeployHandler(deployService),
 		PlatformEnv:   cfg.PlatformEnv,
 	})
 

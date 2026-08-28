@@ -51,6 +51,7 @@ type BuildRepository interface {
 	MarkSucceeded(ctx context.Context, buildID string, imageRefs map[string]string) (domain.Build, error)
 	MarkFailed(ctx context.Context, buildID string, category domain.ErrorCategory, detail string) (domain.Build, error)
 	LatestForApplication(ctx context.Context, applicationID string) (domain.Build, error)
+	GetByID(ctx context.Context, buildID string) (domain.Build, error)
 }
 
 type BaseImageRepository interface {

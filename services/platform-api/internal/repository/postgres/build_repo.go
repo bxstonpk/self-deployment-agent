@@ -52,6 +52,10 @@ func (r *BuildRepo) MarkFailed(ctx context.Context, buildID string, category dom
 		RETURNING `+buildColumns, buildID, string(category), detail)
 }
 
+func (r *BuildRepo) GetByID(ctx context.Context, buildID string) (domain.Build, error) {
+	return r.scanOne(ctx, `SELECT `+buildColumns+` FROM builds WHERE id = $1`, buildID)
+}
+
 func (r *BuildRepo) LatestForApplication(ctx context.Context, applicationID string) (domain.Build, error) {
 	return r.scanOne(ctx, `
 		SELECT `+buildColumns+`
