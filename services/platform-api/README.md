@@ -1,11 +1,14 @@
-# Platform API — Draft State (State 1)
+# Platform API — Draft & Validated States (State 1–2)
 
-Go implementation of the Business API's Application Registration & Ownership
-slice, covering the **Draft** state of the Application Lifecycle only.
+Go implementation of the Business API, built one Application Lifecycle state
+at a time. Currently covers **Draft** and **Validated**.
 
-Implements: `FR-011`, `FR-012`, `FR-013`, `FR-015` from
-[`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md)
-(Modules D and E). See
+Implements from
+[`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md):
+`FR-011`, `FR-012`, `FR-013`, `FR-015` (Modules D/E — Draft state), and
+`FR-019`, `FR-021`, `FR-023`, `FR-024`, `FR-029`, `FR-030`, `FR-031`(partial),
+`FR-033`, `FR-034` (Modules F/G/H — Validated state; `FR-032` resource quota
+is honestly reported as **skipped**, not faked — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -20,17 +23,39 @@ for how it fits the Control Plane.
 | `GET /applications/{id}` | — | |
 | `PATCH /applications/{id}` | FR-013 | Metadata only — never changes lifecycle state; owner-only |
 | `GET /applications/{id}/owners` | FR-015 | |
+| `PUT /applications/{id}/deployment-yaml` | FR-023 | Saves a `deployment.yaml` draft (must parse as YAML); reverts `validated` back to `draft` since the contract changed; owner-only |
+| `POST /applications/{id}/validate` | FR-029–034 | Runs the aggregate validation pass; `draft` → `validated` on success. Only callable from `draft`. Owner-only |
+| `GET /supported-stacks` | FR-019 | Lists the IT-governed Supported Stack catalog (seeded by migration `0002`) |
+
+### Validation report shape
+
+`POST /applications/{id}/validate` returns `{"application": {...}, "report": {"valid": bool, "checks": [...]}}`.
+Each check is `passed`, `failed`, or **`skipped`** — `resource_quota` is
+always `skipped` because Module M (Resource Manager) doesn't exist yet and
+exact quota numbers are TBD (`DEC-014`). This mirrors the docs' rule of
+never inventing a business decision: an honest "not implemented yet" beats a
+fake pass.
+
+The one concretely-enforced part of FR-031 (security pre-check) so far: any
+top-level field outside `app/services/database/scaling/resources/domain` is
+rejected outright (`security_precheck` check, via strict YAML field
+checking) — there is no way to smuggle raw Kubernetes/Docker config through
+`deployment.yaml`, regardless of who or what generated it.
 
 ## What's deliberately NOT here yet
 
 Each will land as its own feature branch/PR, per the Application Lifecycle:
 
-- Validation Engine (`Validated` state), Build Engine (`Build` state),
-  Deployment Controller integration (`Deploying`/`Running` states).
+- Build Engine (`Build` state), Deployment Controller integration
+  (`Deploying`/`Running` states).
 - Real authentication — see **Dev-mode auth** below.
-- Audit logging (Module W) — `FR-013` calls for audit entries on metadata
-  edits; not implemented until the Audit module exists.
+- Resource quota enforcement (FR-032) — depends on Module M, not built yet.
+- Audit logging (Module W) — several FRs call for audit entries; not
+  implemented until the Audit module exists.
 - Full RBAC / Role / Permission tables (Module A/B) — blocked on `DEC-001`.
+- Stack version governance (FR-022, deprecated/blocked versions) — the
+  catalog only tracks active/deprecated/blocked per whole runtime name, not
+  per version range yet.
 
 ## Dev-mode auth (temporary — see DEC-001)
 
@@ -83,3 +108,9 @@ database. There are no repository-layer (Postgres) tests yet — a future
 increment should add them against a real Postgres instance (e.g. via
 `docker compose` in CI), since the partial-unique-index and CHECK constraints
 in the migration are part of the actual correctness guarantees.
+
+Both states have also been manually verified end-to-end against a real
+Postgres instance via `docker compose up --build` — see the PR descriptions
+for the exact `curl` sessions exercised (registration, validation pass/fail,
+edit-reverts-to-draft, cross-owner rejection, unsupported-stack rejection,
+unknown-field rejection).

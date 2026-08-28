@@ -28,11 +28,14 @@ const (
 )
 
 var (
-	ErrNotFound          = errors.New("not found")
-	ErrNameTaken         = errors.New("application name already registered")
-	ErrInvalidName       = errors.New("application name must be a valid DNS label (lowercase letters, digits, hyphens; must start with a letter)")
-	ErrDepartmentUnknown = errors.New("owning department does not exist")
-	ErrUnauthorized      = errors.New("requester is not authorized to perform this action")
+	ErrNotFound                   = errors.New("not found")
+	ErrNameTaken                  = errors.New("application name already registered")
+	ErrInvalidName                = errors.New("application name must be a valid DNS label (lowercase letters, digits, hyphens; must start with a letter)")
+	ErrDepartmentUnknown          = errors.New("owning department does not exist")
+	ErrUnauthorized               = errors.New("requester is not authorized to perform this action")
+	ErrInvalidLifecycleTransition = errors.New("application is not in a state this operation can be performed from")
+	ErrNoDeploymentYAML           = errors.New("application has no deployment.yaml draft to validate")
+	ErrInvalidYAML                = errors.New("deployment.yaml is not syntactically valid YAML")
 )
 
 type Department struct {
@@ -62,6 +65,7 @@ type Application struct {
 	DeploymentYAMLDraft string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	ValidatedAt         *time.Time
 }
 
 type OwnershipRole string

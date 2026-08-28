@@ -36,19 +36,20 @@ type registerApplicationRequest struct {
 }
 
 type applicationResponse struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	Description         string `json:"description"`
-	OwningDepartmentID  string `json:"owning_department_id"`
-	CreatedBy           string `json:"created_by"`
-	LifecycleStatus     string `json:"lifecycle_status"`
-	DeploymentYAMLDraft string `json:"deployment_yaml_draft,omitempty"`
-	CreatedAt           string `json:"created_at"`
-	UpdatedAt           string `json:"updated_at"`
+	ID                  string  `json:"id"`
+	Name                string  `json:"name"`
+	Description         string  `json:"description"`
+	OwningDepartmentID  string  `json:"owning_department_id"`
+	CreatedBy           string  `json:"created_by"`
+	LifecycleStatus     string  `json:"lifecycle_status"`
+	DeploymentYAMLDraft string  `json:"deployment_yaml_draft,omitempty"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
+	ValidatedAt         *string `json:"validated_at,omitempty"`
 }
 
 func toApplicationResponse(a domain.Application) applicationResponse {
-	return applicationResponse{
+	resp := applicationResponse{
 		ID:                  a.ID,
 		Name:                a.Name,
 		Description:         a.Description,
@@ -59,6 +60,11 @@ func toApplicationResponse(a domain.Application) applicationResponse {
 		CreatedAt:           a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:           a.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+	if a.ValidatedAt != nil {
+		formatted := a.ValidatedAt.Format("2006-01-02T15:04:05Z07:00")
+		resp.ValidatedAt = &formatted
+	}
+	return resp
 }
 
 // Register handles POST /applications — FR-011.
@@ -188,6 +194,12 @@ func writeApplicationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "unknown_department", err.Error())
 	case errors.Is(err, domain.ErrUnauthorized):
 		writeError(w, http.StatusForbidden, "forbidden", err.Error())
+	case errors.Is(err, domain.ErrInvalidLifecycleTransition):
+		writeError(w, http.StatusConflict, "invalid_lifecycle_transition", err.Error())
+	case errors.Is(err, domain.ErrNoDeploymentYAML):
+		writeError(w, http.StatusBadRequest, "no_deployment_yaml", err.Error())
+	case errors.Is(err, domain.ErrInvalidYAML):
+		writeError(w, http.StatusBadRequest, "invalid_yaml", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "unexpected error")
 	}

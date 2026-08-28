@@ -41,13 +41,17 @@ func main() {
 	userRepo := postgres.NewUserRepo(pool)
 	applicationRepo := postgres.NewApplicationRepo(pool)
 	ownerRepo := postgres.NewApplicationOwnerRepo(pool)
+	stackRepo := postgres.NewStackRepo(pool)
 
 	applicationService := service.NewApplicationService(applicationRepo, ownerRepo, departmentRepo)
+	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator: authenticator,
 		Applications:  httpapi.NewApplicationHandler(applicationService),
+		Validation:    httpapi.NewValidationHandler(validationService),
+		Stacks:        httpapi.NewStackHandler(stackRepo),
 		PlatformEnv:   cfg.PlatformEnv,
 	})
 
