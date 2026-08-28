@@ -1,0 +1,37 @@
+## Local development environment. NOT the production topology — see
+## docs/10_System_Architecture.md (production runs on self-hosted K3s +
+## Knative per DEC-004, docs/17_Decision_Log.md). This compose file exists
+## purely so `platform-api` and its dependencies can be run and tested on a
+## developer machine.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: platform
+    ports:
+      - "5436:5432" # 5432-5435 are already used by other local projects on this machine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  platform-api:
+    build:
+      context: ./services/platform-api
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/platform?sslmode=disable
+      PORT: "8080"
+      PLATFORM_ENV: dev
+    ports:
+      - "8090:8080" # 8080 is already used by another local project on this machine
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
