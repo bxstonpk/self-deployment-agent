@@ -150,12 +150,40 @@ func (r *DeploymentRepo) PreviousRunning(ctx context.Context, applicationID, exc
 	`, applicationID, excludeDeploymentID)
 }
 
-func (r *DeploymentRepo) scanOne(ctx context.Context, query string, args ...any) (domain.Deployment, error) {
+// ListForApplication implements FR-095's version history read path: every
+// deployment ever attempted for the application, newest first.
+func (r *DeploymentRepo) ListForApplication(ctx context.Context, applicationID string) ([]domain.Deployment, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+deploymentColumns+` FROM deployments
+		WHERE application_id = $1
+		ORDER BY created_at DESC
+	`, applicationID)
+	if err != nil {
+		return nil, fmt.Errorf("query deployment history: %w", err)
+	}
+	defer rows.Close()
+
+	var results []domain.Deployment
+	for rows.Next() {
+		d, err := scanDeploymentRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, d)
+	}
+	return results, rows.Err()
+}
+
+// scanDeploymentRow works with both pgx.Row (QueryRow) and pgx.Rows (Query,
+// per-row inside a Next() loop) via the shared rowScanner interface
+// (application_repo.go), letting it serve scanOne and ListForApplication
+// alike.
+func scanDeploymentRow(row rowScanner) (domain.Deployment, error) {
 	var d domain.Deployment
 	var environment, status string
 	var scanReportsJSON, containersJSON []byte
 
-	err := r.pool.QueryRow(ctx, query, args...).Scan(
+	err := row.Scan(
 		&d.ID, &d.ApplicationID, &d.BuildID, &environment, &d.RequestedBy, &status,
 		&d.ScanPassed, &d.ScanCriticalCount, &d.ScanHighCount, &scanReportsJSON,
 		&d.RejectionReason, &d.FailureReason, &containersJSON,
@@ -181,4 +209,8 @@ func (r *DeploymentRepo) scanOne(ctx context.Context, query string, args ...any)
 		}
 	}
 	return d, nil
+}
+
+func (r *DeploymentRepo) scanOne(ctx context.Context, query string, args ...any) (domain.Deployment, error) {
+	return scanDeploymentRow(r.pool.QueryRow(ctx, query, args...))
 }

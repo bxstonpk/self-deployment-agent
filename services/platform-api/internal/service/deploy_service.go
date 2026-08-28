@@ -49,6 +49,10 @@ type DeploymentRepository interface {
 	GetByID(ctx context.Context, deploymentID string) (domain.Deployment, error)
 	LatestForApplication(ctx context.Context, applicationID string) (domain.Deployment, error)
 	PreviousRunning(ctx context.Context, applicationID, excludeDeploymentID string) (domain.Deployment, error)
+	// ListForApplication implements the FR-095 version history read path:
+	// every deployment ever attempted for an application, newest first. This
+	// is what a rollback requester (FR-098 step 1) picks a target from.
+	ListForApplication(ctx context.Context, applicationID string) ([]domain.Deployment, error)
 }
 
 type DeploymentApprovalRepository interface {
@@ -194,7 +198,7 @@ func (s *DeploymentService) runScanThenBeyond(ctx context.Context, app domain.Ap
 		return deployment, nil // pipeline pauses here — FR-042 main flow step 1
 	}
 
-	return s.deployAndActivate(ctx, app, build, deployment)
+	return s.deployAndActivate(ctx, app, build, deployment, domain.StatusDeploying)
 }
 
 // DecideApproval implements FR-042's approval decision handling.
@@ -249,14 +253,20 @@ func (s *DeploymentService) DecideApproval(ctx context.Context, deploymentID, ap
 	if err != nil {
 		return domain.Deployment{}, err
 	}
-	return s.deployAndActivate(ctx, app, build, deployment)
+	return s.deployAndActivate(ctx, app, build, deployment, domain.StatusDeploying)
 }
 
 // deployAndActivate implements the Deployment, Health Check, and Traffic
 // Activation pipeline steps. On success the application moves to Running;
 // if a different deployment was already Running for this application, its
 // containers are stopped as a clean cutover to the new version.
-func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Application, build domain.Build, deployment domain.Deployment) (domain.Deployment, error) {
+//
+// transientAppStatus is the application-level LifecycleStatus to occupy
+// while this activation is in flight: StatusDeploying for a normal forward
+// deploy, StatusRolledBack for Rollback (FR-101's business rule — the
+// pipeline mechanics are otherwise identical, mirroring FR-101's own framing
+// of rollback as "redeploying the target version's build artifact").
+func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Application, build domain.Build, deployment domain.Deployment, transientAppStatus domain.LifecycleStatus) (domain.Deployment, error) {
 	fromAppStatus := app.LifecycleStatus
 	wasAlreadyRunning := fromAppStatus == domain.StatusRunning
 
@@ -269,10 +279,10 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 	if err != nil {
 		return domain.Deployment{}, err
 	}
-	if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, fromAppStatus, domain.StatusDeploying, false); err != nil {
+	if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, fromAppStatus, transientAppStatus, false); err != nil {
 		return domain.Deployment{}, err
 	}
-	app.LifecycleStatus = domain.StatusDeploying // keep local copy consistent for the failure helper below
+	app.LifecycleStatus = transientAppStatus // keep local copy consistent for the failure helper below
 
 	containers := make(map[string]domain.RunningContainer, len(build.ImageRefs))
 	for serviceName, imageRef := range build.ImageRefs {
@@ -284,7 +294,7 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 
 		running, err := s.runtime.StartContainer(ctx, containerName, imageRef, containerPort)
 		if err != nil {
-			return s.markDeploymentFailedFrom(ctx, app.ID, domain.StatusDeploying, wasAlreadyRunning, deployment,
+			return s.markDeploymentFailedFrom(ctx, app.ID, transientAppStatus, wasAlreadyRunning, deployment,
 				fmt.Sprintf("failed to start container for service %s: %v", serviceName, err))
 		}
 		containers[serviceName] = running
@@ -309,7 +319,7 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 			for _, c := range containers {
 				_ = s.runtime.Stop(ctx, c.ContainerID)
 			}
-			return s.markDeploymentFailedFrom(ctx, app.ID, domain.StatusDeploying, wasAlreadyRunning, deployment,
+			return s.markDeploymentFailedFrom(ctx, app.ID, transientAppStatus, wasAlreadyRunning, deployment,
 				fmt.Sprintf("service %s failed health check: %v", serviceName, err))
 		}
 	}
@@ -318,7 +328,7 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 	if err != nil {
 		return domain.Deployment{}, err
 	}
-	if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, domain.StatusDeploying, domain.StatusRunning, false); err != nil {
+	if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, transientAppStatus, domain.StatusRunning, false); err != nil {
 		return domain.Deployment{}, err
 	}
 
@@ -377,6 +387,95 @@ func (s *DeploymentService) markDeploymentFailedFrom(ctx context.Context, applic
 
 func (s *DeploymentService) LatestDeployment(ctx context.Context, applicationID string) (domain.Deployment, error) {
 	return s.deployments.LatestForApplication(ctx, applicationID)
+}
+
+// DeploymentHistory implements FR-095's read path: every deployment ever
+// attempted for the application, newest first, so a rollback requester
+// (FR-098 step 1) has something to pick a target from.
+func (s *DeploymentService) DeploymentHistory(ctx context.Context, applicationID string) ([]domain.Deployment, error) {
+	return s.deployments.ListForApplication(ctx, applicationID)
+}
+
+// Rollback implements Module V (FR-098, FR-100, FR-101): redeploys a
+// previously-successful deployment's build artifact and configuration in
+// place of the current one. Mechanically this is the same
+// Deploy/HealthCheck/Activate pipeline as a forward deploy
+// (deployAndActivate) — FR-101 itself frames rollback as "redeploying the
+// target version's build artifact" — just sourced from an older build
+// instead of the application's latest, and marked with the Rolled Back
+// transient status per FR-101's business rule instead of Deploying.
+//
+// Scope adaptations, documented not hidden:
+//   - Skips re-running the Image Scan (FR-041) and production approval gate
+//     (FR-042) that a forward deploy goes through: the target was already a
+//     completed, previously-Running deployment, so it passed both gates the
+//     first time. FR-098's alternative flow allows requiring the same
+//     approval gate for a production rollback depending on policy severity
+//     classification, which needs policy-tier modeling this platform
+//     doesn't have yet (same RBAC/policy gap as DecideApproval's
+//     approver-independence gap, blocked on DEC-001/DEC-002).
+//   - FR-099 (fully automatic rollback triggered by a post-activation health
+//     regression) isn't wired to a trigger: that needs continuous runtime
+//     health monitoring (Module T), which isn't built. What IS already true
+//     without any new code: FR-044's existing pre-activation failure
+//     handling means a failed forward deploy attempt never touches an
+//     already-Running previous version in the first place — see
+//     markDeploymentFailedFrom. FR-098 (this method) covers the deliberate,
+//     requester-initiated rollback path.
+func (s *DeploymentService) Rollback(ctx context.Context, applicationID, requesterID, targetDeploymentID string) (domain.Deployment, error) {
+	app, err := s.apps.GetByID(ctx, applicationID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
+		return domain.Deployment{}, err
+	}
+	// Rollback makes sense from a Running application (rolling away from a
+	// version that's live but misbehaving) or a Failed one (the forward
+	// deploy attempt itself failed outright) — not from a transient
+	// pipeline state, and not from Suspended, which has no live traffic to
+	// roll back in the first place.
+	if app.LifecycleStatus != domain.StatusRunning && app.LifecycleStatus != domain.StatusFailed {
+		return domain.Deployment{}, domain.ErrInvalidLifecycleTransition
+	}
+
+	if current, err := s.deployments.LatestForApplication(ctx, applicationID); err == nil {
+		if isInFlight(current.Status) {
+			return domain.Deployment{}, domain.ErrDeploymentAlreadyInFlight
+		}
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return domain.Deployment{}, err
+	}
+
+	target, err := s.deployments.GetByID(ctx, targetDeploymentID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if target.ApplicationID != applicationID {
+		return domain.Deployment{}, domain.ErrNotFound
+	}
+	// FR-100: the target must itself have been a successfully completed
+	// deployment (currently Running, or Superseded by a later one) —
+	// never Failed, Rejected, or still in flight.
+	if target.Status != domain.DeploymentRunning && target.Status != domain.DeploymentSuperseded {
+		return domain.Deployment{}, domain.ErrInvalidRollbackTarget
+	}
+
+	build, err := s.builds.GetByID(ctx, target.BuildID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	// FR-100: the target's build artifact must still be available, not
+	// purged by retention policy (FR-097).
+	if build.Status != domain.BuildSucceeded {
+		return domain.Deployment{}, domain.ErrInvalidRollbackTarget
+	}
+
+	deployment, err := s.deployments.Create(ctx, applicationID, build.ID, requesterID, target.Environment)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	return s.deployAndActivate(ctx, app, build, deployment, domain.StatusRolledBack)
 }
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -22,9 +23,16 @@ func newFakeDeploymentRepo() *fakeDeploymentRepo {
 func (f *fakeDeploymentRepo) Create(ctx context.Context, applicationID, buildID, requestedBy string, environment domain.Environment) (domain.Deployment, error) {
 	f.next++
 	id := "deploy-" + string(rune('a'+f.next))
+	// Real Postgres timestamps at microsecond resolution, so sequential
+	// inserts never tie in practice; time.Now() alone is coarse enough that
+	// two Creates within the same test can land on the same instant, making
+	// created_at-ordered reads (LatestForApplication, ListForApplication)
+	// nondeterministic here. Offsetting by f.next keeps creation order
+	// strictly increasing, matching real insert-order behavior.
+	createdAt := time.Now().Add(time.Duration(f.next) * time.Millisecond)
 	d := domain.Deployment{
 		ID: id, ApplicationID: applicationID, BuildID: buildID, RequestedBy: requestedBy,
-		Environment: environment, Status: domain.DeploymentScanning, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		Environment: environment, Status: domain.DeploymentScanning, CreatedAt: createdAt, UpdatedAt: createdAt,
 	}
 	f.byID[id] = d
 	return d, nil
@@ -135,6 +143,17 @@ func (f *fakeDeploymentRepo) PreviousRunning(ctx context.Context, applicationID,
 	return domain.Deployment{}, domain.ErrNotFound
 }
 
+func (f *fakeDeploymentRepo) ListForApplication(ctx context.Context, applicationID string) ([]domain.Deployment, error) {
+	var results []domain.Deployment
+	for _, d := range f.byID {
+		if d.ApplicationID == applicationID {
+			results = append(results, d)
+		}
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].CreatedAt.After(results[j].CreatedAt) })
+	return results, nil
+}
+
 type fakeApprovalRepo struct {
 	byDeployment map[string]domain.DeploymentApproval
 }
@@ -226,7 +245,7 @@ func (f *fakeScaleInitializer) CleanupForDeployment(ctx context.Context, deploym
 }
 
 func newDeployService(app domain.Application, build domain.Build, ownerID string) (
-	*service.DeploymentService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeRuntime, *fakeScanner,
+	*service.DeploymentService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeRuntime, *fakeScanner, *fakeBuildRepo,
 ) {
 	apps := newFakeLifecycleRepo(app)
 	owners := newFakeOwnerRepo()
@@ -243,7 +262,7 @@ func newDeployService(app domain.Application, build domain.Build, ownerID string
 	scale := &fakeScaleInitializer{}
 
 	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale)
-	return svc, apps, deployments, runtime, scanner
+	return svc, apps, deployments, runtime, scanner, builds
 }
 
 func builtApp(id, name string) (domain.Application, domain.Build) {
@@ -257,7 +276,7 @@ func builtApp(id, name string) (domain.Application, domain.Build) {
 
 func TestInitiateDeploy_Dev_Success_ActivatesAndSetsRunning(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, lifecycle, deployments, runtime, _ := newDeployService(app, build, "owner-1")
+	svc, lifecycle, deployments, runtime, _, _ := newDeployService(app, build, "owner-1")
 
 	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
 	if err != nil {
@@ -279,7 +298,7 @@ func TestInitiateDeploy_Dev_Success_ActivatesAndSetsRunning(t *testing.T) {
 
 func TestInitiateDeploy_Production_PausesForApproval(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, lifecycle, _, runtime, _ := newDeployService(app, build, "owner-1")
+	svc, lifecycle, _, runtime, _, _ := newDeployService(app, build, "owner-1")
 
 	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
 	if err != nil {
@@ -298,7 +317,7 @@ func TestInitiateDeploy_Production_PausesForApproval(t *testing.T) {
 
 func TestDecideApproval_Approved_ContinuesToRunning(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, lifecycle, _, runtime, _ := newDeployService(app, build, "owner-1")
+	svc, lifecycle, _, runtime, _, _ := newDeployService(app, build, "owner-1")
 
 	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
 	if err != nil {
@@ -322,7 +341,7 @@ func TestDecideApproval_Approved_ContinuesToRunning(t *testing.T) {
 
 func TestDecideApproval_Rejected_MarksFailedWithReason(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, lifecycle, _, runtime, _ := newDeployService(app, build, "owner-1")
+	svc, lifecycle, _, runtime, _, _ := newDeployService(app, build, "owner-1")
 
 	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
 	if err != nil {
@@ -349,7 +368,7 @@ func TestDecideApproval_Rejected_MarksFailedWithReason(t *testing.T) {
 
 func TestDecideApproval_NotPendingApproval_Rejected(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, _, _, _, _ := newDeployService(app, build, "owner-1")
+	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
 
 	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
 	if err != nil {
@@ -364,7 +383,7 @@ func TestDecideApproval_NotPendingApproval_Rejected(t *testing.T) {
 
 func TestInitiateDeploy_ScanFailure_MarksDeploymentAndAppFailed(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, lifecycle, _, runtime, scanner := newDeployService(app, build, "owner-1")
+	svc, lifecycle, _, runtime, scanner, _ := newDeployService(app, build, "owner-1")
 	scanner.defaultReport = domain.ScanReport{Passed: false, CriticalCount: 3}
 
 	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
@@ -384,7 +403,7 @@ func TestInitiateDeploy_ScanFailure_MarksDeploymentAndAppFailed(t *testing.T) {
 
 func TestInitiateDeploy_HealthCheckFailure_FirstDeploy_MarksAppFailed(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, lifecycle, _, runtime, _ := newDeployService(app, build, "owner-1")
+	svc, lifecycle, _, runtime, _, _ := newDeployService(app, build, "owner-1")
 	runtime.healthCheckErr = errors.New("connection refused")
 
 	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
@@ -404,7 +423,7 @@ func TestInitiateDeploy_HealthCheckFailure_FirstDeploy_MarksAppFailed(t *testing
 
 func TestInitiateDeploy_HealthCheckFailure_Redeploy_LeavesAppRunning(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, lifecycle, _, runtime, _ := newDeployService(app, build, "owner-1")
+	svc, lifecycle, _, runtime, _, _ := newDeployService(app, build, "owner-1")
 
 	// First deploy succeeds normally.
 	if _, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev); err != nil {
@@ -430,7 +449,7 @@ func TestInitiateDeploy_HealthCheckFailure_Redeploy_LeavesAppRunning(t *testing.
 
 func TestInitiateDeploy_SuccessfulRedeploy_SupersedesPreviousAndStopsItsContainers(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, _, deployments, runtime, _ := newDeployService(app, build, "owner-1")
+	svc, _, deployments, runtime, _, _ := newDeployService(app, build, "owner-1")
 
 	first, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
 	if err != nil {
@@ -462,7 +481,7 @@ func TestInitiateDeploy_SuccessfulRedeploy_SupersedesPreviousAndStopsItsContaine
 func TestInitiateDeploy_NoSuccessfulBuild_Rejected(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
 	build.Status = domain.BuildFailed
-	svc, _, _, _, _ := newDeployService(app, build, "owner-1")
+	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
 
 	_, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
 	if !errors.Is(err, domain.ErrNoSuccessfulBuild) {
@@ -472,7 +491,7 @@ func TestInitiateDeploy_NoSuccessfulBuild_Rejected(t *testing.T) {
 
 func TestInitiateDeploy_NonOwner_Rejected(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, _, _, _, _ := newDeployService(app, build, "owner-1")
+	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
 
 	_, err := svc.InitiateDeploy(context.Background(), "app-1", "stranger", domain.EnvironmentDev)
 	if !errors.Is(err, domain.ErrUnauthorized) {
@@ -482,7 +501,7 @@ func TestInitiateDeploy_NonOwner_Rejected(t *testing.T) {
 
 func TestInitiateDeploy_InvalidEnvironment_Rejected(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, _, _, _, _ := newDeployService(app, build, "owner-1")
+	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
 
 	_, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.Environment("staging"))
 	if !errors.Is(err, domain.ErrInvalidEnvironment) {
@@ -492,7 +511,7 @@ func TestInitiateDeploy_InvalidEnvironment_Rejected(t *testing.T) {
 
 func TestInitiateDeploy_AlreadyInFlight_Rejected(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
-	svc, _, _, _, _ := newDeployService(app, build, "owner-1")
+	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
 
 	if _, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction); err != nil {
 		t.Fatalf("setup: %v", err) // leaves a pending_approval deployment in flight
@@ -501,5 +520,178 @@ func TestInitiateDeploy_AlreadyInFlight_Rejected(t *testing.T) {
 	_, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
 	if !errors.Is(err, domain.ErrDeploymentAlreadyInFlight) {
 		t.Errorf("expected ErrDeploymentAlreadyInFlight, got %v", err)
+	}
+}
+
+// deployASecondVersion simulates a second Build-state run producing a new
+// build, then deploys it, so the test ends up with two distinct successful
+// deployments (v1 now Superseded, v2 now Running) to roll back between.
+func deployASecondVersion(t *testing.T, svc *service.DeploymentService, builds *fakeBuildRepo, appID, ownerID string) domain.Deployment {
+	t.Helper()
+	v2 := domain.Build{
+		ID: "build-v2", ApplicationID: appID, Status: domain.BuildSucceeded,
+		ImageRefs: map[string]string{"api": "platform-build/v2-api:latest"},
+	}
+	builds.byID[v2.ID] = v2
+	builds.byApp[appID] = v2.ID
+
+	d, err := svc.InitiateDeploy(context.Background(), appID, ownerID, domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup (second deploy): %v", err)
+	}
+	if d.Status != domain.DeploymentRunning {
+		t.Fatalf("setup: expected second deployment Running, got %q (failure=%v)", d.Status, d.FailureReason)
+	}
+	return d
+}
+
+func TestRollback_ToSupersededVersion_ReactivatesItAndSupersedesCurrent(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, lifecycle, deployments, runtime, _, builds := newDeployService(app, build, "owner-1")
+
+	v1, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup (first deploy): %v", err)
+	}
+	v2 := deployASecondVersion(t, svc, builds, "app-1", "owner-1")
+	v2ContainerID := v2.Containers["api"].ContainerID
+
+	rolledBack, err := svc.Rollback(context.Background(), "app-1", "owner-1", v1.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rolledBack.Status != domain.DeploymentRunning {
+		t.Errorf("expected rollback deployment Running, got %q (failure=%v)", rolledBack.Status, rolledBack.FailureReason)
+	}
+	if rolledBack.BuildID != v1.BuildID {
+		t.Errorf("expected rollback to redeploy v1's build %q, got %q", v1.BuildID, rolledBack.BuildID)
+	}
+	if rolledBack.ID == v1.ID {
+		t.Errorf("expected rollback to create a NEW deployment record, not reuse v1's, for FR-101 auditability")
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusRunning {
+		t.Errorf("expected application Running after a successful rollback, got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+	if deployments.byID[v2.ID].Status != domain.DeploymentSuperseded {
+		t.Errorf("expected v2 marked Superseded by the rollback, got %q", deployments.byID[v2.ID].Status)
+	}
+	found := false
+	for _, stopped := range runtime.stopped {
+		if stopped == v2ContainerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected v2's container to be stopped on rollback cutover, stopped=%v", runtime.stopped)
+	}
+}
+
+func TestRollback_FromFailedApplication_Succeeds(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, lifecycle, _, _, _, _ := newDeployService(app, build, "owner-1")
+
+	v1, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup (first deploy): %v", err)
+	}
+	// A bad forward deploy fails outright (simulated directly — FR-044 already
+	// covers the case where a failed redeploy leaves a Running app untouched;
+	// here we force the app to Failed to exercise rollback's OTHER valid
+	// starting state).
+	if _, err := lifecycle.UpdateLifecycleStatus(context.Background(), "app-1", domain.StatusRunning, domain.StatusFailed, false); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	rolledBack, err := svc.Rollback(context.Background(), "app-1", "owner-1", v1.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rolledBack.Status != domain.DeploymentRunning {
+		t.Errorf("expected rollback deployment Running, got %q", rolledBack.Status)
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusRunning {
+		t.Errorf("expected application recovered to Running, got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+}
+
+func TestRollback_TargetStillFailed_Rejected(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, deployments, _, _, _ := newDeployService(app, build, "owner-1")
+
+	if _, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Fabricate a Failed deployment record to attempt rolling back to — this
+	// must never be a valid rollback target (FR-100).
+	failed := domain.Deployment{ID: "deploy-failed", ApplicationID: "app-1", BuildID: build.ID, Status: domain.DeploymentFailed}
+	deployments.byID[failed.ID] = failed
+
+	_, err := svc.Rollback(context.Background(), "app-1", "owner-1", failed.ID)
+	if !errors.Is(err, domain.ErrInvalidRollbackTarget) {
+		t.Errorf("expected ErrInvalidRollbackTarget, got %v", err)
+	}
+}
+
+func TestRollback_TargetBelongsToDifferentApplication_Rejected(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, deployments, _, _, _ := newDeployService(app, build, "owner-1")
+
+	if _, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	other := domain.Deployment{ID: "deploy-other-app", ApplicationID: "app-2", BuildID: build.ID, Status: domain.DeploymentRunning}
+	deployments.byID[other.ID] = other
+
+	_, err := svc.Rollback(context.Background(), "app-1", "owner-1", other.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound (cross-application target must not be reachable), got %v", err)
+	}
+}
+
+func TestRollback_ApplicationNotRunningOrFailed_Rejected(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	app.LifecycleStatus = domain.StatusValidated // never deployed — nothing to roll back to or from
+	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
+
+	_, err := svc.Rollback(context.Background(), "app-1", "owner-1", "does-not-matter")
+	if !errors.Is(err, domain.ErrInvalidLifecycleTransition) {
+		t.Errorf("expected ErrInvalidLifecycleTransition, got %v", err)
+	}
+}
+
+func TestRollback_NonOwner_Rejected(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
+
+	v1, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err = svc.Rollback(context.Background(), "app-1", "stranger", v1.ID)
+	if !errors.Is(err, domain.ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestDeploymentHistory_ReturnsAllAttemptsNewestFirst(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, _, _, _, builds := newDeployService(app, build, "owner-1")
+
+	v1, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	v2 := deployASecondVersion(t, svc, builds, "app-1", "owner-1")
+
+	history, err := svc.DeploymentHistory(context.Background(), "app-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("expected 2 deployments in history, got %d", len(history))
+	}
+	if history[0].ID != v2.ID || history[1].ID != v1.ID {
+		t.Errorf("expected newest-first ordering [%s, %s], got [%s, %s]", v2.ID, v1.ID, history[0].ID, history[1].ID)
 	}
 }

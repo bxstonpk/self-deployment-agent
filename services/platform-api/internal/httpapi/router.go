@@ -48,6 +48,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{id}/builds/latest", cfg.Builds.LatestBuild)
 		r.Post("/{id}/deploy", cfg.Deploys.TriggerDeploy)
 		r.Get("/{id}/deployments/latest", cfg.Deploys.LatestDeployment)
+		r.Get("/{id}/deployments", cfg.Deploys.DeploymentHistory)
+		r.Post("/{id}/rollback", cfg.Deploys.Rollback)
 		r.Get("/{id}/scale-events", cfg.ScaleEvents.List)
 		r.Post("/{id}/suspend", cfg.Lifecycle.Suspend)
 		r.Post("/{id}/resume", cfg.Lifecycle.Resume)
