@@ -573,7 +573,11 @@ cp .env.example .env   # then edit POSTGRES_PASSWORD if you want a non-default v
 
 `.env` is git-ignored — `docker-compose.yml` reads all credentials from it
 and refuses to start with a clear error if it's missing (see
-`.env.example` for what's needed). Then:
+`.env.example` for what's needed). If you're also running
+[`../../apps/admin-portal`](../../apps/admin-portal) (a browser client),
+check `CORS_ALLOWED_ORIGINS` in the same file matches whatever origin its
+dev server actually printed — see that app's README for why this isn't
+always `http://localhost:5173`. Then:
 
 ```
 docker compose up --build
