@@ -62,7 +62,7 @@ export function RegisterApplication() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="overtime"
-            pattern="[a-z]([a-z0-9-]{0,61}[a-z0-9])?"
+            pattern="[a-z]([a-z0-9\-]{0,61}[a-z0-9])?"
             title="Lowercase letters, digits, hyphens; must start with a letter (DNS-label rule)"
           />
         </label>
