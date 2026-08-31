@@ -220,7 +220,7 @@ Platform API (see below).
   no layout breakage. `console --errors`-equivalent checked throughout
   (every `console.error`/`pageerror` collected across the whole run).
 
-This is what found two real bugs no other layer of testing caught:
+That first pass found two real bugs no other layer of testing caught:
 
 1. **The application-name `pattern` attribute threw a real browser
    exception.** `RegisterApplication.tsx`'s `<input pattern="[a-z]([a-z0-9-]{0,61}[a-z0-9])?">`
@@ -245,13 +245,48 @@ This is what found two real bugs no other layer of testing caught:
    skipping those four calls entirely while `lifecycle_status` is `draft`
    or `validated`.
 
-### What's still owed — not everything was re-verified after this pass
+**A second, full-lifecycle click-through** then extended the same
+Playwright driver past register/validate: uploaded a real `tar.gz` through
+the actual file-picker input (a real `docker build` ran server-side),
+clicked **Deploy**, confirmed the rendered live URL genuinely served the
+deployed application's real HTTP response (fetched it directly, not just
+checked that a link appeared), then clicked through **Restart** ->
+**Suspend** (confirmed the live URL became genuinely unreachable —
+connection-refused, the container was actually stopped, not just marked)
+-> **Resume** (confirmed `running` again) -> **Archive** -> **Delete**
+(confirmed the terminal `deleted` state, confirmed via `docker ps`/`docker
+images` afterward that no container or leftover test image remained).
+Every functional step passed — the whole lifecycle genuinely works through
+the real UI, not just via `curl`/the MCP path.
 
-The click-through above covers **register → save → validate** end to end
-for real. It does *not* yet cover build (needs a real source archive
-upload through the file picker), deploy, or any of the lifecycle actions
-(suspend/resume/restart/archive/delete/rollback) driven through the actual
-UI — those were verified at the Platform API layer directly in prior PRs
-(`curl`, the MCP path) and are exercised by this app's component tests
-with mocked responses, but not yet clicked through in a real browser
-against a real backend the way the register/validate flow now has been.
+That run surfaced one more instance of the same class of issue as bug #2
+above: right after a **first-ever** build completes (a `draft`/`validated`
+application transitioning through the transient `build` status on its way
+to its first deploy), the detail page still fires the deployment/scale-event
+fetches, which still 404 for the same "genuinely doesn't exist yet" reason
+— two more benign console log lines. This wasn't fixed the same way,
+deliberately: unlike `draft`/`validated`, the `build` status does **not**
+universally mean "no deployment exists yet" — a *rebuild* of an
+already-`running` application also passes through `build`, and that case
+genuinely does have a prior deployment/scale-events worth fetching.
+Skipping fetches whenever `lifecycle_status === "build"` would silently
+break that case instead. Distinguishing "first build" from "rebuild"
+would need the frontend to track more state than `lifecycle_status` alone
+currently carries. Given the actual application behavior is already
+correct in both cases (the right empty/populated state renders either
+way) and the only remaining cost is two harmless devtools console lines
+in one specific transient window, this was judged not worth the added
+state-tracking complexity — noted here as a deliberate, considered
+trade-off, not an unnoticed gap.
+
+### What's still owed
+
+Register -> validate -> build -> deploy -> restart -> suspend -> resume ->
+archive -> delete have now all been driven through the real UI against a
+real backend. **`rollback_application` has not** — exercising it through
+this UI needs two real successful deployments to roll back between (a
+"deploy a second version while the first is still running" scenario),
+which the click-through above didn't set up. Rollback itself is already
+verified at the Platform API and MCP layers in prior PRs; only the
+UI-specific "click Roll back to this on a history row and watch traffic
+actually flip" path remains unverified here.
