@@ -39,16 +39,35 @@ export function ApplicationDetail() {
 
   const refresh = useCallback(async () => {
     if (!identity || !id) return;
+    let freshApp: Application;
     try {
-      const a = await getApplication(identity, id);
-      setApp(a);
-      setYamlDraft((prev) => (prev === "" ? a.deployment_yaml_draft ?? "" : prev));
+      freshApp = await getApplication(identity, id);
+      setApp(freshApp);
+      setYamlDraft((prev) => (prev === "" ? freshApp.deployment_yaml_draft ?? "" : prev));
     } catch (err) {
       setMessage({ kind: "error", text: err instanceof ApiError ? err.message : String(err) });
       return;
     }
-    // Best-effort — a fresh application legitimately has no deployment/build
-    // yet, and NOT_FOUND there isn't a real error to surface.
+    // draft and validated are BOTH states no application-service method
+    // ever transitions back into after a first build/deploy (checked
+    // against every Go service's transition logic, not assumed) — so an
+    // application in either one has, by construction, never had a build,
+    // deployment, or scale event. Skip these calls entirely rather than
+    // firing requests guaranteed to 404. Found via real browser testing:
+    // Chrome logs every failed network request to the console regardless
+    // of whether the resulting promise rejection is handled, so a fresh
+    // registration (and its first validate) produced a wall of "Failed to
+    // load resource: 404" noise even though the app's own behavior (empty
+    // states) was already correct. Uses the freshly-fetched freshApp, not
+    // the (still stale — React state updates aren't synchronous) app state
+    // variable.
+    if (freshApp.lifecycle_status === "draft" || freshApp.lifecycle_status === "validated") {
+      setDeployment(null);
+      setBuild(null);
+      setHistory([]);
+      setScaleEvents([]);
+      return;
+    }
     latestDeployment(identity, id).then(setDeployment).catch(() => setDeployment(null));
     latestBuild(identity, id).then(setBuild).catch(() => setBuild(null));
     deploymentHistory(identity, id).then(setHistory).catch(() => setHistory([]));

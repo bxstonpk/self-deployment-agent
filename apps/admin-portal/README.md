@@ -203,20 +203,55 @@ Platform API (see below).
   that `/src/main.tsx` is served as `text/javascript`) rather than
   silently failing or serving a stale/wrong build — this is also what
   surfaced the port-collision note above.
+- **A real headless-Chromium click-through**, driven with Playwright
+  (this environment doesn't have a `chromium-cli` install, so the `run`
+  skill's documented fallback — drive `playwright`'s `chromium` module
+  directly, `args: ['--no-sandbox']` — was used instead) against the real
+  dev server and a real running Platform API: signed in, landed on
+  `/applications`, registered a real application (department dropdown
+  populated live from `GET /departments`), landed on its detail page,
+  typed a real `deployment.yaml` into the editor, saved it, clicked
+  **Validate**, and confirmed the real `validate_application` findings
+  rendered (`schema`/`stack_compliance` passed, `resource_quota` skipped
+  with its real explanatory text) with the status badge flipping from
+  `draft` to `validated`. Screenshots taken at every step and actually
+  looked at, not just captured — the sign-in screen, the populated
+  register form, and the validated detail page all render cleanly with
+  no layout breakage. `console --errors`-equivalent checked throughout
+  (every `console.error`/`pageerror` collected across the whole run).
 
-### What was **not** verified — an honest limitation of this environment
+This is what found two real bugs no other layer of testing caught:
 
-This app's actual UI was never clicked through in a real browser — no
-browser automation tool is available in the environment this was built in.
-Verification instead covered every layer *up to* that: real type-checking,
-a real production build, real component-level rendering and interaction
-(via `@testing-library/react` + `user-event`, which does exercise real
-React rendering/state/event-handling logic, just inside `jsdom` rather
-than a real browser), and a real HTTP/CORS contract check against a live
-server. A manual click-through in an actual browser — confirming layout,
-that the file-upload build flow works end-to-end against a real Platform
-API, that a full register → validate → build → deploy → suspend → resume
-→ archive → delete cycle succeeds through the UI exactly like it already
-does via `curl`/the MCP path in prior PRs — is genuinely still owed and
-hasn't happened yet. Flagging this explicitly rather than implying full
-verification parity with the rest of this repo's UI-less services.
+1. **The application-name `pattern` attribute threw a real browser
+   exception.** `RegisterApplication.tsx`'s `<input pattern="[a-z]([a-z0-9-]{0,61}[a-z0-9])?">`
+   compiled to an invalid regular expression under Chrome's newer
+   Unicode-mode (`v`-flag) character-class parsing —
+   `Uncaught SyntaxError: Invalid regular expression: ... Invalid character
+   class` — which `jsdom` (what the component tests run under) doesn't
+   reproduce at all, so 15 passing component tests gave no signal on this
+   whatsoever. Fixed by escaping the hyphen (`[a-z0-9\-]`).
+2. **A registered application's detail page fired three-to-four API calls
+   guaranteed to 404** (`GET .../deployments/latest`, `.../builds/latest`,
+   `.../scale-events`) immediately after registration and again after
+   validation — because a `draft`/`validated` application can never have a
+   deployment, build, or scale event yet (verified against every Go
+   service's actual `UpdateLifecycleStatus` call site: `validated` is
+   *only* ever reached from `draft`, nowhere else — grepped for real, not
+   assumed). The app already handled the resulting `NOT_FOUND` gracefully
+   (correct empty states), but a real browser's console logs every failed
+   network request regardless of whether the rejection is caught — a
+   `jsdom`+mocked-`fetch` test can't surface this kind of console noise
+   either, since there's no real network layer generating it. Fixed by
+   skipping those four calls entirely while `lifecycle_status` is `draft`
+   or `validated`.
+
+### What's still owed — not everything was re-verified after this pass
+
+The click-through above covers **register → save → validate** end to end
+for real. It does *not* yet cover build (needs a real source archive
+upload through the file picker), deploy, or any of the lifecycle actions
+(suspend/resume/restart/archive/delete/rollback) driven through the actual
+UI — those were verified at the Platform API layer directly in prior PRs
+(`curl`, the MCP path) and are exercised by this app's component tests
+with mocked responses, but not yet clicked through in a real browser
+against a real backend the way the register/validate flow now has been.
