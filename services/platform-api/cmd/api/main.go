@@ -84,7 +84,8 @@ func main() {
 		ScaleEvents:   httpapi.NewScaleEventsHandler(deployService, scaleService),
 		Proxy:         httpapi.NewProxyHandler(scaleService),
 		Lifecycle:     httpapi.NewLifecycleHandler(lifecycleService),
-		PlatformEnv:   cfg.PlatformEnv,
+		PlatformEnv:        cfg.PlatformEnv,
+		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})
 
 	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)

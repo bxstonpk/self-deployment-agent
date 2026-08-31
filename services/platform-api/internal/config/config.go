@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -11,6 +12,11 @@ type Config struct {
 	DatabaseURL string
 	Port        string
 	PlatformEnv string // "dev" enables the temporary header-based auth stub; see DEC-001
+
+	// CORSAllowedOrigins lets apps/admin-portal (a browser client, its own
+	// origin) call this API — see httpapi.RouterConfig's doc comment.
+	// Comma-separated; empty disables CORS.
+	CORSAllowedOrigins []string
 
 	// ScaleToZeroIdleTimeout / ScaleSweepInterval implement FR-052's
 	// business rule that the idle threshold is a "platform-defined
@@ -44,9 +50,25 @@ func Load() (Config, error) {
 		DatabaseURL:            databaseURL,
 		Port:                   getEnv("PORT", "8080"),
 		PlatformEnv:            getEnv("PLATFORM_ENV", "dev"),
+		CORSAllowedOrigins:     getEnvList("CORS_ALLOWED_ORIGINS", "http://localhost:5173"),
 		ScaleToZeroIdleTimeout: idleTimeout,
 		ScaleSweepInterval:     sweepInterval,
 	}, nil
+}
+
+func getEnvList(key, fallback string) []string {
+	raw := getEnv(key, fallback)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnv(key, fallback string) string {

@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 )
 
 type RouterConfig struct {
@@ -22,6 +23,11 @@ type RouterConfig struct {
 	// today is DevHeaderAuthenticator, so this is always enforced until a
 	// real one lands per DEC-001 (docs/17_Decision_Log.md).
 	PlatformEnv string
+	// CORSAllowedOrigins lets a browser-based client (apps/admin-portal,
+	// served from its own dev-server origin) call this API cross-origin.
+	// Empty disables CORS entirely (e.g. non-dev environments, or when no
+	// browser client is in play) rather than defaulting to an open policy.
+	CORSAllowedOrigins []string
 }
 
 func NewRouter(cfg RouterConfig) http.Handler {
@@ -30,6 +36,15 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	if len(cfg.CORSAllowedOrigins) > 0 {
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins:   cfg.CORSAllowedOrigins,
+			AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Content-Type", "X-Dev-User-Email", "X-Dev-User-Name", "X-Dev-Department"},
+			AllowCredentials: false,
+			MaxAge:           300,
+		}))
+	}
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
