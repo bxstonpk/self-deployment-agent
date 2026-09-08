@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -261,7 +262,7 @@ func newDeployService(app domain.Application, build domain.Build, ownerID string
 	runtime := newHealthyRuntime()
 	scale := &fakeScaleInitializer{}
 
-	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale)
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder())
 	return svc, apps, deployments, runtime, scanner, builds
 }
 
@@ -693,5 +694,98 @@ func TestDeploymentHistory_ReturnsAllAttemptsNewestFirst(t *testing.T) {
 	}
 	if history[0].ID != v2.ID || history[1].ID != v1.ID {
 		t.Errorf("expected newest-first ordering [%s, %s], got [%s, %s]", v2.ID, v1.ID, history[0].ID, history[1].ID)
+	}
+}
+
+func newDeployServiceWithAudit(app domain.Application, build domain.Build, ownerID string) (
+	*service.DeploymentService, *fakeRuntime, *fakeBuildRepo, *fakeAuditRecorder,
+) {
+	apps := newFakeLifecycleRepo(app)
+	owners := newFakeOwnerRepo()
+	owners.owners[app.ID] = []domain.ApplicationOwner{{
+		ApplicationID: app.ID, UserID: ownerID, OwnershipRole: domain.OwnerRolePrimary, Status: "active",
+	}}
+	builds := newFakeBuildRepo()
+	builds.byID[build.ID] = build
+	builds.byApp[app.ID] = build.ID
+	deployments := newFakeDeploymentRepo()
+	approvals := newFakeApprovalRepo()
+	scanner := newPassingScanner()
+	runtime := newHealthyRuntime()
+	scale := &fakeScaleInitializer{}
+	audit := newFakeAuditRecorder()
+
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, audit)
+	return svc, runtime, builds, audit
+}
+
+func TestInitiateDeploy_Success_RecordsAuditSuccessEntry(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, _, audit := newDeployServiceWithAudit(app, build, "owner-1")
+
+	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry, got %d", len(entries))
+	}
+	if e := entries[0]; e.Action != domain.AuditActionInitiateDeploy || e.Outcome != domain.AuditSuccess || e.ResourceID != d.ID {
+		t.Fatalf("unexpected audit entry: %+v", e)
+	}
+}
+
+func TestInitiateDeploy_HealthCheckFailure_RecordsAuditFailureEntry(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, runtime, _, audit := newDeployServiceWithAudit(app, build, "owner-1")
+	runtime.healthCheckErr = errors.New("connection refused")
+
+	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("a failed deploy is a normal outcome, expected nil error, got: %v", err)
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.Action != domain.AuditActionInitiateDeploy || e.Outcome != domain.AuditFailure || e.ResourceID != d.ID {
+		t.Fatalf("unexpected audit entry: %+v", e)
+	}
+	if !strings.Contains(e.Detail, "connection refused") {
+		t.Errorf("expected the deployment's own failure reason to be reused, got %q", e.Detail)
+	}
+}
+
+func TestRollback_Success_RecordsAuditSuccessEntry(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, builds, audit := newDeployServiceWithAudit(app, build, "owner-1")
+
+	v1, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup (first deploy): %v", err)
+	}
+	deployASecondVersion(t, svc, builds, "app-1", "owner-1")
+
+	rolledBack, err := svc.Rollback(context.Background(), "app-1", "owner-1", v1.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries := audit.all()
+	var rollbackEntry *domain.AuditEntry
+	for i := range entries {
+		if entries[i].Action == domain.AuditActionRollback {
+			rollbackEntry = &entries[i]
+		}
+	}
+	if rollbackEntry == nil {
+		t.Fatalf("expected a rollback audit entry among %+v", entries)
+	}
+	if rollbackEntry.Outcome != domain.AuditSuccess || rollbackEntry.ResourceID != rolledBack.ID {
+		t.Fatalf("unexpected rollback audit entry: %+v", *rollbackEntry)
 	}
 }

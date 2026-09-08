@@ -22,7 +22,7 @@ func newLifecycleService(app domain.Application, deployment domain.Deployment, o
 	states := newFakeServiceRuntimeStateRepo()
 	runtime := newHealthyRuntime()
 
-	svc := service.NewLifecycleService(apps, owners, deployments, states, runtime)
+	svc := service.NewLifecycleService(apps, owners, deployments, states, runtime, newFakeAuditRecorder())
 	return svc, apps, deployments, states, runtime
 }
 
@@ -393,5 +393,64 @@ func TestDelete_NonOwner_Rejected(t *testing.T) {
 	_, err := svc.Delete(context.Background(), "app-1", "stranger", true)
 	if !errors.Is(err, domain.ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func newLifecycleServiceWithAudit(app domain.Application, deployment domain.Deployment, ownerID string) (*service.LifecycleService, *fakeAuditRecorder) {
+	apps := newFakeLifecycleRepo(app)
+	owners := newFakeOwnerRepo()
+	owners.owners[app.ID] = []domain.ApplicationOwner{{
+		ApplicationID: app.ID, UserID: ownerID, OwnershipRole: domain.OwnerRolePrimary, Status: "active",
+	}}
+	deployments := newFakeDeploymentRepo()
+	deployments.byID[deployment.ID] = deployment
+	states := newFakeServiceRuntimeStateRepo()
+	runtime := newHealthyRuntime()
+	audit := newFakeAuditRecorder()
+	return service.NewLifecycleService(apps, owners, deployments, states, runtime, audit), audit
+}
+
+func TestSuspend_Success_RecordsAuditEntry(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	svc, audit := newLifecycleServiceWithAudit(app, deployment, "owner-1")
+
+	if _, err := svc.Suspend(context.Background(), "app-1", "owner-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 || entries[0].Action != domain.AuditActionSuspend || entries[0].Outcome != domain.AuditSuccess || entries[0].ResourceID != "app-1" {
+		t.Fatalf("unexpected audit entries: %+v", entries)
+	}
+}
+
+func TestDelete_Success_RecordsAuditEntry(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	app.LifecycleStatus = domain.StatusArchived
+	deployment.Status = domain.DeploymentArchived
+	svc, audit := newLifecycleServiceWithAudit(app, deployment, "owner-1")
+
+	if _, err := svc.Delete(context.Background(), "app-1", "owner-1", true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 || entries[0].Action != domain.AuditActionDelete || entries[0].Outcome != domain.AuditSuccess || entries[0].ResourceID != "app-1" {
+		t.Fatalf("unexpected audit entries: %+v", entries)
+	}
+}
+
+func TestSuspend_NonOwner_Rejected_RecordsNoAuditEntry(t *testing.T) {
+	app, deployment := runningAppAndDeployment("app-1", "dep-1")
+	svc, audit := newLifecycleServiceWithAudit(app, deployment, "owner-1")
+
+	if _, err := svc.Suspend(context.Background(), "app-1", "stranger"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+
+	// FR-103 scope boundary (see auditAction's doc comment): a rejection
+	// before any real action was attempted isn't audited.
+	if entries := audit.all(); len(entries) != 0 {
+		t.Fatalf("expected no audit entry for a rejected, unauthorized attempt, got %+v", entries)
 	}
 }

@@ -1,11 +1,13 @@
-# Platform API — Draft through Archive/Delete (State 1–8)
+# Platform API — Draft through Archive/Delete (State 1–8) + Audit Log
 
 Go implementation of the Business API, built one Application Lifecycle state
 at a time. Currently covers **Draft**, **Validated**, **Build**,
 **Deploying**, **Scale-to-Zero** (the ongoing behavior of a `Running`
-application), **Suspend/Resume/Restart**, **Rollback**, and
-**Archive/Delete** — every Application Lifecycle state reachable without
-Modules N/O/P (Database/Secret/Domain Management), which don't exist yet.
+application), **Suspend/Resume/Restart**, **Rollback**, **Archive/Delete**
+— every Application Lifecycle state reachable without Modules N/O/P
+(Database/Secret/Domain Management), which don't exist yet — plus
+**Module W (Audit Log)**, an append-only, hash-chained record of every
+state-changing action across all of the above.
 
 Implements from
 [`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md):
@@ -20,8 +22,9 @@ start/health-check/traffic-activation); `FR-051`–`FR-056` (Module L —
 Scale-to-Zero: real idle detection, real cold-start-on-request through a
 stable proxy URL, real event logging); `FR-045`, `FR-047`, `FR-048`,
 `FR-049`, `FR-050` (Module K — the full Application Lifecycle model, plus
-Suspend/Resume/Restart and Archive/Delete); and `FR-095`, `FR-098`, `FR-100`,
-`FR-101` (Module V — Rollback — see below). See
+Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
+`FR-101` (Module V — Rollback — see below); and `FR-103`, `FR-104`,
+`FR-105`, `FR-106` (Module W — Audit Log — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -53,6 +56,9 @@ for how it fits the Control Plane.
 | `POST /applications/{id}/restart` | FR-048 | Recycles currently-running instances in place — same version, fresh containers, no redeploy. Owner-only |
 | `POST /applications/{id}/archive` | FR-049 | `running`/`suspended` → `archived`: releases compute more permanently than Suspend, retains config/history. Owner-only |
 | `POST /applications/{id}/delete` | FR-050 | `archived`/`suspended` → `deleted` (terminal); requires `{"confirm": true}`. Owner-only |
+| `GET /audit-log` | FR-104 | Filter by `actor_user_id`/`resource_type`/`resource_id`/`action`/`from`/`to`/`limit`; scoped to entries the caller performed or that concern an application they own |
+| `GET /audit-log/export` | FR-105 | Same filters, CSV response; the export itself is recorded as a new audit entry |
+| `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
 
 ### How Build works
 
@@ -442,11 +448,99 @@ deprovisioning resources that don't exist yet:**
   enforced — needs the de-registration approval workflow (Module C), the
   same category of gap as the production-deploy approval gate's
   approver-independence limitation.
-- FR-050's audit tombstone ("audit records ... are never deleted") has no
-  Module W (Audit Log) to write one to. The application row is simply left
-  in place with `lifecycle_status = 'deleted'` — queryable, not erased, but
-  not a real tombstone record either.
+- FR-050's audit tombstone ("audit records ... are never deleted") is now
+  partially real: Module W exists (see **How Audit Logging works** below),
+  so Delete produces a real, immutable `application.delete` audit entry.
+  What's still missing is a dedicated tombstone record distinct from the
+  general audit trail — the application row itself is simply left in place
+  with `lifecycle_status = 'deleted'`, queryable, not erased.
 - No un-archive/reactivation path — see Archive's note above.
+
+## How Audit Logging works (Module W)
+
+An append-only, hash-chained record of significant state-changing actions
+across every module above: `POST /applications` (register), `.../validate`,
+`.../build`, `.../deploy`, `.../rollback`, `.../suspend`, `.../resume`,
+`.../restart`, `.../archive`, `.../delete`, and `POST /deployments/{id}/approve`.
+Implements `FR-103`–`FR-106`.
+
+**Write path (`FR-103`).** Each instrumented service method calls
+`AuditService.Record` immediately after its own state-changing work
+succeeds or fails, via a `defer` closing over the method's named return
+values — this covers every terminal outcome (including ones buried inside
+`deployAndActivate`/`markDeploymentFailedFrom`'s internal branching) without
+touching that branching at all. A rejection *before* any real action is
+attempted (bad input, unauthorized caller, wrong lifecycle state) is **not**
+audited — see each instrumented method's own "audited from here on" comment
+for exactly where the line is drawn. `AuditService.Record` uses the same
+detached-context pattern as `build_service.go`'s `TriggerBuild`/
+`deploy_service.go`'s `markDeploymentFailedFrom`: the write must survive the
+triggering request's own context being cancelled, for the same reason —
+losing the audit trail matters most exactly when a client disconnects mid
+-action.
+
+**Tamper-evidence (`FR-106`).** Every entry stores `prev_hash`/`entry_hash`
+— a SHA-256 chain over each entry's own content plus the previous entry's
+hash, computed in `AuditRepo.Record` under a Postgres advisory lock
+(`pg_advisory_xact_lock`) so concurrent writers can't race and fork the
+chain. `GET /audit-log/integrity` (`AuditRepo.VerifyChain`) walks the whole
+table oldest-first, recomputing and comparing every hash, and reports the
+first `seq` where the chain breaks. On top of that, `UPDATE`/`DELETE` on
+`audit_log` are rejected by a database trigger (`audit_log_immutable()`),
+not just "the service code never calls them" — verified for real: a raw
+`UPDATE audit_log SET detail=... WHERE seq=1` via `psql` as the same
+Postgres user the application itself connects as was rejected outright.
+Bypassing the trigger entirely (`ALTER TABLE ... DISABLE TRIGGER`, i.e.
+simulating a fully compromised superuser) and then editing a row *is*
+correctly caught by `VerifyIntegrity` — the two controls compose as
+prevention (trigger) plus detection (hash chain), matching FR-106's own
+framing.
+
+**Query/export (`FR-104`/`FR-105`), scoped down from the spec.** FR-104
+names an Auditor/Security Administrator/Platform Administrator role that
+doesn't exist (same `DEC-001`/`DEC-002` RBAC gap as everywhere else in this
+platform) — `AuditService.Query` substitutes the same owner-based scoping
+used throughout: a requester sees an entry if they performed the action
+themselves, or it concerns an application they own. `GET /audit-log/export`
+(CSV) implements FR-105's main flow, including step 4 — the export itself
+is recorded as a new `audit_log.export` entry. FR-104's "every audit query
+is itself logged" business rule is **not** implemented (would need a
+Record call on every read, risking a logging feedback loop worth its own
+design rather than bolting on here).
+
+**Verified for real**, not just via unit tests (`audit_service_test.go`,
+plus one test per instrumented service confirming it records the right
+entry): ran the full stack via `docker compose up --build`, registered and
+validated a real application through the HTTP API, confirmed the resulting
+`audit_log` rows via `psql` and via `GET /audit-log`, confirmed
+`GET /audit-log/integrity` reports intact, confirmed a stranger's own query
+sees nothing, and confirmed `UPDATE`/`DELETE` are rejected by the trigger.
+This real run caught a genuine bug before it shipped: the very first entry
+ever written failed its own integrity check, because the hash was computed
+over a Go `time.Time` at nanosecond precision while Postgres's `timestamptz`
+column only stores microseconds — every entry's hash was unreproducible the
+moment it was read back. Fixed by truncating to microsecond precision
+*before* hashing (`AuditRepo.Record`), so the value hashed and the value
+that round-trips through the database are byte-for-byte identical.
+
+**Known gaps, documented not hidden:**
+- No distinct AI-agent/system actor identity (`FR-117`'s "attribute to both
+  the agent and the employee") — an MCP-initiated call authenticates as the
+  same employee dev-auth identity a direct API/Admin Portal call would use,
+  so there is nothing yet to distinguish.
+- Not atomic with the state change it's auditing — no cross-repository
+  transaction wrapper exists in this codebase, so the audit write happens
+  immediately *after* the state change succeeds, not in the same database
+  transaction. Its failure is still surfaced to the caller as an error
+  (never a bare, silent success for a critical action), it just can't undo
+  the state change that already happened.
+- Coverage is scoped to the state-changing actions listed above, not every
+  FR-103 example verbatim ("authentication, ... secret operations, ...") —
+  there's no login flow or Secret Management module (O) yet to audit.
+- A fully compromised database superuser could `TRUNCATE audit_log` (or
+  disable triggers, insert fabricated-but-internally-consistent rows, and
+  re-enable them) — the trigger and hash chain together give strong
+  in-band tamper *detection*, not protection against that threat model.
 
 ### Known gap: no retry path out of Failed yet
 
@@ -488,8 +582,6 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   won't work once the platform runs across more than one host.
 - Real authentication — see **Dev-mode auth** below.
 - Resource quota enforcement (FR-032) — depends on Module M, not built yet.
-- Audit logging (Module W) — several FRs call for audit entries; not
-  implemented until the Audit module exists.
 - Full RBAC / Role / Permission tables (Module A/B) — blocked on `DEC-001`.
   This is also why the production approval gate can't yet require an
   approver distinct from the requester — see **How Deploy works** above.

@@ -56,6 +56,7 @@ func main() {
 	approvalRepo := postgres.NewDeploymentApprovalRepo(pool)
 	serviceStateRepo := postgres.NewServiceRuntimeStateRepo(pool)
 	scaleEventRepo := postgres.NewScaleEventRepo(pool)
+	auditRepo := postgres.NewAuditRepo(pool)
 
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
@@ -65,12 +66,13 @@ func main() {
 	scanner := imagescan.NewTrivyScanner(dockerCli)
 	runtime := runtimeengine.NewDockerRuntime(dockerCli)
 
-	applicationService := service.NewApplicationService(applicationRepo, ownerRepo, departmentRepo)
-	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo)
-	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine)
+	auditService := service.NewAuditService(auditRepo, ownerRepo)
+	applicationService := service.NewApplicationService(applicationRepo, ownerRepo, departmentRepo, auditService)
+	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo, auditService)
+	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine, auditService)
 	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime)
-	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService)
-	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime)
+	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService)
+	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
@@ -84,6 +86,7 @@ func main() {
 		ScaleEvents:   httpapi.NewScaleEventsHandler(deployService, scaleService),
 		Proxy:         httpapi.NewProxyHandler(scaleService),
 		Lifecycle:     httpapi.NewLifecycleHandler(lifecycleService),
+		Audit:         httpapi.NewAuditHandler(auditService),
 		PlatformEnv:        cfg.PlatformEnv,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})

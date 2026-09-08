@@ -27,13 +27,32 @@ type LifecycleService struct {
 	deployments DeploymentRepository
 	states      ServiceRuntimeStateRepository
 	runtime     RuntimeEngine
+	audit       AuditRecorder
 }
 
 func NewLifecycleService(
 	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository,
-	deployments DeploymentRepository, states ServiceRuntimeStateRepository, runtime RuntimeEngine,
+	deployments DeploymentRepository, states ServiceRuntimeStateRepository, runtime RuntimeEngine, audit AuditRecorder,
 ) *LifecycleService {
-	return &LifecycleService{apps: apps, owners: owners, deployments: deployments, states: states, runtime: runtime}
+	return &LifecycleService{apps: apps, owners: owners, deployments: deployments, states: states, runtime: runtime, audit: audit}
+}
+
+// auditAction records one lifecycle action's outcome, called via defer from
+// each of Suspend/Resume/Restart/Archive/Delete after their guard clauses
+// pass — see audit_service.go's package comment for the FR-103 scope
+// boundary (rejections before any real action is attempted aren't audited).
+func (s *LifecycleService) auditAction(ctx context.Context, action domain.AuditAction, applicationID, requesterID string, err *error) {
+	outcome := domain.AuditSuccess
+	detail := ""
+	if *err != nil {
+		outcome, detail = domain.AuditFailure, (*err).Error()
+	}
+	if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+		ActorUserID: requesterID, Action: action,
+		ResourceType: "application", ResourceID: applicationID, Outcome: outcome, Detail: detail,
+	}); auditErr != nil && *err == nil {
+		*err = fmt.Errorf("%s succeeded but audit trail failed to record: %w", action, auditErr)
+	}
 }
 
 func (s *LifecycleService) requireOwner(ctx context.Context, applicationID, userID string) error {
@@ -61,7 +80,7 @@ func (s *LifecycleService) requireOwner(ctx context.Context, applicationID, user
 // Administrator role to check yet (blocked on DEC-001/DEC-002, same RBAC
 // gap noted throughout — see docs/17_Decision_Log.md), so only owner-
 // initiated suspend is implemented here.
-func (s *LifecycleService) Suspend(ctx context.Context, applicationID, requesterID string) (domain.Deployment, error) {
+func (s *LifecycleService) Suspend(ctx context.Context, applicationID, requesterID string) (deployment domain.Deployment, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
 		return domain.Deployment{}, err
@@ -73,13 +92,17 @@ func (s *LifecycleService) Suspend(ctx context.Context, applicationID, requester
 		return domain.Deployment{}, domain.ErrApplicationNotRunning
 	}
 
-	deployment, err := s.deployments.LatestForApplication(ctx, applicationID)
+	deployment, err = s.deployments.LatestForApplication(ctx, applicationID)
 	if err != nil {
 		return domain.Deployment{}, err
 	}
 	if deployment.Status != domain.DeploymentRunning {
 		return domain.Deployment{}, domain.ErrApplicationNotRunning
 	}
+
+	// Audited from here on — see auditAction's doc comment for the FR-103
+	// scope boundary.
+	defer s.auditAction(ctx, domain.AuditActionSuspend, applicationID, requesterID, &err)
 
 	if err := s.stopAllContainers(ctx, deployment.ID); err != nil {
 		return domain.Deployment{}, err
@@ -109,7 +132,7 @@ func (s *LifecycleService) Suspend(ctx context.Context, applicationID, requester
 // same as any other time they're idle. This satisfies FR-048's "at least
 // scaling.min running instances" without special-casing eligible services:
 // their min is, by definition, 0.
-func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterID string) (domain.Deployment, error) {
+func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterID string) (deployment domain.Deployment, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
 		return domain.Deployment{}, err
@@ -121,13 +144,17 @@ func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterI
 		return domain.Deployment{}, domain.ErrApplicationNotSuspended
 	}
 
-	deployment, err := s.deployments.LatestForApplication(ctx, applicationID)
+	deployment, err = s.deployments.LatestForApplication(ctx, applicationID)
 	if err != nil {
 		return domain.Deployment{}, err
 	}
 	if deployment.Status != domain.DeploymentSuspended {
 		return domain.Deployment{}, domain.ErrApplicationNotSuspended
 	}
+
+	// Audited from here on — see auditAction's doc comment for the FR-103
+	// scope boundary.
+	defer s.auditAction(ctx, domain.AuditActionResume, applicationID, requesterID, &err)
 
 	states, err := s.states.ListForDeployment(ctx, deployment.ID)
 	if err != nil {
@@ -178,7 +205,7 @@ func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterI
 // service sitting idle at zero has nothing to recycle, consistent with
 // "restart" meaning "give me a fresh instance of what's already running",
 // not "wake it up".
-func (s *LifecycleService) Restart(ctx context.Context, applicationID, requesterID string) (domain.Deployment, error) {
+func (s *LifecycleService) Restart(ctx context.Context, applicationID, requesterID string) (deployment domain.Deployment, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
 		return domain.Deployment{}, err
@@ -190,13 +217,17 @@ func (s *LifecycleService) Restart(ctx context.Context, applicationID, requester
 		return domain.Deployment{}, domain.ErrApplicationNotRunning
 	}
 
-	deployment, err := s.deployments.LatestForApplication(ctx, applicationID)
+	deployment, err = s.deployments.LatestForApplication(ctx, applicationID)
 	if err != nil {
 		return domain.Deployment{}, err
 	}
 	if deployment.Status != domain.DeploymentRunning {
 		return domain.Deployment{}, domain.ErrApplicationNotRunning
 	}
+
+	// Audited from here on — see auditAction's doc comment for the FR-103
+	// scope boundary.
+	defer s.auditAction(ctx, domain.AuditActionRestart, applicationID, requesterID, &err)
 
 	states, err := s.states.ListForDeployment(ctx, deployment.ID)
 	if err != nil {
@@ -258,7 +289,7 @@ func (s *LifecycleService) Restart(ctx context.Context, applicationID, requester
 //     An Archived application is, today, a genuine dead end recoverable
 //     only via direct database intervention. Worth a future FR if the
 //     platform needs it.
-func (s *LifecycleService) Archive(ctx context.Context, applicationID, requesterID string) (domain.Application, error) {
+func (s *LifecycleService) Archive(ctx context.Context, applicationID, requesterID string) (resultApp domain.Application, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
 		return domain.Application{}, err
@@ -269,6 +300,10 @@ func (s *LifecycleService) Archive(ctx context.Context, applicationID, requester
 	if app.LifecycleStatus != domain.StatusRunning && app.LifecycleStatus != domain.StatusSuspended {
 		return domain.Application{}, domain.ErrInvalidLifecycleTransition
 	}
+
+	// Audited from here on — see auditAction's doc comment for the FR-103
+	// scope boundary.
+	defer s.auditAction(ctx, domain.AuditActionArchive, applicationID, requesterID, &err)
 
 	deployment, err := s.deployments.LatestForApplication(ctx, applicationID)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -322,7 +357,7 @@ func (s *LifecycleService) Archive(ctx context.Context, applicationID, requester
 //     no Module W (Audit Log) to write one — the application row itself is
 //     simply left in place with lifecycle_status='deleted', which is at
 //     least queryable, not erased.
-func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterID string, confirm bool) (domain.Application, error) {
+func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterID string, confirm bool) (resultApp domain.Application, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
 		return domain.Application{}, err
@@ -336,6 +371,10 @@ func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterI
 	if app.LifecycleStatus != domain.StatusArchived && app.LifecycleStatus != domain.StatusSuspended {
 		return domain.Application{}, domain.ErrInvalidLifecycleTransition
 	}
+
+	// Audited from here on — see auditAction's doc comment for the FR-103
+	// scope boundary.
+	defer s.auditAction(ctx, domain.AuditActionDelete, applicationID, requesterID, &err)
 
 	if deployment, err := s.deployments.LatestForApplication(ctx, applicationID); err == nil {
 		if err := s.stopAllContainers(ctx, deployment.ID); err != nil {
