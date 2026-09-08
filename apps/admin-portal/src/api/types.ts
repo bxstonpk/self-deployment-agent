@@ -141,6 +141,33 @@ export interface SupportedStack {
   status: string;
 }
 
+// --- Audit Log (Module W) ---
+
+export type AuditOutcome = "success" | "failure";
+
+export interface AuditEntry {
+  id: string;
+  seq: number;
+  occurred_at: string;
+  actor_user_id: string;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  outcome: AuditOutcome;
+  detail: string;
+  entry_hash: string;
+}
+
+export interface AuditQueryParams {
+  actorUserId?: string;
+  resourceType?: string;
+  resourceId?: string;
+  action?: string;
+  from?: string; // RFC3339
+  to?: string; // RFC3339
+  limit?: number;
+}
+
 // --- API error envelope ---
 
 export interface ApiErrorBody {

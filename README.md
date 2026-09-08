@@ -27,7 +27,9 @@ README for exactly what was tested and how):
 - A Markdown skill package instructing Claude Code how to use that MCP
   server correctly.
 - A React admin portal covering the same lifecycle for a human, calling
-  the Platform API directly.
+  the Platform API directly — including an Audit Log view (per-application
+  and platform-wide, with filtering, CSV export, and chain-integrity
+  verification).
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this

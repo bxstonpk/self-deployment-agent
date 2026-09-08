@@ -66,6 +66,17 @@ app doesn't pretend to offer anything they can't actually deliver.
     successful entry — calls the real `rollback_application` endpoint with
     that row's own deployment id, not a guess.
   - **Scale events** table (`GET .../scale-events`).
+  - **Audit log** — this application's own entries (`GET /audit-log?resource_type=application&resource_id=...`),
+    fetched unconditionally (unlike Build/Deploy/Scale events above, a
+    `draft`/`validated` application already has real audit entries —
+    registering and validating it are themselves audited actions).
+- **Audit Log** (`AuditLog.tsx`, reachable from the header nav on every
+  page) — the platform-wide view: filter by resource type/action, **Export
+  CSV** (a real file download carrying the same identity headers as every
+  other request — plain `<a href>` can't do that, so it fetches a `Blob`
+  and triggers the save client-side), and **Verify chain integrity**
+  (`GET /audit-log/integrity`), surfacing whether the hash chain is intact
+  or, if not, the first broken `seq`.
 
 ## How button-enablement mirrors the real service preconditions
 
@@ -125,6 +136,12 @@ enforcing anything.
   underlying deployment record isn't `DeploymentRunning` (a narrow,
   transient window) — surfaced correctly via the error banner if hit, just
   not pre-filtered by this app's simpler `lifecycle_status`-only check.
+- **Audit Log's "Actor" column shows a raw user id**, not an email/name —
+  `platform-api`'s audit entries only carry `actor_user_id` (a UUID), and
+  no endpoint exists anywhere to resolve a user id back to a human-readable
+  identity for display. Matches every other place in this app that shows a
+  raw id today (e.g. `requested_by` on a deployment); worth a real user
+  lookup once one exists, not something this page invents on its own.
 
 ## Real port-collision note (found while verifying, not hypothetical)
 
@@ -290,3 +307,26 @@ which the click-through above didn't set up. Rollback itself is already
 verified at the Platform API and MCP layers in prior PRs; only the
 UI-specific "click Roll back to this on a history row and watch traffic
 actually flip" path remains unverified here.
+
+### Audit Log UI (Module W), verified for real
+
+A third Playwright pass exercised the new `AuditLog.tsx` page and
+`ApplicationDetail.tsx`'s audit section against a real Platform API,
+running through everything the new client functions
+(`queryAuditLog`/`exportAuditLogCsv`/`verifyAuditLogIntegrity`) do: signed
+in, registered and validated a real application, confirmed its own detail
+page's **Audit log** section showed both the real `application.register`
+and `application.validate` entries, followed the header's **Audit Log**
+link to the platform-wide page and confirmed the same entries appeared
+there, applied the action filter and confirmed it correctly narrowed to
+just the matching entries, clicked **Verify chain integrity** and
+confirmed it reported the real hash chain intact, and clicked **Export
+CSV** — a genuine file download (`page.waitForEvent("download")`, not a
+mocked click), saved it to disk, and confirmed the file actually contains
+the real entries and their `entry_hash` column. Confirmed the export
+itself then shows up as a new `audit_log.export` entry after refetching,
+per FR-105's own main flow. Every check passed on the first real run —
+screenshots taken and looked at, no console errors, no layout breakage. No
+bugs found in the UI this time (the Module W backend itself did have one,
+caught during its own PR's verification — see
+`services/platform-api/README.md`'s "How Audit Logging works" section).

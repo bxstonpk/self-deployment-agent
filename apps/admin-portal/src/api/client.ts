@@ -3,6 +3,8 @@ import { identityHeaders } from "../identity";
 import {
   ApiError,
   type Application,
+  type AuditEntry,
+  type AuditQueryParams,
   type Build,
   type Department,
   type DepartmentRaw,
@@ -180,4 +182,45 @@ export async function listDepartments(identity: Identity): Promise<Department[]>
 export async function listSupportedStacks(identity: Identity): Promise<SupportedStack[]> {
   const data = await request<{ stacks: SupportedStackRaw[] }>(identity, "GET", "/supported-stacks");
   return data.stacks.map((s) => ({ id: s.ID, kind: s.Kind, name: s.Name, status: s.Status }));
+}
+
+// --- Audit Log (Module W) -------------------------------------------------
+
+function auditQueryString(params: AuditQueryParams = {}): string {
+  const q = new URLSearchParams();
+  if (params.actorUserId) q.set("actor_user_id", params.actorUserId);
+  if (params.resourceType) q.set("resource_type", params.resourceType);
+  if (params.resourceId) q.set("resource_id", params.resourceId);
+  if (params.action) q.set("action", params.action);
+  if (params.from) q.set("from", params.from);
+  if (params.to) q.set("to", params.to);
+  if (params.limit) q.set("limit", String(params.limit));
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
+// GET /audit-log is scoped server-side (AuditService.Query) to entries the
+// caller performed themselves or that concern an application they own —
+// there is no broader Auditor/Security Administrator role to request more
+// than that with yet (see services/platform-api/README.md's "How Audit
+// Logging works" section).
+export function queryAuditLog(identity: Identity, params?: AuditQueryParams): Promise<{ entries: AuditEntry[] }> {
+  return request(identity, "GET", `/audit-log${auditQueryString(params)}`);
+}
+
+// Not routed through request<T>() like everything else here: the response
+// is a CSV file, not JSON, and needs the identity headers a plain <a href>
+// download link can't carry.
+export async function exportAuditLogCsv(identity: Identity, params?: AuditQueryParams): Promise<Blob> {
+  const res = await fetch(`${BASE_URL}/audit-log/export${auditQueryString(params)}`, {
+    headers: identityHeaders(identity),
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, "export_failed", `audit log export failed with HTTP ${res.status}`);
+  }
+  return res.blob();
+}
+
+export function verifyAuditLogIntegrity(identity: Identity): Promise<{ intact: boolean; broken_at_seq?: number }> {
+  return request(identity, "GET", "/audit-log/integrity");
 }
