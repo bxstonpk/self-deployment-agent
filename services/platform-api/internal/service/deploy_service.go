@@ -71,25 +71,26 @@ type ScaleInitializer interface {
 }
 
 type DeploymentService struct {
-	apps        ApplicationLifecycleRepository
-	owners      ApplicationOwnerRepository
-	builds      BuildRepository
-	deployments DeploymentRepository
-	approvals   DeploymentApprovalRepository
-	scanner     ImageScanner
-	runtime     RuntimeEngine
-	scale       ScaleInitializer
-	audit       AuditRecorder
+	apps          ApplicationLifecycleRepository
+	owners        ApplicationOwnerRepository
+	builds        BuildRepository
+	deployments   DeploymentRepository
+	approvals     DeploymentApprovalRepository
+	scanner       ImageScanner
+	runtime       RuntimeEngine
+	scale         ScaleInitializer
+	audit         AuditRecorder
+	notifications NotificationRecorder
 }
 
 func NewDeploymentService(
 	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository,
 	deployments DeploymentRepository, approvals DeploymentApprovalRepository,
-	scanner ImageScanner, runtime RuntimeEngine, scale ScaleInitializer, audit AuditRecorder,
+	scanner ImageScanner, runtime RuntimeEngine, scale ScaleInitializer, audit AuditRecorder, notifications NotificationRecorder,
 ) *DeploymentService {
 	return &DeploymentService{
 		apps: apps, owners: owners, builds: builds, deployments: deployments,
-		approvals: approvals, scanner: scanner, runtime: runtime, scale: scale, audit: audit,
+		approvals: approvals, scanner: scanner, runtime: runtime, scale: scale, audit: audit, notifications: notifications,
 	}
 }
 
@@ -241,6 +242,12 @@ func (s *DeploymentService) runScanThenBeyond(ctx context.Context, app domain.Ap
 		if _, err := s.approvals.Create(ctx, deployment.ID, requesterID); err != nil {
 			return domain.Deployment{}, err
 		}
+		// FR-108: recipients are every active owner, standing in for "the
+		// designated approver(s)" — see NotifyOwners's doc comment for why.
+		s.notifications.NotifyOwners(ctx, app.ID, domain.NotificationApprovalRequest,
+			fmt.Sprintf("%s: production deployment awaiting approval", app.Name),
+			fmt.Sprintf("Deployment %s is awaiting production approval.", deployment.ID),
+			"deployment", deployment.ID)
 		return deployment, nil // pipeline pauses here — FR-042 main flow step 1
 	}
 
@@ -317,6 +324,15 @@ func (s *DeploymentService) DecideApproval(ctx context.Context, deploymentID, ap
 				return domain.Deployment{}, err
 			}
 		}
+		// FR-107: rejection is a definitive "this deployment did not go
+		// through" milestone, distinct from a mid-pipeline failure but
+		// worth the same notification — found while manually verifying
+		// approval-request notifications: the approver already knows they
+		// just rejected it, but every OTHER owner only finds out here.
+		s.notifications.NotifyOwners(ctx, app.ID, domain.NotificationDeploymentStatus,
+			fmt.Sprintf("%s: production deployment rejected", app.Name),
+			fmt.Sprintf("Deployment %s was rejected: %s", deployment.ID, reason),
+			"deployment", deployment.ID)
 		return deployment, nil
 	}
 
@@ -403,6 +419,13 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 		return domain.Deployment{}, err
 	}
 
+	// FR-107: the deployment/rollback pipeline reached its successful
+	// milestone (Completed -> Running).
+	s.notifications.NotifyOwners(ctx, app.ID, domain.NotificationDeploymentStatus,
+		fmt.Sprintf("%s: deployment succeeded", app.Name),
+		fmt.Sprintf("Deployment %s is now running.", deployment.ID),
+		"deployment", deployment.ID)
+
 	// Module L (FR-051): determine and persist each service's
 	// scale-to-zero eligibility now that the deployment is live. Not
 	// pipeline-fatal if it fails — the deployment already succeeded and is
@@ -463,6 +486,15 @@ func (s *DeploymentService) markDeploymentFailedFrom(ctx context.Context, applic
 	if _, err := s.apps.UpdateLifecycleStatus(detachedCtx, applicationID, fromAppStatus, target, false); err != nil {
 		return domain.Deployment{}, err
 	}
+
+	// FR-107: the deployment/rollback pipeline reached its failure
+	// milestone. Uses detachedCtx too — same reasoning as the writes above
+	// in this function, this notification would otherwise silently never
+	// fire for exactly the slow-request-cancellation case where a human
+	// finding out asynchronously matters most.
+	s.notifications.NotifyOwners(detachedCtx, applicationID, domain.NotificationDeploymentStatus,
+		"Deployment failed", reason, "deployment", deployment.ID)
+
 	return deployment, nil
 }
 

@@ -262,7 +262,7 @@ func newDeployService(app domain.Application, build domain.Build, ownerID string
 	runtime := newHealthyRuntime()
 	scale := &fakeScaleInitializer{}
 
-	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder())
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder(), newFakeNotificationRecorder())
 	return svc, apps, deployments, runtime, scanner, builds
 }
 
@@ -364,6 +364,33 @@ func TestDecideApproval_Rejected_MarksFailedWithReason(t *testing.T) {
 	}
 	if len(runtime.started) != 0 {
 		t.Error("expected no containers started for a rejected deployment")
+	}
+}
+
+func TestDecideApproval_Rejected_NotifiesOwnersOfDeploymentStatus(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, notifications := newDeployServiceWithNotifications(app, build, "owner-1")
+
+	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	notifications.calls = nil // only care about the notification from the decision itself
+
+	rejected, err := svc.DecideApproval(context.Background(), d.ID, "owner-1", false, "not ready")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calls := notifications.all()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one notification, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Category != domain.NotificationDeploymentStatus || calls[0].ResourceID != rejected.ID {
+		t.Fatalf("unexpected notification: %+v", calls[0])
+	}
+	if !strings.Contains(calls[0].Detail, "not ready") {
+		t.Errorf("expected the rejection reason in the notification detail, got %q", calls[0].Detail)
 	}
 }
 
@@ -715,7 +742,7 @@ func newDeployServiceWithAudit(app domain.Application, build domain.Build, owner
 	scale := &fakeScaleInitializer{}
 	audit := newFakeAuditRecorder()
 
-	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, audit)
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, audit, newFakeNotificationRecorder())
 	return svc, runtime, builds, audit
 }
 
@@ -787,5 +814,88 @@ func TestRollback_Success_RecordsAuditSuccessEntry(t *testing.T) {
 	}
 	if rollbackEntry.Outcome != domain.AuditSuccess || rollbackEntry.ResourceID != rolledBack.ID {
 		t.Fatalf("unexpected rollback audit entry: %+v", *rollbackEntry)
+	}
+}
+
+func newDeployServiceWithNotifications(app domain.Application, build domain.Build, ownerID string) (
+	*service.DeploymentService, *fakeRuntime, *fakeNotificationRecorder,
+) {
+	apps := newFakeLifecycleRepo(app)
+	owners := newFakeOwnerRepo()
+	owners.owners[app.ID] = []domain.ApplicationOwner{{
+		ApplicationID: app.ID, UserID: ownerID, OwnershipRole: domain.OwnerRolePrimary, Status: "active",
+	}}
+	builds := newFakeBuildRepo()
+	builds.byID[build.ID] = build
+	builds.byApp[app.ID] = build.ID
+	deployments := newFakeDeploymentRepo()
+	approvals := newFakeApprovalRepo()
+	scanner := newPassingScanner()
+	runtime := newHealthyRuntime()
+	scale := &fakeScaleInitializer{}
+	notifications := newFakeNotificationRecorder()
+
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder(), notifications)
+	return svc, runtime, notifications
+}
+
+func TestInitiateDeploy_Success_NotifiesOwnersOfDeploymentStatus(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, notifications := newDeployServiceWithNotifications(app, build, "owner-1")
+
+	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calls := notifications.all()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one notification, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Category != domain.NotificationDeploymentStatus || calls[0].ApplicationID != "app-1" || calls[0].ResourceID != d.ID {
+		t.Fatalf("unexpected notification: %+v", calls[0])
+	}
+}
+
+func TestInitiateDeploy_HealthCheckFailure_NotifiesOwnersOfFailure(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, runtime, notifications := newDeployServiceWithNotifications(app, build, "owner-1")
+	runtime.healthCheckErr = errors.New("connection refused")
+
+	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("a failed deploy is a normal outcome, expected nil error, got: %v", err)
+	}
+
+	calls := notifications.all()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one notification, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Category != domain.NotificationDeploymentStatus || calls[0].ResourceID != d.ID {
+		t.Fatalf("unexpected notification: %+v", calls[0])
+	}
+	if !strings.Contains(calls[0].Detail, "connection refused") {
+		t.Errorf("expected the failure reason in the notification detail, got %q", calls[0].Detail)
+	}
+}
+
+func TestInitiateDeploy_Production_NotifiesOwnersOfApprovalRequest(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, notifications := newDeployServiceWithNotifications(app, build, "owner-1")
+
+	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d.Status != domain.DeploymentPendingApproval {
+		t.Fatalf("expected PendingApproval, got %q", d.Status)
+	}
+
+	calls := notifications.all()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one notification, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Category != domain.NotificationApprovalRequest || calls[0].ResourceID != d.ID {
+		t.Fatalf("unexpected notification: %+v", calls[0])
 	}
 }

@@ -1,4 +1,4 @@
-# Platform API — Draft through Archive/Delete (State 1–8) + Audit Log
+# Platform API — Draft through Archive/Delete (State 1–8) + Audit Log + Notifications
 
 Go implementation of the Business API, built one Application Lifecycle state
 at a time. Currently covers **Draft**, **Validated**, **Build**,
@@ -7,7 +7,9 @@ application), **Suspend/Resume/Restart**, **Rollback**, **Archive/Delete**
 — every Application Lifecycle state reachable without Modules N/O/P
 (Database/Secret/Domain Management), which don't exist yet — plus
 **Module W (Audit Log)**, an append-only, hash-chained record of every
-state-changing action across all of the above.
+state-changing action across all of the above, and **Module X
+(Notification)**, an in-app notification inbox for deployment status and
+production-approval events.
 
 Implements from
 [`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md):
@@ -23,8 +25,9 @@ Scale-to-Zero: real idle detection, real cold-start-on-request through a
 stable proxy URL, real event logging); `FR-045`, `FR-047`, `FR-048`,
 `FR-049`, `FR-050` (Module K — the full Application Lifecycle model, plus
 Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
-`FR-101` (Module V — Rollback — see below); and `FR-103`, `FR-104`,
-`FR-105`, `FR-106` (Module W — Audit Log — see below). See
+`FR-101` (Module V — Rollback — see below); `FR-103`, `FR-104`,
+`FR-105`, `FR-106` (Module W — Audit Log — see below); and `FR-107`,
+`FR-108` (Module X — Notification — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -59,6 +62,8 @@ for how it fits the Control Plane.
 | `GET /audit-log` | FR-104 | Filter by `actor_user_id`/`resource_type`/`resource_id`/`action`/`from`/`to`/`limit`; scoped to entries the caller performed or that concern an application they own |
 | `GET /audit-log/export` | FR-105 | Same filters, CSV response; the export itself is recorded as a new audit entry |
 | `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
+| `GET /notifications` | FR-107, FR-108 | The caller's own notifications, newest first; `?unread_only=true` filters to unread |
+| `POST /notifications/{id}/read` | — | Marks one of the caller's own notifications read; a different user's notification id 404s, not 403 — see **How Notifications work** |
 
 ### How Build works
 
@@ -379,9 +384,14 @@ already transient for a forward deploy).
   works**). FR-098 (this feature) covers the deliberate,
   requester-initiated path; FR-099's fully-automatic trigger remains a
   documented gap.
-- FR-102 (rollback notification) isn't implemented — Module X (Notification)
-  doesn't exist yet, same gap as every other module that would notify on an
-  event.
+- FR-102 (rollback notification) is now partially real: since `Rollback`
+  shares `deployAndActivate`/`markDeploymentFailedFrom` with a forward
+  deploy (see above), it automatically triggers the same Module X
+  notification on both success and failure — an owner genuinely gets
+  notified. What's missing is FR-102's specific content requirements: the
+  notification text is the generic "deployment succeeded/failed" wording,
+  not rollback-specific ("rolled back to version X", trigger reason, prior
+  vs. new active version) — see **How Notifications work** below.
 
 **A real bug found via the new unit tests, not just manual testing:**
 `deployAndActivate`'s final `apps.UpdateLifecycleStatus` call (the one that
@@ -541,6 +551,76 @@ that round-trips through the database are byte-for-byte identical.
   disable triggers, insert fabricated-but-internally-consistent rows, and
   re-enable them) — the trigger and hash chain together give strong
   in-band tamper *detection*, not protection against that threat model.
+
+## How Notifications work (Module X)
+
+An in-app, per-recipient notification inbox for `FR-107` (Deployment
+Status Notifications) and `FR-108` (Approval Request Notifications).
+`FR-109` (Security and Policy Violation Notifications) is a documented
+gap — it needs a Security Administrator role this platform doesn't have
+(`DEC-002`) and a proactive detection sweep (e.g. periodically re-running
+Module W's `VerifyChain`) this platform doesn't run in the background,
+unlike the scale-to-zero sweeper.
+
+**Delivery is in-app only** — a queryable list, not email/Slack/webhook.
+There is no outbound delivery channel configured anywhere in this
+platform, and FR-107's "configured channel(s)" is squarely a Module X
+follow-up, not invented here.
+
+**Recipients.** Every notification goes to every *active* owner of the
+application — standing in for both "the requester" (who is, by
+construction, always an active owner; every deployment-pipeline action
+`requireOwner`-gates on exactly that) and FR-108's "designated
+approver(s)" (there is no distinct approver role — the same gap
+`DecideApproval`'s own doc comment names).
+
+**Trigger points**, all inside `deploy_service.go` since every notified
+event is a deployment-pipeline milestone:
+- `deployAndActivate`'s successful `-> Running` transition (succeeded —
+  covers both a forward deploy and a rollback, since both call this same
+  function).
+- `markDeploymentFailedFrom` (failed — the single shared failure path used
+  by every pipeline stage's failure branch, from image-scan rejection
+  through a health-check failure).
+- `runScanThenBeyond`'s "pipeline pauses here" return (awaiting
+  approval).
+- `DecideApproval`'s rejection branch (rejected) — added after manually
+  verifying the approval-request notification: an approver rejecting a
+  deployment already knows they just did it, but no other owner found out
+  until this was added. A real, small gap caught by using the feature, not
+  a pre-planned design.
+
+**Best-effort by design, not by omission.** FR-107's own exception flow
+says "failure to deliver does not block the underlying deployment
+pipeline itself" — unlike `AuditRecorder`, `NotificationRecorder`'s
+`NotifyOwners` method returns nothing at all for a caller to react to,
+mirroring `scale_event_repo.go`'s `Record` (the other place this codebase
+already treats a side-effect write as genuinely best-effort). A failed
+write is only logged.
+
+**Verified for real**, not just via unit tests (`notification_service_test.go`
+plus dedicated tests in `deploy_service_test.go` for each trigger point):
+ran the full stack via `docker compose up --build`, registered, built, and
+deployed a real application — confirmed a real `deployment_status`
+notification appeared on a successful dev deploy, confirmed `unread_only`
+and mark-read work and that a different user can't mark someone else's
+notification read (404, not 403 — doesn't even confirm the id exists to an
+unauthorized caller), confirmed a production deploy produces a real
+`approval_request` notification, and confirmed rejecting it produces the
+`deployment_status` rejection notification described above — which is
+exactly how the gap above was found, not hypothesized.
+
+**Known gaps, documented not hidden:**
+- FR-107's exception flow calls for delivery retry "per policy" on
+  failure — there is no retry queue, a failed write is only logged.
+- FR-108's "reminder notifications ... until the approval expires" isn't
+  implemented — there is no approval-expiry concept anywhere in this
+  platform yet.
+- FR-109 (security/policy violation notifications) isn't implemented at
+  all — see this section's opening paragraph.
+- "Success notifications may be configurable (digest vs. immediate) per
+  employee preference" (FR-107) doesn't exist — every notification is
+  immediate, with no preference model.
 
 ### Known gap: no retry path out of Failed yet
 
