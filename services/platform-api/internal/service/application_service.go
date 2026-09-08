@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -48,11 +49,12 @@ type ApplicationService struct {
 	apps        ApplicationRepository
 	owners      ApplicationOwnerRepository
 	departments DepartmentRepository
+	audit       AuditRecorder
 	now         func() time.Time
 }
 
-func NewApplicationService(apps ApplicationRepository, owners ApplicationOwnerRepository, departments DepartmentRepository) *ApplicationService {
-	return &ApplicationService{apps: apps, owners: owners, departments: departments, now: time.Now}
+func NewApplicationService(apps ApplicationRepository, owners ApplicationOwnerRepository, departments DepartmentRepository, audit AuditRecorder) *ApplicationService {
+	return &ApplicationService{apps: apps, owners: owners, departments: departments, audit: audit, now: time.Now}
 }
 
 type RegisterApplicationInput struct {
@@ -66,7 +68,7 @@ type RegisterApplicationInput struct {
 // Register implements FR-011 (Register New Application): validates the name
 // (FR-012), creates the application in Draft state, and assigns the
 // registering employee as the initial primary owner (FR-015 default path).
-func (s *ApplicationService) Register(ctx context.Context, in RegisterApplicationInput) (domain.Application, error) {
+func (s *ApplicationService) Register(ctx context.Context, in RegisterApplicationInput) (app domain.Application, err error) {
 	name := strings.ToLower(strings.TrimSpace(in.Name))
 	if !dnsLabelPattern.MatchString(name) || reservedApplicationNames[name] {
 		return domain.Application{}, domain.ErrInvalidName
@@ -88,7 +90,26 @@ func (s *ApplicationService) Register(ctx context.Context, in RegisterApplicatio
 		return domain.Application{}, domain.ErrDepartmentUnknown
 	}
 
-	app, err := s.apps.Create(ctx, domain.Application{
+	// Audited from here on: everything above is a validation rejection
+	// before any real registration was attempted (FR-103 scope boundary —
+	// see audit_service.go's package comment). Named returns + defer let
+	// this cover every remaining return path (success and failure) without
+	// touching the branching below.
+	defer func() {
+		outcome := domain.AuditSuccess
+		detail := ""
+		if err != nil {
+			outcome, detail = domain.AuditFailure, err.Error()
+		}
+		if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+			ActorUserID: in.RegisteredBy.ID, Action: domain.AuditActionRegisterApplication,
+			ResourceType: "application", ResourceID: app.ID, Outcome: outcome, Detail: detail,
+		}); auditErr != nil && err == nil {
+			err = fmt.Errorf("application registered but audit trail failed to record: %w", auditErr)
+		}
+	}()
+
+	app, err = s.apps.Create(ctx, domain.Application{
 		Name:                name,
 		Description:         strings.TrimSpace(in.Description),
 		OwningDepartmentID:  in.OwningDepartmentID,

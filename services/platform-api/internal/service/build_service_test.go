@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,7 +116,7 @@ func newBuildService(app domain.Application, ownerID string) (*service.BuildServ
 	builds := newFakeBuildRepo()
 	baseImages := newFakeBaseImageRepo()
 	engine := &fakeBuildEngine{result: map[string]string{"frontend": "platform-build/app-frontend:abc123"}}
-	return service.NewBuildService(apps, owners, builds, baseImages, engine), apps, builds, engine
+	return service.NewBuildService(apps, owners, builds, baseImages, engine, newFakeAuditRecorder()), apps, builds, engine
 }
 
 const validatedYAML = `
@@ -328,5 +329,59 @@ func TestTriggerBuild_AlreadyInFlight_Rejected(t *testing.T) {
 	}
 	if engine.called {
 		t.Error("engine should not be invoked when a build is already in flight")
+	}
+}
+
+func newBuildServiceWithAudit(app domain.Application, ownerID string) (*service.BuildService, *fakeBuildEngine, *fakeAuditRecorder) {
+	apps := newFakeLifecycleRepo(app)
+	owners := newFakeOwnerRepo()
+	owners.owners[app.ID] = []domain.ApplicationOwner{{
+		ApplicationID: app.ID, UserID: ownerID, OwnershipRole: domain.OwnerRolePrimary, Status: "active",
+	}}
+	builds := newFakeBuildRepo()
+	baseImages := newFakeBaseImageRepo()
+	engine := &fakeBuildEngine{result: map[string]string{"frontend": "platform-build/app-frontend:abc123"}}
+	audit := newFakeAuditRecorder()
+	return service.NewBuildService(apps, owners, builds, baseImages, engine, audit), engine, audit
+}
+
+func TestTriggerBuild_Success_RecordsAuditSuccessEntry(t *testing.T) {
+	app := validatedApp("app-1", "overtime")
+	svc, _, audit := newBuildServiceWithAudit(app, "owner-1")
+
+	build, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("fake-archive"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry, got %d", len(entries))
+	}
+	if e := entries[0]; e.Action != domain.AuditActionTriggerBuild || e.Outcome != domain.AuditSuccess || e.ResourceID != build.ID {
+		t.Fatalf("unexpected audit entry: %+v", e)
+	}
+}
+
+func TestTriggerBuild_EngineFailure_RecordsAuditFailureEntry(t *testing.T) {
+	app := validatedApp("app-1", "overtime")
+	svc, engine, audit := newBuildServiceWithAudit(app, "owner-1")
+	engine.err = &domain.BuildFailure{Category: domain.ErrorCategorySource, Service: "frontend", Detail: "npm install failed"}
+
+	build, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("fake-archive"))
+	if err != nil {
+		t.Fatalf("a failed build is a normal outcome, expected nil error, got: %v", err)
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.Action != domain.AuditActionTriggerBuild || e.Outcome != domain.AuditFailure || e.ResourceID != build.ID {
+		t.Fatalf("unexpected audit entry: %+v", e)
+	}
+	if !strings.Contains(e.Detail, "npm install failed") {
+		t.Errorf("expected the build's own error detail to be reused, got %q", e.Detail)
 	}
 }

@@ -19,6 +19,7 @@ type RouterConfig struct {
 	ScaleEvents   *ScaleEventsHandler
 	Proxy         *ProxyHandler
 	Lifecycle     *LifecycleHandler
+	Audit         *AuditHandler
 	// PlatformEnv gates DevOnlyGuard. The only Authenticator implementation
 	// today is DevHeaderAuthenticator, so this is always enforced until a
 	// real one lands per DEC-001 (docs/17_Decision_Log.md).
@@ -84,6 +85,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Use(DevOnlyGuard(cfg.PlatformEnv))
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Departments.List)
+	})
+
+	r.Route("/audit-log", func(r chi.Router) {
+		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		r.Use(RequireAuth(cfg.Authenticator))
+		r.Get("/", cfg.Audit.Query)
+		r.Get("/export", cfg.Audit.Export)
+		r.Get("/integrity", cfg.Audit.VerifyIntegrity)
 	})
 
 	r.Route("/deployments", func(r chi.Router) {

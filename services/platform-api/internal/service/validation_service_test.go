@@ -99,7 +99,7 @@ func newValidationService(app domain.Application, ownerID string) (*service.Vali
 		ApplicationID: app.ID, UserID: ownerID, OwnershipRole: domain.OwnerRolePrimary, Status: "active",
 	}}
 	stacks := newFakeStackRepo()
-	return service.NewValidationService(apps, owners, stacks), apps
+	return service.NewValidationService(apps, owners, stacks, newFakeAuditRecorder()), apps
 }
 
 const validYAML = `
@@ -307,5 +307,55 @@ func TestSaveDeploymentYAML_InvalidYAMLSyntax_Rejected(t *testing.T) {
 	_, err := svc.SaveDeploymentYAML(context.Background(), "app-1", "owner-1", "not: [valid: yaml")
 	if err == nil {
 		t.Fatal("expected an error for malformed YAML")
+	}
+}
+
+func newValidationServiceWithAudit(app domain.Application, ownerID string) (*service.ValidationService, *fakeAuditRecorder) {
+	apps := newFakeLifecycleRepo(app)
+	owners := newFakeOwnerRepo()
+	owners.owners[app.ID] = []domain.ApplicationOwner{{
+		ApplicationID: app.ID, UserID: ownerID, OwnershipRole: domain.OwnerRolePrimary, Status: "active",
+	}}
+	audit := newFakeAuditRecorder()
+	return service.NewValidationService(apps, owners, newFakeStackRepo(), audit), audit
+}
+
+func TestValidate_Success_RecordsAuditSuccessEntry(t *testing.T) {
+	app := draftApp("app-1", "overtime", validYAML)
+	svc, audit := newValidationServiceWithAudit(app, "owner-1")
+
+	if _, _, err := svc.Validate(context.Background(), "app-1", "owner-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 || entries[0].Action != domain.AuditActionValidateApplication || entries[0].Outcome != domain.AuditSuccess {
+		t.Fatalf("expected one successful validate audit entry, got %+v", entries)
+	}
+}
+
+func TestValidate_FailingChecks_RecordsAuditFailureEntry(t *testing.T) {
+	badYAML := `
+app:
+  name: overtime
+  owner: HR
+services:
+  frontend:
+    runtime: php
+`
+	app := draftApp("app-1", "overtime", badYAML)
+	svc, audit := newValidationServiceWithAudit(app, "owner-1")
+
+	report, _, err := svc.Validate(context.Background(), "app-1", "owner-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatal("expected the report to be invalid for this fixture")
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 || entries[0].Action != domain.AuditActionValidateApplication || entries[0].Outcome != domain.AuditFailure {
+		t.Fatalf("expected one failed validate audit entry (a completed but failing check run), got %+v", entries)
 	}
 }

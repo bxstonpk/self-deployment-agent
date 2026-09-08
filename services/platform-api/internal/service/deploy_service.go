@@ -79,16 +79,57 @@ type DeploymentService struct {
 	scanner     ImageScanner
 	runtime     RuntimeEngine
 	scale       ScaleInitializer
+	audit       AuditRecorder
 }
 
 func NewDeploymentService(
 	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository,
 	deployments DeploymentRepository, approvals DeploymentApprovalRepository,
-	scanner ImageScanner, runtime RuntimeEngine, scale ScaleInitializer,
+	scanner ImageScanner, runtime RuntimeEngine, scale ScaleInitializer, audit AuditRecorder,
 ) *DeploymentService {
 	return &DeploymentService{
 		apps: apps, owners: owners, builds: builds, deployments: deployments,
-		approvals: approvals, scanner: scanner, runtime: runtime, scale: scale,
+		approvals: approvals, scanner: scanner, runtime: runtime, scale: scale, audit: audit,
+	}
+}
+
+// auditDeployOutcome records one deployment-pipeline action's terminal
+// outcome, called via defer from InitiateDeploy/Rollback/DecideApproval
+// after their guard clauses pass — see audit_service.go's package comment
+// for the FR-103 scope boundary. deployment.Status alone decides
+// success/failure here (not just err): a deploy/rollback attempt that
+// fails partway through the pipeline (e.g. a health check failure) returns
+// (deployment, nil) with Status Failed or Rejected, not a Go error — see
+// deployAndActivate's and markDeploymentFailedFrom's doc comments.
+// PendingApproval is treated as success: the requested action (submit for
+// deployment) completed correctly, it's just paused at a gate the eventual
+// DecideApproval call audits separately.
+func (s *DeploymentService) auditDeployOutcome(ctx context.Context, action domain.AuditAction, applicationID, requesterID string, deployment *domain.Deployment, err *error) {
+	outcome := domain.AuditSuccess
+	detail := ""
+	switch {
+	case *err != nil:
+		outcome, detail = domain.AuditFailure, (*err).Error()
+	case deployment.Status == domain.DeploymentFailed:
+		outcome = domain.AuditFailure
+		if deployment.FailureReason != nil {
+			detail = *deployment.FailureReason
+		}
+	case deployment.Status == domain.DeploymentRejected:
+		outcome = domain.AuditFailure
+		if deployment.RejectionReason != nil {
+			detail = *deployment.RejectionReason
+		}
+	}
+	resourceID := deployment.ID
+	if resourceID == "" {
+		resourceID = applicationID
+	}
+	if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+		ActorUserID: requesterID, Action: action,
+		ResourceType: "deployment", ResourceID: resourceID, Outcome: outcome, Detail: detail,
+	}); auditErr != nil && *err == nil {
+		*err = fmt.Errorf("%s completed but audit trail failed to record: %w", action, auditErr)
 	}
 }
 
@@ -119,7 +160,7 @@ func isInFlight(status domain.DeploymentStatus) bool {
 // and, depending on environment, either the production approval gate or
 // straight through to Deploy/HealthCheck/Activate (FR-042's alternative
 // flow: dev skips the gate entirely).
-func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, requesterID string, environment domain.Environment) (domain.Deployment, error) {
+func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, requesterID string, environment domain.Environment) (deployment domain.Deployment, err error) {
 	if environment != domain.EnvironmentDev && environment != domain.EnvironmentProduction {
 		return domain.Deployment{}, domain.ErrInvalidEnvironment
 	}
@@ -151,7 +192,12 @@ func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, r
 		return domain.Deployment{}, err
 	}
 
-	deployment, err := s.deployments.Create(ctx, applicationID, build.ID, requesterID, environment)
+	// Audited from here on — see auditDeployOutcome's doc comment for the
+	// FR-103 scope boundary and why deployment.Status, not just err, decides
+	// the recorded outcome.
+	defer s.auditDeployOutcome(ctx, domain.AuditActionInitiateDeploy, applicationID, requesterID, &deployment, &err)
+
+	deployment, err = s.deployments.Create(ctx, applicationID, build.ID, requesterID, environment)
 	if err != nil {
 		return domain.Deployment{}, err
 	}
@@ -211,8 +257,8 @@ func (s *DeploymentService) runScanThenBeyond(ctx context.Context, app domain.Ap
 // DEC-001/DEC-002, docs/17_Decision_Log.md). Requiring a *different* owner
 // today would make single-owner applications undeployable to production,
 // which is a worse outcome than documenting the gap honestly.
-func (s *DeploymentService) DecideApproval(ctx context.Context, deploymentID, approverID string, approve bool, reason string) (domain.Deployment, error) {
-	deployment, err := s.deployments.GetByID(ctx, deploymentID)
+func (s *DeploymentService) DecideApproval(ctx context.Context, deploymentID, approverID string, approve bool, reason string) (deployment domain.Deployment, err error) {
+	deployment, err = s.deployments.GetByID(ctx, deploymentID)
 	if err != nil {
 		return domain.Deployment{}, err
 	}
@@ -222,6 +268,31 @@ func (s *DeploymentService) DecideApproval(ctx context.Context, deploymentID, ap
 	if err := s.requireOwner(ctx, deployment.ApplicationID, approverID); err != nil {
 		return domain.Deployment{}, err
 	}
+
+	// Audited from here on. Unlike auditDeployOutcome (InitiateDeploy/
+	// Rollback), a Rejected deployment.Status here is NOT a failure of THIS
+	// action — DecideApproval's job is to durably record whichever decision
+	// the approver made, and it did so correctly either way. Outcome
+	// reflects whether the decision was recorded, not which way it went.
+	defer func() {
+		outcome := domain.AuditSuccess
+		detail := "approved"
+		if !approve {
+			detail = "rejected"
+			if reason != "" {
+				detail = "rejected: " + reason
+			}
+		}
+		if err != nil {
+			outcome, detail = domain.AuditFailure, err.Error()
+		}
+		if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+			ActorUserID: approverID, Action: domain.AuditActionDecideApproval,
+			ResourceType: "deployment", ResourceID: deploymentID, Outcome: outcome, Detail: detail,
+		}); auditErr != nil && err == nil {
+			err = fmt.Errorf("approval decision recorded but audit trail failed to record: %w", auditErr)
+		}
+	}()
 
 	decision := domain.ApprovalRejected
 	if approve {
@@ -440,7 +511,7 @@ func (s *DeploymentService) DeploymentHistory(ctx context.Context, applicationID
 //     already-Running previous version in the first place — see
 //     markDeploymentFailedFrom. FR-098 (this method) covers the deliberate,
 //     requester-initiated rollback path.
-func (s *DeploymentService) Rollback(ctx context.Context, applicationID, requesterID, targetDeploymentID string) (domain.Deployment, error) {
+func (s *DeploymentService) Rollback(ctx context.Context, applicationID, requesterID, targetDeploymentID string) (deployment domain.Deployment, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
 		return domain.Deployment{}, err
@@ -489,7 +560,11 @@ func (s *DeploymentService) Rollback(ctx context.Context, applicationID, request
 		return domain.Deployment{}, domain.ErrInvalidRollbackTarget
 	}
 
-	deployment, err := s.deployments.Create(ctx, applicationID, build.ID, requesterID, target.Environment)
+	// Audited from here on — see auditDeployOutcome's doc comment for the
+	// FR-103 scope boundary.
+	defer s.auditDeployOutcome(ctx, domain.AuditActionRollback, applicationID, requesterID, &deployment, &err)
+
+	deployment, err = s.deployments.Create(ctx, applicationID, build.ID, requesterID, target.Environment)
 	if err != nil {
 		return domain.Deployment{}, err
 	}

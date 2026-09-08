@@ -65,10 +65,11 @@ type BuildService struct {
 	builds     BuildRepository
 	baseImages BaseImageRepository
 	engine     BuildEngine
+	audit      AuditRecorder
 }
 
-func NewBuildService(apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository, baseImages BaseImageRepository, engine BuildEngine) *BuildService {
-	return &BuildService{apps: apps, owners: owners, builds: builds, baseImages: baseImages, engine: engine}
+func NewBuildService(apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository, baseImages BaseImageRepository, engine BuildEngine, audit AuditRecorder) *BuildService {
+	return &BuildService{apps: apps, owners: owners, builds: builds, baseImages: baseImages, engine: engine, audit: audit}
 }
 
 func (s *BuildService) requireOwner(ctx context.Context, applicationID, userID string) error {
@@ -110,7 +111,7 @@ func (s *BuildService) requireOwner(ctx context.Context, applicationID, userID s
 // applied one step earlier than InitiateDeploy's own version of it — a
 // failed BUILD never touches running infrastructure at all, so there's
 // even less reason to move a Running application to Failed over it).
-func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requesterID string, sourceArchive []byte) (domain.Build, error) {
+func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requesterID string, sourceArchive []byte) (build domain.Build, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
 		return domain.Build{}, err
@@ -156,7 +157,33 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 		specs[name] = BuildServiceSpec{Runtime: svc.Runtime, Port: svc.Port, BaseImage: base.ImageReference}
 	}
 
-	build, err := s.builds.Create(ctx, applicationID, requesterID)
+	// Audited from here on: everything above is a precondition rejection
+	// before any build was actually attempted (FR-103 scope boundary — see
+	// audit_service.go's package comment). Named returns + defer cover both
+	// terminal outcomes below without touching their branching — notably,
+	// the build-engine-failure path below returns (build, nil), not a Go
+	// error, so outcome here is judged by build.Status, not err alone.
+	defer func() {
+		outcome := domain.AuditSuccess
+		detail := ""
+		switch {
+		case err != nil:
+			outcome, detail = domain.AuditFailure, err.Error()
+		case build.Status == domain.BuildFailed:
+			outcome = domain.AuditFailure
+			if build.ErrorDetail != nil {
+				detail = *build.ErrorDetail
+			}
+		}
+		if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+			ActorUserID: requesterID, Action: domain.AuditActionTriggerBuild,
+			ResourceType: "build", ResourceID: build.ID, Outcome: outcome, Detail: detail,
+		}); auditErr != nil && err == nil {
+			err = fmt.Errorf("build completed but audit trail failed to record: %w", auditErr)
+		}
+	}()
+
+	build, err = s.builds.Create(ctx, applicationID, requesterID)
 	if err != nil {
 		return domain.Build{}, err
 	}

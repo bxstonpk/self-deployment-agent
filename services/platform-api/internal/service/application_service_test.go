@@ -102,7 +102,7 @@ func newService() (*service.ApplicationService, *fakeApplicationRepo, *fakeOwner
 	apps := newFakeApplicationRepo()
 	owners := newFakeOwnerRepo()
 	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
-	return service.NewApplicationService(apps, owners, depts), apps, owners
+	return service.NewApplicationService(apps, owners, depts, newFakeAuditRecorder()), apps, owners
 }
 
 func TestRegister_Success_AssignsPrimaryOwnerAndDraftStatus(t *testing.T) {
@@ -238,5 +238,50 @@ func TestUpdateMetadata_Owner_Succeeds_WithoutChangingLifecycleStatus(t *testing
 	}
 	if updated.LifecycleStatus != domain.StatusDraft {
 		t.Errorf("FR-013: metadata edit must not change lifecycle status, got %q", updated.LifecycleStatus)
+	}
+}
+
+func TestRegister_Success_RecordsAuditEntry(t *testing.T) {
+	apps := newFakeApplicationRepo()
+	owners := newFakeOwnerRepo()
+	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
+	audit := newFakeAuditRecorder()
+	svc := service.NewApplicationService(apps, owners, depts, audit)
+	caller := domain.User{ID: "user-1"}
+
+	app, err := svc.Register(context.Background(), service.RegisterApplicationInput{
+		Name: "overtime", OwningDepartmentID: "dept-1", RegisteredBy: caller,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries := audit.all()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.Action != domain.AuditActionRegisterApplication || e.Outcome != domain.AuditSuccess || e.ResourceID != app.ID || e.ActorUserID != caller.ID {
+		t.Fatalf("unexpected audit entry: %+v", e)
+	}
+}
+
+func TestRegister_AuditWriteFailure_SurfacesAsError(t *testing.T) {
+	apps := newFakeApplicationRepo()
+	owners := newFakeOwnerRepo()
+	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
+	audit := newFakeAuditRecorder()
+	audit.failNext = true
+	svc := service.NewApplicationService(apps, owners, depts, audit)
+
+	// FR-103: a critical action must not report a bare, unaudited success —
+	// see audit_service.go's Record doc comment. The application row is
+	// still created (the state change already happened); the caller just
+	// finds out the audit trail failed to record it.
+	_, err := svc.Register(context.Background(), service.RegisterApplicationInput{
+		Name: "overtime", OwningDepartmentID: "dept-1", RegisteredBy: domain.User{ID: "user-1"},
+	})
+	if err == nil {
+		t.Fatal("expected an error when the audit trail write fails")
 	}
 }

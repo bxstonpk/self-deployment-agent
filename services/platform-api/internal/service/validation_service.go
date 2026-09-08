@@ -41,10 +41,11 @@ type ValidationService struct {
 	apps   ApplicationLifecycleRepository
 	owners ApplicationOwnerRepository
 	stacks StackRepository
+	audit  AuditRecorder
 }
 
-func NewValidationService(apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, stacks StackRepository) *ValidationService {
-	return &ValidationService{apps: apps, owners: owners, stacks: stacks}
+func NewValidationService(apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, stacks StackRepository, audit AuditRecorder) *ValidationService {
+	return &ValidationService{apps: apps, owners: owners, stacks: stacks, audit: audit}
 }
 
 func (s *ValidationService) requireOwner(ctx context.Context, applicationID, userID string) error {
@@ -84,7 +85,7 @@ func (s *ValidationService) SaveDeploymentYAML(ctx context.Context, applicationI
 // — an already-Validated application must go through SaveDeploymentYAML
 // (which reverts it to Draft) before it can be re-validated, so there is
 // never a stale "Validated" status sitting on top of an edited contract.
-func (s *ValidationService) Validate(ctx context.Context, applicationID, requesterID string) (domain.ValidationReport, domain.Application, error) {
+func (s *ValidationService) Validate(ctx context.Context, applicationID, requesterID string) (resultReport domain.ValidationReport, resultApp domain.Application, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
 		return domain.ValidationReport{}, domain.Application{}, err
@@ -98,6 +99,28 @@ func (s *ValidationService) Validate(ctx context.Context, applicationID, request
 	if strings.TrimSpace(app.DeploymentYAMLDraft) == "" {
 		return domain.ValidationReport{}, domain.Application{}, domain.ErrNoDeploymentYAML
 	}
+
+	// Audited from here on: everything above is a rejection before any real
+	// validation pass was attempted (FR-103 scope boundary — see
+	// audit_service.go's package comment). A validation pass that runs but
+	// fails one or more checks is still audited as a failure outcome — it's
+	// a completed, meaningful attempt, just not a passing one.
+	defer func() {
+		outcome := domain.AuditSuccess
+		detail := ""
+		switch {
+		case err != nil:
+			outcome, detail = domain.AuditFailure, err.Error()
+		case !resultReport.Valid:
+			outcome, detail = domain.AuditFailure, "one or more validation checks failed — see the returned report"
+		}
+		if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+			ActorUserID: requesterID, Action: domain.AuditActionValidateApplication,
+			ResourceType: "application", ResourceID: applicationID, Outcome: outcome, Detail: detail,
+		}); auditErr != nil && err == nil {
+			err = fmt.Errorf("validation completed but audit trail failed to record: %w", auditErr)
+		}
+	}()
 
 	report, parsed, schemaOK := s.checkSchema(app)
 	checks := []domain.ValidationCheck{report}
