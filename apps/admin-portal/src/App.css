@@ -237,3 +237,22 @@ form textarea {
 .finding-skipped strong {
   color: var(--text-muted);
 }
+
+.notification-unread {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  font-weight: 600;
+}
+
+.unread-count-badge {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 16px;
+}

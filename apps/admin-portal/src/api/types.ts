@@ -168,6 +168,21 @@ export interface AuditQueryParams {
   limit?: number;
 }
 
+// --- Notifications (Module X) ---
+
+export type NotificationCategory = "deployment_status" | "approval_request";
+
+export interface Notification {
+  id: string;
+  category: NotificationCategory;
+  title: string;
+  detail: string;
+  resource_type: string;
+  resource_id: string;
+  read_at: string | null;
+  created_at: string;
+}
+
 // --- API error envelope ---
 
 export interface ApiErrorBody {
