@@ -57,6 +57,7 @@ func main() {
 	serviceStateRepo := postgres.NewServiceRuntimeStateRepo(pool)
 	scaleEventRepo := postgres.NewScaleEventRepo(pool)
 	auditRepo := postgres.NewAuditRepo(pool)
+	notificationRepo := postgres.NewNotificationRepo(pool)
 
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
@@ -67,11 +68,12 @@ func main() {
 	runtime := runtimeengine.NewDockerRuntime(dockerCli)
 
 	auditService := service.NewAuditService(auditRepo, ownerRepo)
+	notificationService := service.NewNotificationService(notificationRepo, ownerRepo)
 	applicationService := service.NewApplicationService(applicationRepo, ownerRepo, departmentRepo, auditService)
 	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo, auditService)
 	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine, auditService)
 	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime)
-	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService)
+	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService, notificationService)
 	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
@@ -87,6 +89,7 @@ func main() {
 		Proxy:         httpapi.NewProxyHandler(scaleService),
 		Lifecycle:     httpapi.NewLifecycleHandler(lifecycleService),
 		Audit:         httpapi.NewAuditHandler(auditService),
+		Notifications: httpapi.NewNotificationHandler(notificationService),
 		PlatformEnv:        cfg.PlatformEnv,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})

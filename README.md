@@ -22,6 +22,10 @@ README for exactly what was tested and how):
   state-changing action across that lifecycle — verified against a real
   database, including that direct `UPDATE`/`DELETE` attempts are rejected
   and a simulated out-of-band tamper is detected.
+- An in-app Notification inbox (Module X) for deployment status and
+  production-approval events — verified against a real deploy/build/
+  approve flow, including that a rejected production deployment notifies
+  every owner, not just the one who rejected it.
 - An MCP server exposing that lifecycle to an AI agent (Claude Code),
   matching the platform's own `docs/07_MCP_Requirements.md` tool catalog.
 - A Markdown skill package instructing Claude Code how to use that MCP
@@ -34,8 +38,8 @@ README for exactly what was tested and how):
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this
 application," full stop — no IT/Platform/Security Administrator roles),
-Database/Secret/Domain/Network management, Logging, Monitoring,
-Notification, Resource quotas, Reporting. See "Known gaps" below and each
+Database/Secret/Domain/Network management, Logging, Monitoring, Resource
+quotas, Reporting. See "Known gaps" below and each
 component's own README for the honest, itemized list — nothing here claims
 these exist when they don't.
 
@@ -124,11 +128,14 @@ These block real production use, not just missing polish:
 - **No Database, Secret, Domain, or Network management** (Modules N/O/P/Q)
   — `deployment.yaml` can declare `database.type: postgres`, but nothing
   actually provisions one.
-- **No Logging, Monitoring, Notification, or Reporting** (Modules S/T/X/AB)
-  — the MCP server's log/metric tools return an honest "not implemented"
-  error rather than fabricating data. (Module W, Audit Log, is implemented
-  — see `services/platform-api/README.md`'s "How Audit Logging works"
-  section for what it does and doesn't cover.)
+- **No Logging, Monitoring, or Reporting** (Modules S/T/AB) — the MCP
+  server's log/metric tools return an honest "not implemented" error
+  rather than fabricating data. (Module W, Audit Log, and Module X,
+  Notification, are both implemented — see
+  `services/platform-api/README.md`'s "How Audit Logging works" and "How
+  Notifications work" sections for what each does and doesn't cover; note
+  Module X is in-app only, no email/Slack/webhook delivery, and has no
+  admin-portal UI surface yet.)
 - **No resource quota enforcement** (Module M) — `validate_application`
   always reports this check as `skipped`, never a fake pass.
 - **The Admin Portal is intentionally scoped to MOD-19 (Application
