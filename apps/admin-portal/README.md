@@ -77,6 +77,14 @@ app doesn't pretend to offer anything they can't actually deliver.
   and triggers the save client-side), and **Verify chain integrity**
   (`GET /audit-log/integrity`), surfacing whether the hash chain is intact
   or, if not, the first broken `seq`.
+- **Notifications** (`Notifications.tsx`, reachable from the header nav on
+  every page, with an unread-count badge) — the caller's own deployment
+  status / production-approval inbox, with an **Unread only** toggle and a
+  **Mark read** action per row. The header badge is polled every 20s
+  (`GET /notifications?unread_only=true`) — there's no websocket/SSE
+  channel anywhere in this platform to push it live, and a 20s staleness
+  window is a reasonable trade-off for an internal tool's header badge over
+  building one just for this.
 
 ## How button-enablement mirrors the real service preconditions
 
@@ -330,3 +338,49 @@ screenshots taken and looked at, no console errors, no layout breakage. No
 bugs found in the UI this time (the Module W backend itself did have one,
 caught during its own PR's verification — see
 `services/platform-api/README.md`'s "How Audit Logging works" section).
+
+### Notifications UI (Module X), verified for real
+
+A fourth Playwright pass exercised the new `Notifications.tsx` page and the
+header's unread badge against a real Platform API: signed in, registered
+and validated a real application, confirmed the header showed **no**
+unread badge yet (register/validate aren't deployment-pipeline
+milestones — see `services/platform-api/README.md`'s "How Notifications
+work"), uploaded a real source archive (a real `docker build` ran
+server-side) and deployed to `dev`, then confirmed the header's unread
+badge genuinely reached `1` via its real 20s poll cycle (not a mocked
+timer), followed it to the Notifications page and confirmed the real
+`deployment_status` notification appeared, toggled **Unread only**,
+clicked **Mark read**, and confirmed the notification correctly dropped
+out of the unread-only view, then confirmed it still appeared once the
+filter was cleared — with no **Mark read** button on an already-read row.
+Confirmed the header badge itself cleared back to `0` within a poll cycle.
+Finally, rebuilt and redeployed the same application to `production` and
+confirmed a real `approval_request` notification appeared on the
+Notifications page.
+
+Every functional check passed. Two `console.error`-level 404s were
+observed during the run (`GET .../deployments/latest`,
+`GET .../scale-events`, both immediately after the *first-ever* build
+completes) — confirmed via `page.on("response")` logging, not guessed.
+This is **not a new bug**: it's the exact, already-documented,
+deliberately-not-fixed gap from the first full-lifecycle verification pass
+(see "That run surfaced one more instance..." above) — `lifecycle_status
+=== "build"` isn't added to `ApplicationDetail.tsx`'s fetch-skip condition
+because a *rebuild* of an already-`running` application also passes
+through `build` and genuinely does have prior deployment/scale-event data
+worth fetching; only a first-ever build doesn't. Re-confirming this gap is
+still exactly where it was, not somewhere new, was itself part of what
+this pass verified.
+
+Two real bugs were found and fixed **in the Playwright driver script
+itself**, not the application, while writing this verification — worth
+noting since they'd cost real debugging time if hit again: (1) Playwright's
+`waitForURL(/\/applications\/[^/]+$/)` resolves immediately if the
+*current* URL already satisfies the pattern — `/applications/new` matches
+that regex too, so capturing `page.url()` right after can read a stale
+URL; fixed by waiting for a detail-page-only element (`.yaml-editor`)
+instead. (2) A case-sensitive `innerText.includes("pending_approval")`
+check missed the real status text, because `StatusBadge`'s CSS
+`text-transform: capitalize` renders it as `Pending_approval` in
+`innerText` — fixed with a case-insensitive check.

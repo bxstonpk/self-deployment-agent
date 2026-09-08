@@ -9,6 +9,7 @@ import {
   type Department,
   type DepartmentRaw,
   type Deployment,
+  type Notification,
   type ScaleEvent,
   type SupportedStack,
   type SupportedStackRaw,
@@ -223,4 +224,16 @@ export async function exportAuditLogCsv(identity: Identity, params?: AuditQueryP
 
 export function verifyAuditLogIntegrity(identity: Identity): Promise<{ intact: boolean; broken_at_seq?: number }> {
   return request(identity, "GET", "/audit-log/integrity");
+}
+
+// --- Notifications (Module X) ---------------------------------------------
+
+// Always the caller's own inbox — GET /notifications has no "whose"
+// parameter, it's scoped server-side to the authenticated caller.
+export function listNotifications(identity: Identity, unreadOnly = false): Promise<{ notifications: Notification[] }> {
+  return request(identity, "GET", `/notifications${unreadOnly ? "?unread_only=true" : ""}`);
+}
+
+export function markNotificationRead(identity: Identity, id: string): Promise<Notification> {
+  return request(identity, "POST", `/notifications/${id}/read`);
 }

@@ -33,7 +33,8 @@ README for exactly what was tested and how):
 - A React admin portal covering the same lifecycle for a human, calling
   the Platform API directly — including an Audit Log view (per-application
   and platform-wide, with filtering, CSV export, and chain-integrity
-  verification).
+  verification) and a Notifications inbox (unread-count header badge,
+  mark-read, unread-only filter).
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this
@@ -134,8 +135,7 @@ These block real production use, not just missing polish:
   Notification, are both implemented — see
   `services/platform-api/README.md`'s "How Audit Logging works" and "How
   Notifications work" sections for what each does and doesn't cover; note
-  Module X is in-app only, no email/Slack/webhook delivery, and has no
-  admin-portal UI surface yet.)
+  Module X is in-app only, no email/Slack/webhook delivery.)
 - **No resource quota enforcement** (Module M) — `validate_application`
   always reports this check as `skipped`, never a fake pass.
 - **The Admin Portal is intentionally scoped to MOD-19 (Application
