@@ -4,6 +4,7 @@ import { SignIn } from "./pages/SignIn";
 import { ApplicationList } from "./pages/ApplicationList";
 import { ApplicationDetail } from "./pages/ApplicationDetail";
 import { RegisterApplication } from "./pages/RegisterApplication";
+import { AuditLog } from "./pages/AuditLog";
 import "./App.css";
 
 function RequireIdentity({ children }: { children: React.ReactNode }) {
@@ -22,6 +23,7 @@ function Layout({ children }: { children: React.ReactNode }) {
         </Link>
         {identity && (
           <div className="identity-bar">
+            <Link to="/audit-log">Audit Log</Link>
             <span>{identity.email}</span>
             <button onClick={signOut}>Sign out</button>
           </div>
@@ -59,6 +61,14 @@ function App() {
           element={
             <RequireIdentity>
               <ApplicationDetail />
+            </RequireIdentity>
+          }
+        />
+        <Route
+          path="/audit-log"
+          element={
+            <RequireIdentity>
+              <AuditLog />
             </RequireIdentity>
           }
         />

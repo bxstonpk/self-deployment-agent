@@ -14,6 +14,8 @@ const STATUS_CLASS: Record<string, string> = {
   pending_approval: "badge-warning",
   health_check: "badge-info",
   superseded: "badge-neutral",
+  success: "badge-success",
+  failure: "badge-danger",
 };
 
 export function StatusBadge({ status }: { status: string }) {

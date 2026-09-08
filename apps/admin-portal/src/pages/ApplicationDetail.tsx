@@ -9,6 +9,7 @@ import {
   latestBuild,
   latestDeployment,
   listScaleEvents,
+  queryAuditLog,
   restartApplication,
   resumeApplication,
   rollbackApplication,
@@ -18,7 +19,7 @@ import {
   validateApplication,
 } from "../api/client";
 import { ApiError } from "../api/types";
-import type { Application, Build, Deployment, ScaleEvent, ValidationReport } from "../api/types";
+import type { Application, AuditEntry, Build, Deployment, ScaleEvent, ValidationReport } from "../api/types";
 import { useIdentity } from "../context/IdentityContext";
 import { StatusBadge } from "../components/StatusBadge";
 
@@ -31,6 +32,7 @@ export function ApplicationDetail() {
   const [history, setHistory] = useState<Deployment[]>([]);
   const [build, setBuild] = useState<Build | null>(null);
   const [scaleEvents, setScaleEvents] = useState<ScaleEvent[]>([]);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [yamlDraft, setYamlDraft] = useState("");
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
   const [environment, setEnvironment] = useState<"dev" | "production">("dev");
@@ -48,6 +50,13 @@ export function ApplicationDetail() {
       setMessage({ kind: "error", text: err instanceof ApiError ? err.message : String(err) });
       return;
     }
+    // Unlike deployment/build/scale-events below, the audit trail exists
+    // from the very first action (register, then validate) — Module W
+    // audits those too — so this fetch isn't gated by lifecycle_status.
+    queryAuditLog(identity, { resourceType: "application", resourceId: id })
+      .then((r) => setAuditEntries(r.entries ?? []))
+      .catch(() => setAuditEntries([]));
+
     // draft and validated are BOTH states no application-service method
     // ever transitions back into after a first build/deploy (checked
     // against every Go service's transition logic, not assumed) — so an
@@ -337,6 +346,39 @@ export function ApplicationDetail() {
                   <td>{e.direction}</td>
                   <td>{e.trigger_reason}</td>
                   <td>{new Date(e.occurred_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Audit log</h2>
+        <p className="hint">
+          Every recorded action for this application — see the platform-wide{" "}
+          <a href="/audit-log">Audit Log</a> for actions across every application you own.
+        </p>
+        {auditEntries.length === 0 && <p className="hint">No audit entries yet.</p>}
+        {auditEntries.length > 0 && (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>Outcome</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {auditEntries.map((e) => (
+                <tr key={e.id}>
+                  <td>{new Date(e.occurred_at).toLocaleString()}</td>
+                  <td>{e.action}</td>
+                  <td>
+                    <StatusBadge status={e.outcome} />
+                  </td>
+                  <td>{e.detail || <em>—</em>}</td>
                 </tr>
               ))}
             </tbody>
