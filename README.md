@@ -45,8 +45,12 @@ README for exactly what was tested and how):
 - A React admin portal covering the same lifecycle for a human, calling
   the Platform API directly — including an Audit Log view (per-application
   and platform-wide, with filtering, CSV export, and chain-integrity
-  verification) and a Notifications inbox (unread-count header badge,
-  mark-read, unread-only filter).
+  verification), a Notifications inbox (unread-count header badge,
+  mark-read, unread-only filter), and an Owners section for granting/
+  revoking co-owner/contributor access — verified with two genuinely
+  independent signed-in identities at once (separate browser contexts),
+  confirming a newly-granted co-owner gets real day-to-day access and a
+  revoked one is genuinely locked out on their very next request.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this

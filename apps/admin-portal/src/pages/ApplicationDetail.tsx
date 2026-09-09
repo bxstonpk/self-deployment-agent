@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useParams } from "react-router-dom";
 import {
   archiveApplication,
@@ -6,12 +6,15 @@ import {
   deployApplication,
   deploymentHistory,
   getApplication,
+  grantOwner,
   latestBuild,
   latestDeployment,
+  listOwners,
   listScaleEvents,
   queryAuditLog,
   restartApplication,
   resumeApplication,
+  revokeOwner,
   rollbackApplication,
   saveDeploymentYaml,
   suspendApplication,
@@ -19,7 +22,7 @@ import {
   validateApplication,
 } from "../api/client";
 import { ApiError } from "../api/types";
-import type { Application, AuditEntry, Build, Deployment, ScaleEvent, ValidationReport } from "../api/types";
+import type { Application, ApplicationOwner, AuditEntry, Build, Deployment, OwnershipRole, ScaleEvent, ValidationReport } from "../api/types";
 import { useIdentity } from "../context/IdentityContext";
 import { StatusBadge } from "../components/StatusBadge";
 
@@ -33,6 +36,9 @@ export function ApplicationDetail() {
   const [build, setBuild] = useState<Build | null>(null);
   const [scaleEvents, setScaleEvents] = useState<ScaleEvent[]>([]);
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [owners, setOwners] = useState<ApplicationOwner[]>([]);
+  const [grantEmail, setGrantEmail] = useState("");
+  const [grantRole, setGrantRole] = useState<OwnershipRole>("secondary");
   const [yamlDraft, setYamlDraft] = useState("");
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
   const [environment, setEnvironment] = useState<"dev" | "production">("dev");
@@ -56,6 +62,12 @@ export function ApplicationDetail() {
     queryAuditLog(identity, { resourceType: "application", resourceId: id })
       .then((r) => setAuditEntries(r.entries ?? []))
       .catch(() => setAuditEntries([]));
+
+    // Same reasoning: Register always assigns a primary owner immediately,
+    // so this exists from the first moment too.
+    listOwners(identity, id)
+      .then((r) => setOwners(r.owners ?? []))
+      .catch(() => setOwners([]));
 
     // draft and validated are BOTH states no application-service method
     // ever transitions back into after a first build/deploy (checked
@@ -95,6 +107,27 @@ export function ApplicationDetail() {
     try {
       await action();
       setMessage({ kind: "info", text: successText });
+      await refresh();
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof ApiError ? `${err.code}: ${err.message}` : String(err) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Not routed through runAction: that helper swallows every error
+  // internally and always resolves, so a caller can't tell success from
+  // failure — fine for a button, wrong here, where a failed grant
+  // shouldn't clear what the user just typed.
+  async function handleGrantOwner(e: FormEvent) {
+    e.preventDefault();
+    if (!identity || !id) return;
+    setBusy("grant-owner");
+    setMessage(null);
+    try {
+      await grantOwner(identity, id, grantEmail, grantRole);
+      setMessage({ kind: "info", text: `Granted access to ${grantEmail}.` });
+      setGrantEmail("");
       await refresh();
     } catch (err) {
       setMessage({ kind: "error", text: err instanceof ApiError ? `${err.code}: ${err.message}` : String(err) });
@@ -284,6 +317,67 @@ export function ApplicationDetail() {
             Delete
           </button>
         </div>
+      </section>
+
+      <section className="card">
+        <h2>Owners</h2>
+        <p className="hint">
+          Only the primary owner can grant or revoke access — this page doesn't hide the form from anyone else (there's
+          no way to resolve "am I the primary owner" client-side without an extra lookup), so a non-primary owner
+          attempting this sees the real error below.
+        </p>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>User ID</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Assigned</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {owners.map((o) => (
+              <tr key={o.user_id + o.ownership_role}>
+                <td>{o.user_id}</td>
+                <td>{o.ownership_role}</td>
+                <td>
+                  <StatusBadge status={o.status === "active" ? "success" : "failure"} />
+                </td>
+                <td>{new Date(o.assigned_at).toLocaleString()}</td>
+                <td>
+                  {o.ownership_role !== "primary" && o.status === "active" && (
+                    <button
+                      disabled={busy !== null}
+                      onClick={() =>
+                        runAction("revoke-owner", () => revokeOwner(identity, id, o.user_id), "Access revoked.")
+                      }
+                    >
+                      Revoke
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <form className="action-row" onSubmit={handleGrantOwner}>
+          <input
+            type="email"
+            required
+            placeholder="teammate@example.com"
+            value={grantEmail}
+            onChange={(e) => setGrantEmail(e.target.value)}
+            aria-label="Email of the employee to grant access to"
+          />
+          <select value={grantRole} onChange={(e) => setGrantRole(e.target.value as OwnershipRole)} aria-label="Access level to grant">
+            <option value="secondary">Co-owner</option>
+            <option value="technical">Contributor</option>
+          </select>
+          <button type="submit" disabled={busy !== null}>
+            Grant access
+          </button>
+        </form>
       </section>
 
       <section className="card">
