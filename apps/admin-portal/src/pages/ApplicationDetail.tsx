@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useParams } from "react-router-dom";
 import {
+  acceptOwnershipTransfer,
   archiveApplication,
   deleteApplication,
   deployApplication,
   deploymentHistory,
   getApplication,
+  getPendingOwnershipTransfer,
   grantOwner,
+  initiateOwnershipTransfer,
   latestBuild,
   latestDeployment,
   listOwners,
@@ -22,7 +25,17 @@ import {
   validateApplication,
 } from "../api/client";
 import { ApiError } from "../api/types";
-import type { Application, ApplicationOwner, AuditEntry, Build, Deployment, OwnershipRole, ScaleEvent, ValidationReport } from "../api/types";
+import type {
+  Application,
+  ApplicationOwner,
+  AuditEntry,
+  Build,
+  Deployment,
+  OwnershipRole,
+  OwnershipTransfer,
+  ScaleEvent,
+  ValidationReport,
+} from "../api/types";
 import { useIdentity } from "../context/IdentityContext";
 import { StatusBadge } from "../components/StatusBadge";
 
@@ -39,6 +52,8 @@ export function ApplicationDetail() {
   const [owners, setOwners] = useState<ApplicationOwner[]>([]);
   const [grantEmail, setGrantEmail] = useState("");
   const [grantRole, setGrantRole] = useState<OwnershipRole>("secondary");
+  const [pendingTransfer, setPendingTransfer] = useState<OwnershipTransfer | null>(null);
+  const [transferEmail, setTransferEmail] = useState("");
   const [yamlDraft, setYamlDraft] = useState("");
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
   const [environment, setEnvironment] = useState<"dev" | "production">("dev");
@@ -68,6 +83,10 @@ export function ApplicationDetail() {
     listOwners(identity, id)
       .then((r) => setOwners(r.owners ?? []))
       .catch(() => setOwners([]));
+
+    getPendingOwnershipTransfer(identity, id)
+      .then(setPendingTransfer)
+      .catch(() => setPendingTransfer(null));
 
     // draft and validated are BOTH states no application-service method
     // ever transitions back into after a first build/deploy (checked
@@ -128,6 +147,25 @@ export function ApplicationDetail() {
       await grantOwner(identity, id, grantEmail, grantRole);
       setMessage({ kind: "info", text: `Granted access to ${grantEmail}.` });
       setGrantEmail("");
+      await refresh();
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof ApiError ? `${err.code}: ${err.message}` : String(err) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Not routed through runAction, same reasoning as handleGrantOwner above:
+  // a failed nomination shouldn't clear what the user just typed.
+  async function handleInitiateTransfer(e: FormEvent) {
+    e.preventDefault();
+    if (!identity || !id) return;
+    setBusy("initiate-transfer");
+    setMessage(null);
+    try {
+      await initiateOwnershipTransfer(identity, id, transferEmail);
+      setMessage({ kind: "info", text: `Nominated ${transferEmail} as the new owner — awaiting their acceptance.` });
+      setTransferEmail("");
       await refresh();
     } catch (err) {
       setMessage({ kind: "error", text: err instanceof ApiError ? `${err.code}: ${err.message}` : String(err) });
@@ -378,6 +416,39 @@ export function ApplicationDetail() {
             Grant access
           </button>
         </form>
+
+        <h3>Transfer primary ownership</h3>
+        {pendingTransfer ? (
+          <>
+            <p className="hint">
+              A transfer to <code>{pendingTransfer.to_user_id}</code> is pending — only they can accept it (this page
+              doesn't hide the button from anyone else viewing it), and it expires{" "}
+              {new Date(pendingTransfer.expires_at).toLocaleString()}.
+            </p>
+            <button
+              disabled={busy !== null}
+              onClick={() =>
+                runAction("accept-transfer", () => acceptOwnershipTransfer(identity, pendingTransfer.id), "Ownership transfer accepted.")
+              }
+            >
+              Accept transfer
+            </button>
+          </>
+        ) : (
+          <form className="action-row" onSubmit={handleInitiateTransfer}>
+            <input
+              type="email"
+              required
+              placeholder="new-owner@example.com"
+              value={transferEmail}
+              onChange={(e) => setTransferEmail(e.target.value)}
+              aria-label="Email of the employee to nominate as the new primary owner"
+            />
+            <button type="submit" disabled={busy !== null}>
+              Nominate new owner
+            </button>
+          </form>
+        )}
       </section>
 
       <section className="card">

@@ -94,6 +94,12 @@ app doesn't pretend to offer anything they can't actually deliver.
     error banner every other action here uses. Granting access to an
     email the platform has never seen surfaces the real
     `target_user_unknown` error rather than silently doing nothing.
+  - **Transfer primary ownership** (below the Owners table, same card) —
+    nominate a new primary owner by email; if a transfer is already
+    pending, the nominate form is replaced by an **Accept transfer**
+    button instead (shown to everyone viewing the page, not just the
+    nominee — same "don't hide, let the real error surface" convention;
+    `platform-api`'s own `not_transfer_nominee` rejects anyone else).
 
 ## How button-enablement mirrors the real service preconditions
 
@@ -433,3 +439,42 @@ exercised (granting an unknown email; Bob acting after revocation), the
 same "Chrome logs every failed request to the console regardless of
 whether the app handles it" behavior noted in this file's very first
 verification pass above, not a new finding.
+
+### Ownership Transfer UI (Module E, FR-016), verified for real
+
+A sixth Playwright pass — three genuinely independent signed-in
+identities at once this time (Alice the primary owner, Bob the nominee,
+Carol a genuinely uninvolved third party, each their own browser context)
+— exercised the new **Transfer primary ownership** section. Registered an
+application as Alice, confirmed the nominate form (not the accept button)
+shows when nothing is pending, nominated Bob, confirmed the form was
+immediately replaced by the pending-transfer view (a second nomination
+isn't even reachable from this UI while one is outstanding — matching
+`platform-api`'s own `transfer_already_pending` rejection), followed Bob
+to his own Notifications page and confirmed a real notification arrived,
+had Carol — on the same application's page, in her own browser context —
+click **Accept transfer** and confirmed the real `not_transfer_nominee`
+error surfaced, then had Bob actually accept it for real. Confirmed the
+nominate form reappeared afterward (no more pending transfer), confirmed
+the Owners table showed the real ownership change (two `primary` rows —
+the prior owner `revoked`, the new one `active`), and confirmed Alice —
+the now-former primary owner — attempting to nominate again got a real
+`not_primary_owner` rejection, not a UI that merely looked locked out.
+
+**A real bug found and fixed, in `platform-api` itself, not this app:**
+the first full run of this driver logged **four** `404`s from Chrome, not
+the deliberately-triggered kind — one on every single page load that
+checked for a pending transfer, because `GET
+/applications/{id}/ownership-transfer` originally 404'd whenever nothing
+was pending. That's the *ordinary* state for most applications most of
+the time, not an exceptional one — a poor fit for `404`, and a real
+design mistake caught here by exercising the realistic, everyday path
+(every page load), not just the edge cases. Fixed in `platform-api` to
+always return `200` with `{"transfer": ...}` or `{"transfer": null}` (see
+its own README's "How Ownership Transfer works" section for the full
+reasoning), updated this app's `getPendingOwnershipTransfer` to match,
+rebuilt the backend image, and re-ran the same driver end to end: the
+`404`s were completely gone, leaving only the two expected `403`s from
+Carol's and Alice's deliberately-triggered rejection scenarios above —
+the same benign pattern this file's very first verification pass already
+established.

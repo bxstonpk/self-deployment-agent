@@ -12,6 +12,7 @@ import {
   type Deployment,
   type Notification,
   type OwnershipRole,
+  type OwnershipTransfer,
   type ScaleEvent,
   type SupportedStack,
   type SupportedStackRaw,
@@ -190,6 +191,32 @@ export function grantOwner(identity: Identity, id: string, email: string, owners
 
 export function revokeOwner(identity: Identity, id: string, userId: string): Promise<void> {
   return request(identity, "DELETE", `/applications/${id}/owners/${userId}`);
+}
+
+// Primary-owner-only server-side, same "don't hide, let the real error
+// surface" convention as grantOwner above.
+export function initiateOwnershipTransfer(identity: Identity, id: string, email: string): Promise<OwnershipTransfer> {
+  return request(identity, "POST", `/applications/${id}/ownership-transfer`, { json: { email } });
+}
+
+// "No transfer currently pending" is the ordinary state of most
+// applications most of the time, not an error — the server responds
+// `{"transfer": null}` with a real 200 for it, not a 404 (platform-api's
+// GetPendingTransfer doc comment covers why: an earlier version of this
+// endpoint DID 404, and real browser testing caught that as console noise
+// on every single application detail page view, not just an occasional
+// mistaken lookup).
+export async function getPendingOwnershipTransfer(identity: Identity, id: string): Promise<OwnershipTransfer | null> {
+  const data = await request<{ transfer: OwnershipTransfer | null }>(identity, "GET", `/applications/${id}/ownership-transfer`);
+  return data.transfer;
+}
+
+// Only the nominated user can succeed here server-side — this app doesn't
+// hide the button from anyone else viewing the page (no way to resolve
+// "am I the nominee" client-side without an extra lookup), same
+// convention as every other owner-gated action here.
+export function acceptOwnershipTransfer(identity: Identity, transferId: string): Promise<ApplicationOwner> {
+  return request(identity, "POST", `/ownership-transfers/${transferId}/accept`);
 }
 
 // --- Departments / Supported Stacks (raw PascalCase — see types.ts) -------
