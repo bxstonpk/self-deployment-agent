@@ -113,3 +113,48 @@ async def test_trigger_build_failure_is_a_normal_200_response_not_a_toolerror():
     result = await client.trigger_build("app-1", b"bytes")
     assert result["status"] == "failed"
     assert result["error_category"] == "source"
+
+
+async def test_query_audit_log_omits_none_valued_filters_from_the_query_string():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"entries": [{"id": "a1"}]})
+
+    client = _client_with_transport(handler)
+    entries = await client.query_audit_log({"resource_type": "application", "resource_id": None, "action": None})
+    assert seen["path"] == "/audit-log"
+    assert seen["params"] == {"resource_type": "application"}
+    assert entries == [{"id": "a1"}]
+
+
+async def test_list_notifications_sends_unread_only_flag_only_when_true():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"notifications": [{"id": "n1"}]})
+
+    client = _client_with_transport(handler)
+    await client.list_notifications(unread_only=True)
+    assert seen["params"] == {"unread_only": "true"}
+
+    await client.list_notifications(unread_only=False)
+    assert seen["params"] == {}
+
+
+async def test_mark_notification_read_posts_to_the_right_path():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"id": "n1", "read_at": "2026-01-01T00:00:00Z"})
+
+    client = _client_with_transport(handler)
+    result = await client.mark_notification_read("n1")
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/notifications/n1/read"
+    assert result["read_at"] == "2026-01-01T00:00:00Z"

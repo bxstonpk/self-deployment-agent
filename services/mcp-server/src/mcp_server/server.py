@@ -6,8 +6,12 @@ Per Section 2's architecture: this module does no business logic of its
 own. It authenticates as the one employee identity this process is bound to
 (config.py), does no independent authorization beyond that (every real
 allow/deny is re-derived by the Platform API on every call), translates
-each of the 12 tool calls into the corresponding Platform API call(s), and
-relays the result inside the structured envelope Section 8 defines.
+each of Section 13's tool calls into the corresponding Platform API
+call(s), and relays the result inside the structured envelope Section 8
+defines. Also registers query_audit_log, list_notifications, and
+mark_notification_read — three tools beyond Section 13's original catalog,
+added after Modules W/X shipped (see tools/audit_log.py and
+tools/notifications.py's module docs for why).
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from .config import ConfigError, load_config
 from .envelope import ErrorCode, ToolError, error
 from .idempotency import IdempotencyStore
 from .platform_client import PlatformClient
-from .tools import application, deployment, discovery, lifecycle, observability
+from .tools import application, audit_log, deployment, discovery, lifecycle, notifications, observability
 
 
 async def _run_tool(
@@ -265,6 +269,49 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
             lifecycle.delete_application(
                 client, idempotency, application_id, confirmation, idempotency_key
             ),
+        )
+
+    # --- Beyond Section 13: query_audit_log, list_notifications,
+    # mark_notification_read (Modules W/X shipped after the tool catalog
+    # was written — see this module's docstring and tools/audit_log.py /
+    # tools/notifications.py) ------------------------------------------
+
+    @mcp.tool()
+    async def query_audit_log(
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        action: str | None = None,
+        from_time: str | None = None,
+        to_time: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        params = {
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "action": action,
+            "from_time": from_time,
+            "to_time": to_time,
+            "limit": limit,
+        }
+        return await _run_tool(
+            audit("query_audit_log", params, resource_id if resource_type == "application" else None),
+            audit_log.query_audit_log(client, resource_type, resource_id, action, from_time, to_time, limit),
+        )
+
+    @mcp.tool()
+    async def list_notifications(unread_only: bool = False) -> dict[str, Any]:
+        params = {"unread_only": unread_only}
+        return await _run_tool(
+            audit("list_notifications", params, None),
+            notifications.list_notifications(client, unread_only),
+        )
+
+    @mcp.tool()
+    async def mark_notification_read(notification_id: str) -> dict[str, Any]:
+        params = {"notification_id": notification_id}
+        return await _run_tool(
+            audit("mark_notification_read", params, None),
+            notifications.mark_notification_read(client, notification_id),
         )
 
     return mcp

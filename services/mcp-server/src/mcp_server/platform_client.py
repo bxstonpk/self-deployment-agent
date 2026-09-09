@@ -227,3 +227,23 @@ class PlatformClient:
         return await self._request(
             "POST", f"/applications/{application_id}/delete", json={"confirm": True}
         )
+
+    # --- Audit Log (Module W) / Notifications (Module X) --------------------
+    # Not part of docs/07_MCP_Requirements.md Section 13's original tool
+    # catalog — both modules shipped after that catalog was written. Added
+    # so Claude Code has the same read access to its own action history and
+    # pending events that a human gets through the Admin Portal, consistent
+    # with the MCP server's stated purpose (Section 1) even though neither
+    # tool is enumerated in Section 13 itself. See tools/audit_log.py and
+    # tools/notifications.py's module docs.
+
+    async def query_audit_log(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        data = await self._request("GET", "/audit-log", params={k: v for k, v in params.items() if v is not None})
+        return data.get("entries", [])
+
+    async def list_notifications(self, unread_only: bool) -> list[dict[str, Any]]:
+        data = await self._request("GET", "/notifications", params={"unread_only": "true"} if unread_only else None)
+        return data.get("notifications", [])
+
+    async def mark_notification_read(self, notification_id: str) -> dict[str, Any]:
+        return await self._request("POST", f"/notifications/{notification_id}/read")

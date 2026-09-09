@@ -38,6 +38,16 @@ something this server works around by dropping one):
 | `restart_application` | 13.12 | `POST .../restart` | |
 | `delete_application` | 13.13 | `GET /applications/{id}`, `POST .../archive` (if `running`), `POST .../delete` | Orchestrates two Platform API calls behind one tool — see below |
 
+Plus three tools **beyond** Section 13's original catalog — Modules W
+(Audit Log) and X (Notification) both shipped after that catalog was
+written, so the doc has no section number for them:
+
+| Tool | Platform API call | Notes |
+|---|---|---|
+| `query_audit_log` | `GET /audit-log` | Same server-side scoping as the Admin Portal's Audit Log page — entries the caller performed themselves, or that concern an application they own |
+| `list_notifications` | `GET /notifications` | The caller's own deployment-status/approval-request inbox — see `platform-api/README.md`'s "How Notifications work" |
+| `mark_notification_read` | `POST /notifications/{id}/read` | |
+
 ### Two small Platform API additions this PR needed
 
 Building the MCP layer surfaced two real, small gaps in the Business API
@@ -145,6 +155,18 @@ comes back as `VALIDATION_ERROR` with the actual build output, a
 `platform`-category one as `INTERNAL_ERROR` — mirroring FR-038's
 source-vs-platform distinction rather than collapsing both into one
 generic failure.
+
+This is a different situation from `query_audit_log`/`list_notifications`/
+`mark_notification_read` above, worth distinguishing rather than reading
+as an inconsistent application of Section 1's "don't add a tool for a gap
+in an existing one" principle: `trigger_build` wasn't added as a
+standalone tool because a source-upload *parameter* fits inside
+`deploy_application`'s existing shape. Modules W/X are different in kind —
+they're whole business capabilities (query an audit trail, check pending
+notifications) that didn't exist in *any* form when Section 13 was
+written, not a missing parameter on an existing tool. Section 1's actual
+principle ("expose only high-level business capabilities") argues *for*
+giving them their own tools, not against it.
 
 This also required a real Platform API change:
 `build_service.go`'s `TriggerBuild` used to only accept a `Validated`
@@ -316,7 +338,9 @@ This is what was actually run to verify this server for real, not just
 unit-tested against fakes. What it covers, in order, all through the real
 MCP stdio protocol (not calling Python functions directly):
 
-1. Confirms all 13 tools are discovered via protocol-level `list_tools()`.
+1. Confirms all 16 tools (13 from Section 13, plus `query_audit_log`/
+   `list_notifications`/`mark_notification_read`) are discovered via
+   protocol-level `list_tools()`.
 2. `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`
    — real reads against the real catalog.
 3. `create_application` with an unknown department — confirmed rejected
@@ -353,10 +377,24 @@ MCP stdio protocol (not calling Python functions directly):
     confirmed it archived-then-deleted (verified call order), confirmed
     the application's final state is `deleted`.
 
-Every one of the 13 tools was exercised for real in this run — including
+Between steps 5 and 6, `query_audit_log` and `list_notifications` /
+`mark_notification_read` are also exercised for real: confirmed the
+application-scoped audit query shows the real `application.register`/
+`application.validate` entries, confirmed a *separate*, deployment-scoped
+query shows `deployment.deploy` — found via this exact run that
+`deploy_service.go`'s audit entries are recorded under
+`resource_type=deployment`, not `application`, which an earlier draft of
+this script got wrong (fixed here, not a Platform API bug) — confirmed
+`list_notifications(unread_only=true)` shows a real `deployment_status`
+notification for v1's deploy, confirmed `mark_notification_read` sets a
+real `read_at`, and confirmed the notification then drops out of the
+unread list.
+
+Every one of the 16 tools was exercised for real in this run — including
 both the two that will never succeed (`get_application_logs`,
 `get_application_metrics`) — not just the ones that were easy to make
-pass. The first full run of this exact script is also what surfaced the
-context-cancellation bug described above: it failed partway through step
-8 with a stuck build, which is what led to finding and fixing the root
-cause rather than just retrying past it.
+pass. The first full run of this exact script (before these three tools
+existed) is also what surfaced the context-cancellation bug described
+above: it failed partway through step 8 with a stuck build, which is what
+led to finding and fixing the root cause rather than just retrying past
+it.

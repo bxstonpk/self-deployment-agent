@@ -27,6 +27,8 @@ class FakePlatformClient:
         # Overridable per-test: what trigger_build returns next. Defaults
         # to a successful build.
         self.next_build_result: dict[str, Any] = {"status": "succeeded", "image_refs": {"api": "platform-build/x:1"}}
+        self.audit_entries: list[dict[str, Any]] = []
+        self.notifications: list[dict[str, Any]] = []
 
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -167,3 +169,28 @@ class FakePlatformClient:
         app = self.applications[application_id]
         app["lifecycle_status"] = "deleted"
         return dict(app)
+
+    async def query_audit_log(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        self._record("query_audit_log", params)
+        entries = self.audit_entries
+        if params.get("resource_type"):
+            entries = [e for e in entries if e["resource_type"] == params["resource_type"]]
+        if params.get("resource_id"):
+            entries = [e for e in entries if e["resource_id"] == params["resource_id"]]
+        if params.get("action"):
+            entries = [e for e in entries if e["action"] == params["action"]]
+        return list(entries)
+
+    async def list_notifications(self, unread_only: bool) -> list[dict[str, Any]]:
+        self._record("list_notifications", unread_only)
+        if unread_only:
+            return [n for n in self.notifications if n.get("read_at") is None]
+        return list(self.notifications)
+
+    async def mark_notification_read(self, notification_id: str) -> dict[str, Any]:
+        self._record("mark_notification_read", notification_id)
+        for n in self.notifications:
+            if n["id"] == notification_id:
+                n["read_at"] = "2026-01-01T01:00:00Z"
+                return dict(n)
+        raise ToolError(ErrorCode.NOT_FOUND, "notification not found")
