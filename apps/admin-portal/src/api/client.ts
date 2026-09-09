@@ -3,6 +3,7 @@ import { identityHeaders } from "../identity";
 import {
   ApiError,
   type Application,
+  type ApplicationOwner,
   type AuditEntry,
   type AuditQueryParams,
   type Build,
@@ -10,6 +11,7 @@ import {
   type DepartmentRaw,
   type Deployment,
   type Notification,
+  type OwnershipRole,
   type ScaleEvent,
   type SupportedStack,
   type SupportedStackRaw,
@@ -166,6 +168,28 @@ export function deleteApplication(identity: Identity, id: string): Promise<Appli
 
 export function listScaleEvents(identity: Identity, id: string): Promise<{ scale_events: ScaleEvent[] }> {
   return request(identity, "GET", `/applications/${id}/scale-events`);
+}
+
+// --- Ownership (Module E) --------------------------------------------------
+
+export function listOwners(identity: Identity, id: string): Promise<{ owners: ApplicationOwner[] }> {
+  return request(identity, "GET", `/applications/${id}/owners`);
+}
+
+// Primary-owner-only server-side (platform-api/README.md's "How
+// Co-Owner/Contributor Management works") — this app doesn't gate the
+// button on that client-side (no way to resolve "is the signed-in
+// identity the primary owner" without an extra lookup this app doesn't
+// have), so a non-primary owner attempting this sees the real 403 via the
+// error banner, same as every other owner-gated action here.
+export function grantOwner(identity: Identity, id: string, email: string, ownershipRole: OwnershipRole): Promise<ApplicationOwner> {
+  return request(identity, "POST", `/applications/${id}/owners`, {
+    json: { email, ownership_role: ownershipRole },
+  });
+}
+
+export function revokeOwner(identity: Identity, id: string, userId: string): Promise<void> {
+  return request(identity, "DELETE", `/applications/${id}/owners/${userId}`);
 }
 
 // --- Departments / Supported Stacks (raw PascalCase — see types.ts) -------

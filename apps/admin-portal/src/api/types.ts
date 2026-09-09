@@ -49,6 +49,17 @@ export interface Application {
   validated_at?: string;
 }
 
+// --- Ownership (Module E) ---
+
+export type OwnershipRole = "primary" | "secondary" | "technical";
+
+export interface ApplicationOwner {
+  user_id: string;
+  ownership_role: OwnershipRole;
+  status: "active" | "revoked";
+  assigned_at: string;
+}
+
 export interface RunningContainer {
   container_id: string;
   host_port: number;

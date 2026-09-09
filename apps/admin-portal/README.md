@@ -85,6 +85,15 @@ app doesn't pretend to offer anything they can't actually deliver.
   channel anywhere in this platform to push it live, and a 20s staleness
   window is a reasonable trade-off for an internal tool's header badge over
   building one just for this.
+  - **Owners** (a new section on the application detail page) — grants
+    co-owner/contributor access by email, and revokes it. This page can't
+    tell client-side whether the signed-in identity is the application's
+    *primary* owner (no endpoint resolves that without an extra
+    round-trip), so the form is never hidden — a non-primary owner
+    attempting it sees the real `403`/`not_primary_owner` via the same
+    error banner every other action here uses. Granting access to an
+    email the platform has never seen surfaces the real
+    `target_user_unknown` error rather than silently doing nothing.
 
 ## How button-enablement mirrors the real service preconditions
 
@@ -384,3 +393,43 @@ instead. (2) A case-sensitive `innerText.includes("pending_approval")`
 check missed the real status text, because `StatusBadge`'s CSS
 `text-transform: capitalize` renders it as `Pending_approval` in
 `innerText` — fixed with a case-insensitive check.
+
+### Owners UI (Module E, FR-017), verified for real
+
+A fifth Playwright pass exercised the new **Owners** section against a
+real Platform API — the first of these passes needing **two** genuinely
+independent signed-in identities at once, done with two separate
+Playwright browser *contexts* (each with its own `localStorage`, exactly
+like two different employees in two different browsers), not two tabs
+sharing one session: signed in as Alice and, separately, as Bob (Bob's
+sign-in alone is what provisions him server-side — a real employee has to
+exist before anyone can grant them access). Alice registered a real
+application and confirmed the Owners table showed her alone, as
+`primary`, with no **Revoke** button next to her own row. Attempted to
+grant access to an email that had never signed in and confirmed the real
+`target_user_unknown` error surfaced in the UI, not a silent no-op.
+Granted Bob co-owner (`secondary`) access, confirmed the table updated
+with a real second row and a **Revoke** button next to it, and confirmed
+the email field cleared — but only because the grant genuinely succeeded;
+an earlier draft of this feature (before I noticed `runAction` swallows
+every error to always resolve) would have cleared the field even on a
+failed grant, so a dedicated `handleGrantOwner` was written instead of
+reusing `runAction`. Then, in Bob's own browser context, navigated
+directly to the same application's detail page and saved a real
+`deployment.yaml` draft himself — genuine day-to-day access, granted
+moments earlier, with zero code changes anywhere outside this one grant
+endpoint (every other service's `requireOwner` already accepted any
+active owner role). Back in Alice's context, clicked **Revoke**, confirmed
+the button disappeared from Bob's now-revoked row, then — the important
+check — reloaded Bob's page and had him attempt the same save again,
+confirming a real `403`/`forbidden` came back immediately, not just that
+the UI *looked* revoked.
+
+Every functional check passed on the first real run. Two expected
+`console.error`-level network failures were logged by Chrome during the
+run (a `404` and a `403`) — both are the direct, correctly-handled
+consequence of the two negative-path scenarios this same run deliberately
+exercised (granting an unknown email; Bob acting after revocation), the
+same "Chrome logs every failed request to the console regardless of
+whether the app handles it" behavior noted in this file's very first
+verification pass above, not a new finding.
