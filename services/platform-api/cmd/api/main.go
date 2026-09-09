@@ -58,6 +58,7 @@ func main() {
 	scaleEventRepo := postgres.NewScaleEventRepo(pool)
 	auditRepo := postgres.NewAuditRepo(pool)
 	notificationRepo := postgres.NewNotificationRepo(pool)
+	transferRepo := postgres.NewOwnershipTransferRepo(pool)
 
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
@@ -69,7 +70,9 @@ func main() {
 
 	auditService := service.NewAuditService(auditRepo, ownerRepo, deploymentRepo, buildRepo)
 	notificationService := service.NewNotificationService(notificationRepo, ownerRepo)
-	applicationService := service.NewApplicationService(applicationRepo, ownerRepo, departmentRepo, userRepo, auditService)
+	applicationService := service.NewApplicationService(
+		applicationRepo, ownerRepo, departmentRepo, userRepo, transferRepo, notificationService, cfg.OwnershipTransferWindow, auditService,
+	)
 	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo, auditService)
 	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine, auditService)
 	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime)

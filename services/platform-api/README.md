@@ -27,8 +27,9 @@ stable proxy URL, real event logging); `FR-045`, `FR-047`, `FR-048`,
 Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
 `FR-101` (Module V — Rollback — see below); `FR-103`, `FR-104`,
 `FR-105`, `FR-106` (Module W — Audit Log — see below); `FR-107`,
-`FR-108` (Module X — Notification — see below); and `FR-017` (Module E —
-Co-Owner/Contributor Management — see below). See
+`FR-108` (Module X — Notification — see below); and `FR-016`, `FR-017`
+(Module E — Co-Owner/Contributor Management and Transfer Ownership — see
+below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -45,6 +46,9 @@ for how it fits the Control Plane.
 | `GET /applications/{id}/owners` | FR-015 | |
 | `POST /applications/{id}/owners` | FR-017 | Grants co-owner (`secondary`) or contributor (`technical`) access by email; primary-owner-only — see **How Co-Owner/Contributor Management works** |
 | `DELETE /applications/{id}/owners/{userId}` | FR-017 | Revokes a previously-granted co-owner/contributor; primary-owner-only; never touches the primary owner's own row |
+| `POST /applications/{id}/ownership-transfer` | FR-016 | Nominates a new primary owner by email; primary-owner-only; notifies the nominee (Module X) — see **How Ownership Transfer works** |
+| `GET /applications/{id}/ownership-transfer` | FR-016 | The current pending transfer, if any |
+| `POST /ownership-transfers/{transferId}/accept` | FR-016 | Only the nominated new owner may call this |
 | `PUT /applications/{id}/deployment-yaml` | FR-023 | Saves a `deployment.yaml` draft (must parse as YAML); reverts `validated` back to `draft` since the contract changed; owner-only |
 | `POST /applications/{id}/validate` | FR-029–034 | Runs the aggregate validation pass; `draft` → `validated` on success. Only callable from `draft`. Owner-only |
 | `GET /supported-stacks` | FR-019 | Lists the IT-governed Supported Stack catalog (seeded by migration `0002`) |
@@ -717,24 +721,92 @@ returns the entry — while a genuinely uninvolved third party still sees
 nothing.
 
 **Known gaps, documented not hidden:**
-- FR-016 (Transfer Ownership) isn't implemented — a fast-follow this
-  directly sets up for (the `Notification` infrastructure FR-016's main
-  flow needs to notify the nominated new owner already exists, Module X).
-- FR-018 (Ownership Verification Gate)'s broader "block production
-  deploy/destructive lifecycle actions when no active owner exists" is
-  currently **vacuously satisfied**, not actively enforced: `Register`
-  always assigns exactly one primary owner and nothing can currently
-  remove it (`Revoke` explicitly excludes the primary role; there is no
-  Transfer yet), so an application can never actually end up owner-less
-  today. This becomes a real gap to actively guard once FR-016 ships,
-  since a careless transfer implementation is the first place that could
-  change.
 - FR-017's "contributor" access level is not actually distinguished from
   "co-owner" anywhere in authorization logic — both `secondary` and
   `technical` roles get identical access via the shared `requireOwner`
   check. FR-017 doesn't specify what a contributor should be blocked from
   that a co-owner isn't; implementing a real distinction would mean
   inventing that boundary rather than reading it from the spec.
+
+## How Ownership Transfer works (Module E, FR-016)
+
+FR-016's main flow, exactly: the current primary owner nominates a new
+one (`POST /applications/{id}/ownership-transfer`, body `{"email"}`) —
+same `requirePrimaryOwner` gate as granting a co-owner, and the same
+"target must already be a known platform user" / "target must be active"
+checks. The nominee is notified (`domain.NotificationOwnershipTransfer`,
+via a new `NotificationService.NotifyUser` — the first notification in
+this platform addressed to one specific person rather than "every active
+owner of an application", since the nominee may not be an owner at all
+yet). Nothing about the application's ownership actually changes until
+the nominee explicitly accepts (`POST /ownership-transfers/{id}/accept`)
+— matching FR-016's business rule that this is "a pure accountability
+change" with its own explicit step, not an immediate side effect of
+nomination.
+
+**Accepting**: only the nominated user may accept (`not_transfer_nominee`
+otherwise), and only within the **policy window**
+(`OWNERSHIP_TRANSFER_WINDOW_SECONDS`, default 7 days — exact value TBD
+per FR-016's own business rule, same "reasonable default pending a real
+Decision Log entry" status as the scale-to-zero timeouts). There is no
+background sweeper marking transfers expired on a timer (unlike the
+scale-to-zero idle sweeper) — expiry is checked **lazily**, the moment
+someone actually tries to accept a transfer whose window has passed; an
+expired-but-never-touched transfer just sits `pending` in the database
+until then. On acceptance: the prior primary owner's row is **revoked,
+not deleted** (`ReplacePrimaryOwner`, retained for audit history per
+FR-016's own business rule) and the nominee becomes the new active
+primary — cleanly, even if they were previously a co-owner/contributor on
+the same application (that now-redundant role is revoked too, so they
+don't end up listed twice under two simultaneous roles).
+
+Only one transfer may be pending per application at a time
+(`one_pending_transfer_per_application`, migration `0010`) — a second
+nomination while one is outstanding is rejected
+(`transfer_already_pending`), not silently superseding it.
+
+**Scope adaptation**: only the owner-initiated, nominee-accepted main flow
+is implemented. FR-016's alternative flow ("Administrator performs a
+forced transfer without new-owner acceptance during offboarding") needs
+the Platform Administrator role this platform doesn't have — blocked on
+`DEC-002`, the same gap every other admin-only flow in this codebase
+already documents.
+
+**Verified for real** against a running Postgres instance, including the
+one thing that's easy to get wrong testing an expiry mechanism: actually
+*waiting it out*, not just asserting a past timestamp in a unit test.
+`docker compose`'s `platform-api` service didn't originally forward
+`OWNERSHIP_TRANSFER_WINDOW_SECONDS` from `.env` into the container at all
+— a real gap in `docker-compose.yml` found by setting it to `2`, watching
+the created transfer's `expires_at` come back exactly 7 days out anyway,
+and realizing the container had silently kept the code-level default.
+Fixed by adding it alongside `SCALE_TO_ZERO_IDLE_SECONDS`'s existing
+`environment:` entry (the same variable this codebase already had to get
+right once before). Re-verified with the fix: nominated a real user,
+waited 3 real seconds past a real 2-second window, confirmed `accept`
+correctly returned `transfer_expired`, confirmed the transfer's status
+was durably marked `expired` (not just rejected in that one response),
+and confirmed the original owner was completely untouched.
+
+**Known gap, updated by this PR, not newly hidden:** an earlier PR's
+"Known gaps" note about FR-018 (Ownership Verification Gate) described
+its broader "no active owner exists" guard as *vacuously* satisfied —
+true then, because nothing could yet remove an application's only owner.
+That's no longer quite accurate now that `ReplacePrimaryOwner` exists:
+its two statements (revoke the prior primary, then insert the new one)
+are sequential, not one database transaction — this codebase has no
+cross-repository transaction wrapper anywhere (see
+`deploy_service.go`'s `markDeploymentFailedFrom` doc comment for the same
+trade-off elsewhere) — so there is a real, if narrow, same-request window
+between them where the application briefly has zero active primary
+owners. No code anywhere currently reads ownership state in a way that
+could observe this window from a *different* concurrent request (nothing
+does a bare "is there any active primary owner" check independent of "is
+*this specific caller* one") — but it is a real gap now, not a
+hypothetical one, and the honest thing is to say so rather than quietly
+leave the prior "vacuously satisfied" claim standing after the PR that
+was explicitly flagged as "the first place that could change" actually
+shipped.
 
 ## What's deliberately NOT here yet
 
@@ -798,10 +870,6 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
 - Production de-registration approval gate (FR-050, "mirrors FR-014") —
   needs Module C, not built; same category of gap as the production-deploy
   approver-independence limitation.
-- Application Owner **transfer** (FR-016) — co-owner/contributor
-  management (FR-017) is now implemented, see **How Co-Owner/Contributor
-  Management works** above; transfer (a *different* primary owner taking
-  over, with the nominated new owner accepting) is not.
 
 ## Dev-mode auth (temporary — see DEC-001)
 

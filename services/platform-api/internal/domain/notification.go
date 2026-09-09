@@ -27,6 +27,12 @@ const (
 	// no Platform/Security Administrator role, the same gap DecideApproval's
 	// own doc comment already names.
 	NotificationApprovalRequest NotificationCategory = "approval_request"
+	// NotificationOwnershipTransfer implements FR-016 main flow step 2: the
+	// nominated new owner is notified an ownership transfer is awaiting
+	// their acceptance. Unlike the two categories above, this goes to a
+	// single specific recipient (the nominee), not every active owner —
+	// see NotificationService.NotifyUser.
+	NotificationOwnershipTransfer NotificationCategory = "ownership_transfer"
 )
 
 type Notification struct {

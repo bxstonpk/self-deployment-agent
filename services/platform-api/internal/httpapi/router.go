@@ -62,6 +62,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{id}/owners", cfg.Applications.ListOwners)
 		r.Post("/{id}/owners", cfg.Applications.GrantOwner)
 		r.Delete("/{id}/owners/{userId}", cfg.Applications.RevokeOwner)
+		r.Post("/{id}/ownership-transfer", cfg.Applications.InitiateTransfer)
+		r.Get("/{id}/ownership-transfer", cfg.Applications.GetPendingTransfer)
 		r.Put("/{id}/deployment-yaml", cfg.Validation.SaveDeploymentYAML)
 		r.Post("/{id}/validate", cfg.Validation.Validate)
 		r.Post("/{id}/build", cfg.Builds.TriggerBuild)
@@ -103,6 +105,12 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Notifications.List)
 		r.Post("/{id}/read", cfg.Notifications.MarkRead)
+	})
+
+	r.Route("/ownership-transfers", func(r chi.Router) {
+		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		r.Use(RequireAuth(cfg.Authenticator))
+		r.Post("/{transferId}/accept", cfg.Applications.AcceptTransfer)
 	})
 
 	r.Route("/deployments", func(r chi.Router) {

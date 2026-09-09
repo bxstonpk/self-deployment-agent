@@ -65,10 +65,10 @@ func (r *ApplicationOwnerRepo) AddOwner(ctx context.Context, applicationID, user
 
 // Revoke implements FR-017's alternative flow (remove a co-owner/
 // contributor). Deliberately excludes ownership_role = 'primary' from its
-// WHERE clause — revoking the primary owner is Module V/FR-016's
-// (not-yet-built) Transfer Ownership flow, never a side effect of this
-// path. Returns the number of rows revoked so the caller can distinguish
-// "nothing to revoke" (0) from a real revocation.
+// WHERE clause — revoking the primary owner is FR-016's Transfer
+// Ownership flow (see ReplacePrimaryOwner below), never a side effect of
+// this path. Returns the number of rows revoked so the caller can
+// distinguish "nothing to revoke" (0) from a real revocation.
 func (r *ApplicationOwnerRepo) Revoke(ctx context.Context, applicationID, userID string) (int64, error) {
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE application_owners SET status = 'revoked'
@@ -78,6 +78,56 @@ func (r *ApplicationOwnerRepo) Revoke(ctx context.Context, applicationID, userID
 		return 0, fmt.Errorf("revoke owner: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// ReplacePrimaryOwner implements FR-016's accepted-transfer effect: the
+// prior primary owner's row is revoked — retained for audit history, per
+// FR-016's business rule ("prior owner is retained in history"), never
+// deleted — and the new primary owner's row is upserted (same UPSERT
+// semantics as AddOwner, so a user newly promoted from an existing
+// co-owner/contributor role re-activates cleanly). Any other active,
+// now-redundant role the new primary previously held on this same
+// application (e.g. they were a co-owner being promoted) is revoked too,
+// so they don't end up listed twice under two simultaneous roles.
+//
+// Two sequential statements, not one database transaction — this
+// codebase has no cross-repository transaction wrapper (see
+// deploy_service.go's markDeploymentFailedFrom doc comment for the same
+// trade-off elsewhere). Revoking the old primary first is what lets the
+// second statement's new ACTIVE primary row satisfy
+// one_active_primary_owner_per_application at all.
+func (r *ApplicationOwnerRepo) ReplacePrimaryOwner(ctx context.Context, applicationID, oldPrimaryUserID, newPrimaryUserID, assignedBy string) (domain.ApplicationOwner, error) {
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE application_owners SET status = 'revoked'
+		WHERE application_id = $1 AND user_id = $2 AND ownership_role = 'primary' AND status = 'active'
+	`, applicationID, oldPrimaryUserID); err != nil {
+		return domain.ApplicationOwner{}, fmt.Errorf("revoke prior primary owner: %w", err)
+	}
+
+	var o domain.ApplicationOwner
+	var roleStr string
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO application_owners (application_id, user_id, ownership_role, assigned_by)
+		VALUES ($1, $2, 'primary', $3)
+		ON CONFLICT (application_id, user_id, ownership_role)
+		DO UPDATE SET status = 'active', assigned_by = $3, assigned_at = now()
+		RETURNING id, application_id, user_id, ownership_role, COALESCE(assigned_by::text, ''), assigned_at, status
+	`, applicationID, newPrimaryUserID, assignedBy).Scan(
+		&o.ID, &o.ApplicationID, &o.UserID, &roleStr, &o.AssignedBy, &o.AssignedAt, &o.Status,
+	)
+	if err != nil {
+		return domain.ApplicationOwner{}, fmt.Errorf("assign new primary owner: %w", err)
+	}
+	o.OwnershipRole = domain.OwnershipRole(roleStr)
+
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE application_owners SET status = 'revoked'
+		WHERE application_id = $1 AND user_id = $2 AND ownership_role != 'primary' AND status = 'active'
+	`, applicationID, newPrimaryUserID); err != nil {
+		return domain.ApplicationOwner{}, fmt.Errorf("clean up new primary owner's prior role: %w", err)
+	}
+
+	return o, nil
 }
 
 func (r *ApplicationOwnerRepo) ListForApplication(ctx context.Context, applicationID string) ([]domain.ApplicationOwner, error) {

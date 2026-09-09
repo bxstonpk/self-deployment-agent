@@ -43,30 +43,53 @@ type ApplicationOwnerRepository interface {
 	// Management) — see application_owner_repo.go's doc comments.
 	AddOwner(ctx context.Context, applicationID, userID string, role domain.OwnershipRole, assignedBy string) (domain.ApplicationOwner, error)
 	Revoke(ctx context.Context, applicationID, userID string) (int64, error)
+	// ReplacePrimaryOwner implements FR-016's accepted-transfer effect —
+	// see application_owner_repo.go's doc comment.
+	ReplacePrimaryOwner(ctx context.Context, applicationID, oldPrimaryUserID, newPrimaryUserID, assignedBy string) (domain.ApplicationOwner, error)
+}
+
+// TransferRepository implements FR-016's pending-transfer bookkeeping —
+// see ownership_transfer_repo.go's doc comments.
+type TransferRepository interface {
+	Create(ctx context.Context, applicationID, fromUserID, toUserID string, expiresAt time.Time) (domain.OwnershipTransfer, error)
+	GetByID(ctx context.Context, id string) (domain.OwnershipTransfer, error)
+	GetPendingForApplication(ctx context.Context, applicationID string) (domain.OwnershipTransfer, error)
+	MarkResolved(ctx context.Context, id string, status domain.TransferStatus) (domain.OwnershipTransfer, error)
 }
 
 type DepartmentRepository interface {
 	Exists(ctx context.Context, id string) (bool, error)
 }
 
-// UserRepository is the narrow seam GrantCoOwner needs to resolve a target
-// employee's email to their user id — see GetByEmail's doc comment for why
-// this must never fall back to provisioning one.
+// UserRepository is the narrow seam GrantCoOwner/InitiateTransfer need to
+// resolve a target employee's email to their user id — see GetByEmail's
+// doc comment for why this must never fall back to provisioning one.
 type UserRepository interface {
 	GetByEmail(ctx context.Context, email string) (domain.User, error)
 }
 
 type ApplicationService struct {
-	apps        ApplicationRepository
-	owners      ApplicationOwnerRepository
-	departments DepartmentRepository
-	users       UserRepository
-	audit       AuditRecorder
-	now         func() time.Time
+	apps           ApplicationRepository
+	owners         ApplicationOwnerRepository
+	departments    DepartmentRepository
+	users          UserRepository
+	transfers      TransferRepository
+	notifications  SingleUserNotifier
+	transferWindow time.Duration
+	audit          AuditRecorder
+	now            func() time.Time
 }
 
-func NewApplicationService(apps ApplicationRepository, owners ApplicationOwnerRepository, departments DepartmentRepository, users UserRepository, audit AuditRecorder) *ApplicationService {
-	return &ApplicationService{apps: apps, owners: owners, departments: departments, users: users, audit: audit, now: time.Now}
+func NewApplicationService(
+	apps ApplicationRepository, owners ApplicationOwnerRepository, departments DepartmentRepository,
+	users UserRepository, transfers TransferRepository, notifications SingleUserNotifier, transferWindow time.Duration,
+	audit AuditRecorder,
+) *ApplicationService {
+	return &ApplicationService{
+		apps: apps, owners: owners, departments: departments, users: users,
+		transfers: transfers, notifications: notifications, transferWindow: transferWindow,
+		audit: audit, now: time.Now,
+	}
 }
 
 type RegisterApplicationInput struct {
@@ -289,4 +312,111 @@ func (s *ApplicationService) RevokeCoOwner(ctx context.Context, applicationID, r
 		return domain.ErrCoOwnerGrantNotFound
 	}
 	return nil
+}
+
+// --- FR-016: Transfer Application Ownership ---
+//
+// Only the owner-initiated, nominee-accepted main flow is implemented —
+// see internal/domain/ownership_transfer.go's package comment for the
+// admin-forced-transfer scope adaptation.
+
+// InitiateTransfer implements FR-016's main flow steps 1-2: the current
+// primary owner nominates a new one, who is notified (Module X) and must
+// accept before anything actually changes — this method alone never
+// touches application_owners.
+func (s *ApplicationService) InitiateTransfer(ctx context.Context, applicationID, requesterID, targetEmail string) (transfer domain.OwnershipTransfer, err error) {
+	if _, err := s.apps.GetByID(ctx, applicationID); err != nil {
+		return domain.OwnershipTransfer{}, err
+	}
+	if err := s.requirePrimaryOwner(ctx, applicationID, requesterID); err != nil {
+		return domain.OwnershipTransfer{}, err
+	}
+	target, err := s.users.GetByEmail(ctx, targetEmail)
+	if err != nil {
+		return domain.OwnershipTransfer{}, err
+	}
+	if target.Status != "active" {
+		return domain.OwnershipTransfer{}, domain.ErrTargetUserInactive
+	}
+
+	defer func() {
+		outcome := domain.AuditSuccess
+		detail := fmt.Sprintf("nominated %s", targetEmail)
+		if err != nil {
+			outcome, detail = domain.AuditFailure, err.Error()
+		}
+		if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+			ActorUserID: requesterID, Action: domain.AuditActionInitiateTransfer,
+			ResourceType: "application", ResourceID: applicationID, Outcome: outcome, Detail: detail,
+		}); auditErr != nil && err == nil {
+			err = fmt.Errorf("transfer initiated but audit trail failed to record: %w", auditErr)
+		}
+	}()
+
+	transfer, err = s.transfers.Create(ctx, applicationID, requesterID, target.ID, s.now().Add(s.transferWindow))
+	if err != nil {
+		return domain.OwnershipTransfer{}, err
+	}
+
+	// FR-016 main flow step 2. Best-effort by design — see
+	// NotificationService.NotifyUser's doc comment.
+	s.notifications.NotifyUser(ctx, target.ID, domain.NotificationOwnershipTransfer,
+		"You've been nominated as the new owner of an application",
+		fmt.Sprintf("Accept or let it expire: POST /ownership-transfers/%s/accept", transfer.ID),
+		"application", applicationID)
+
+	return transfer, nil
+}
+
+// GetPendingTransfer implements the read side needed to show "a transfer
+// is awaiting acceptance" — e.g. so a UI can render it. Not owner-gated:
+// same visibility level as ListOwners, which any caller can already read.
+func (s *ApplicationService) GetPendingTransfer(ctx context.Context, applicationID string) (domain.OwnershipTransfer, error) {
+	return s.transfers.GetPendingForApplication(ctx, applicationID)
+}
+
+// AcceptTransfer implements FR-016's main flow steps 3-4: only the
+// nominated new owner may accept, and only within the policy window
+// (checked lazily here — no background sweeper marks an expired transfer
+// until someone actually tries to act on it, see
+// internal/domain/ownership_transfer.go's package comment). On success,
+// the prior owner's row is revoked (retained for audit history) and the
+// nominee becomes the new active primary owner.
+func (s *ApplicationService) AcceptTransfer(ctx context.Context, transferID, accepterID string) (owner domain.ApplicationOwner, err error) {
+	transfer, err := s.transfers.GetByID(ctx, transferID)
+	if err != nil {
+		return domain.ApplicationOwner{}, err
+	}
+	if transfer.Status != domain.TransferPending {
+		return domain.ApplicationOwner{}, domain.ErrTransferNotPending
+	}
+	if accepterID != transfer.ToUserID {
+		return domain.ApplicationOwner{}, domain.ErrNotTransferNominee
+	}
+	if s.now().After(transfer.ExpiresAt) {
+		if _, expireErr := s.transfers.MarkResolved(ctx, transferID, domain.TransferExpired); expireErr != nil {
+			return domain.ApplicationOwner{}, expireErr
+		}
+		return domain.ApplicationOwner{}, domain.ErrTransferExpired
+	}
+
+	defer func() {
+		outcome := domain.AuditSuccess
+		detail := ""
+		if err != nil {
+			outcome, detail = domain.AuditFailure, err.Error()
+		}
+		if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+			ActorUserID: accepterID, Action: domain.AuditActionAcceptTransfer,
+			ResourceType: "application", ResourceID: transfer.ApplicationID, Outcome: outcome, Detail: detail,
+		}); auditErr != nil && err == nil {
+			err = fmt.Errorf("transfer accepted but audit trail failed to record: %w", auditErr)
+		}
+	}()
+
+	if _, err := s.transfers.MarkResolved(ctx, transferID, domain.TransferAccepted); err != nil {
+		return domain.ApplicationOwner{}, err
+	}
+	owner, err = s.owners.ReplacePrimaryOwner(ctx, transfer.ApplicationID, transfer.FromUserID, transfer.ToUserID, transfer.FromUserID)
+	return owner, err
 }

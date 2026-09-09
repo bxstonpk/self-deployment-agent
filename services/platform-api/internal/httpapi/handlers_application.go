@@ -8,6 +8,9 @@
 //	GET    /applications/{id}/owners
 //	POST   /applications/{id}/owners        (FR-017: grant co-owner/contributor)
 //	DELETE /applications/{id}/owners/{userId} (FR-017: revoke)
+//	POST   /applications/{id}/ownership-transfer   (FR-016: nominate a new primary owner)
+//	GET    /applications/{id}/ownership-transfer   (FR-016: the current pending transfer, if any)
+//	POST   /ownership-transfers/{transferId}/accept (FR-016: nominee accepts)
 package httpapi
 
 import (
@@ -237,6 +240,94 @@ func (h *ApplicationHandler) RevokeOwner(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type initiateTransferRequest struct {
+	Email string `json:"email"`
+}
+
+type transferResponse struct {
+	ID            string  `json:"id"`
+	ApplicationID string  `json:"application_id"`
+	FromUserID    string  `json:"from_user_id"`
+	ToUserID      string  `json:"to_user_id"`
+	Status        string  `json:"status"`
+	InitiatedAt   string  `json:"initiated_at"`
+	ExpiresAt     string  `json:"expires_at"`
+	ResolvedAt    *string `json:"resolved_at,omitempty"`
+}
+
+func toTransferResponse(t domain.OwnershipTransfer) transferResponse {
+	resp := transferResponse{
+		ID: t.ID, ApplicationID: t.ApplicationID, FromUserID: t.FromUserID, ToUserID: t.ToUserID,
+		Status: string(t.Status), InitiatedAt: t.InitiatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		ExpiresAt: t.ExpiresAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+	if t.ResolvedAt != nil {
+		resolved := t.ResolvedAt.Format("2006-01-02T15:04:05Z07:00")
+		resp.ResolvedAt = &resolved
+	}
+	return resp
+}
+
+// InitiateTransfer handles POST /applications/{id}/ownership-transfer —
+// FR-016 main flow steps 1-2.
+func (h *ApplicationHandler) InitiateTransfer(w http.ResponseWriter, r *http.Request) {
+	caller, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing authenticated caller")
+		return
+	}
+	id := chi.URLParam(r, "id")
+
+	var req initiateTransferRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be valid JSON")
+		return
+	}
+	if req.Email == "" {
+		writeError(w, http.StatusBadRequest, "missing_fields", "email is required")
+		return
+	}
+
+	transfer, err := h.svc.InitiateTransfer(r.Context(), id, caller.ID, req.Email)
+	if err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toTransferResponse(transfer))
+}
+
+// GetPendingTransfer handles GET /applications/{id}/ownership-transfer.
+func (h *ApplicationHandler) GetPendingTransfer(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	transfer, err := h.svc.GetPendingTransfer(r.Context(), id)
+	if err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toTransferResponse(transfer))
+}
+
+// AcceptTransfer handles POST /ownership-transfers/{transferId}/accept —
+// FR-016 main flow steps 3-4.
+func (h *ApplicationHandler) AcceptTransfer(w http.ResponseWriter, r *http.Request) {
+	caller, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing authenticated caller")
+		return
+	}
+	transferID := chi.URLParam(r, "transferId")
+
+	owner, err := h.svc.AcceptTransfer(r.Context(), transferID, caller.ID)
+	if err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ownerResponse{
+		UserID: owner.UserID, OwnershipRole: string(owner.OwnershipRole),
+		Status: owner.Status, AssignedAt: owner.AssignedAt.Format("2006-01-02T15:04:05Z07:00"),
+	})
+}
+
 func writeApplicationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
@@ -265,6 +356,16 @@ func writeApplicationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_ownership_role", err.Error())
 	case errors.Is(err, domain.ErrCoOwnerGrantNotFound):
 		writeError(w, http.StatusNotFound, "co_owner_grant_not_found", err.Error())
+	case errors.Is(err, domain.ErrTransferAlreadyPending):
+		writeError(w, http.StatusConflict, "transfer_already_pending", err.Error())
+	case errors.Is(err, domain.ErrTransferNotFound):
+		writeError(w, http.StatusNotFound, "transfer_not_found", err.Error())
+	case errors.Is(err, domain.ErrTransferNotPending):
+		writeError(w, http.StatusConflict, "transfer_not_pending", err.Error())
+	case errors.Is(err, domain.ErrTransferExpired):
+		writeError(w, http.StatusConflict, "transfer_expired", err.Error())
+	case errors.Is(err, domain.ErrNotTransferNominee):
+		writeError(w, http.StatusForbidden, "not_transfer_nominee", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "unexpected error")
 	}

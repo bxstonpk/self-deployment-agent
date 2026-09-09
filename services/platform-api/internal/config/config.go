@@ -26,6 +26,12 @@ type Config struct {
 	// waiting minutes for a real idle window.
 	ScaleToZeroIdleTimeout time.Duration
 	ScaleSweepInterval     time.Duration
+
+	// OwnershipTransferWindow implements FR-016's "policy window" for a
+	// nominated new owner to accept a transfer before it expires — exact
+	// value TBD (docs/17_Decision_Log.md), same "starting point, not a
+	// ratified value" status as the scale-to-zero timeouts above.
+	OwnershipTransferWindow time.Duration
 }
 
 // Load reads configuration from the environment. DatabaseURL has no
@@ -46,13 +52,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	transferWindow, err := getEnvSeconds("OWNERSHIP_TRANSFER_WINDOW_SECONDS", 7*24*3600) // 7 days
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
-		DatabaseURL:            databaseURL,
-		Port:                   getEnv("PORT", "8080"),
-		PlatformEnv:            getEnv("PLATFORM_ENV", "dev"),
-		CORSAllowedOrigins:     getEnvList("CORS_ALLOWED_ORIGINS", "http://localhost:5173"),
-		ScaleToZeroIdleTimeout: idleTimeout,
-		ScaleSweepInterval:     sweepInterval,
+		DatabaseURL:             databaseURL,
+		Port:                    getEnv("PORT", "8080"),
+		PlatformEnv:             getEnv("PLATFORM_ENV", "dev"),
+		CORSAllowedOrigins:      getEnvList("CORS_ALLOWED_ORIGINS", "http://localhost:5173"),
+		ScaleToZeroIdleTimeout:  idleTimeout,
+		ScaleSweepInterval:      sweepInterval,
+		OwnershipTransferWindow: transferWindow,
 	}, nil
 }
 
