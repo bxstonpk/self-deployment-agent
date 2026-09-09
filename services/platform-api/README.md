@@ -47,7 +47,7 @@ for how it fits the Control Plane.
 | `POST /applications/{id}/owners` | FR-017 | Grants co-owner (`secondary`) or contributor (`technical`) access by email; primary-owner-only — see **How Co-Owner/Contributor Management works** |
 | `DELETE /applications/{id}/owners/{userId}` | FR-017 | Revokes a previously-granted co-owner/contributor; primary-owner-only; never touches the primary owner's own row |
 | `POST /applications/{id}/ownership-transfer` | FR-016 | Nominates a new primary owner by email; primary-owner-only; notifies the nominee (Module X) — see **How Ownership Transfer works** |
-| `GET /applications/{id}/ownership-transfer` | FR-016 | The current pending transfer, if any |
+| `GET /applications/{id}/ownership-transfer` | FR-016 | `{"transfer": ...}`, or `{"transfer": null}` — always `200`, never `404`, for "nothing pending" (the ordinary state most of the time — see the handler's own doc comment for why, and the Admin Portal PR that found this the hard way) |
 | `POST /ownership-transfers/{transferId}/accept` | FR-016 | Only the nominated new owner may call this |
 | `PUT /applications/{id}/deployment-yaml` | FR-023 | Saves a `deployment.yaml` draft (must parse as YAML); reverts `validated` back to `draft` since the contract changed; owner-only |
 | `POST /applications/{id}/validate` | FR-029–034 | Runs the aggregate validation pass; `draft` → `validated` on success. Only callable from `draft`. Owner-only |
@@ -807,6 +807,17 @@ hypothetical one, and the honest thing is to say so rather than quietly
 leave the prior "vacuously satisfied" claim standing after the PR that
 was explicitly flagged as "the first place that could change" actually
 shipped.
+
+**A response-shape fix, made in the follow-up Admin Portal PR, not this
+one:** `GET /applications/{id}/ownership-transfer` originally 404'd when
+nothing was pending, mirroring the sentinel `domain.ErrTransferNotFound`
+error underneath it a little too literally. Real browser testing of the
+Admin Portal UI caught this as console noise on *every* application
+detail page view (nothing pending is the ordinary state for most
+applications most of the time, not an exceptional one) — fixed to always
+return `200` with `{"transfer": ...}` or `{"transfer": null}`. See the
+handler's own doc comment for the full reasoning, including why this is
+different from e.g. `GetDeployment`, which correctly still 404s.
 
 ## What's deliberately NOT here yet
 

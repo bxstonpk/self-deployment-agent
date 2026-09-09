@@ -54,11 +54,17 @@ README for exactly what was tested and how):
   the Platform API directly — including an Audit Log view (per-application
   and platform-wide, with filtering, CSV export, and chain-integrity
   verification), a Notifications inbox (unread-count header badge,
-  mark-read, unread-only filter), and an Owners section for granting/
-  revoking co-owner/contributor access — verified with two genuinely
+  mark-read, unread-only filter), an Owners section for granting/
+  revoking co-owner/contributor access, and a Transfer primary ownership
+  flow (nominate, notify, accept) — verified with up to three genuinely
   independent signed-in identities at once (separate browser contexts),
-  confirming a newly-granted co-owner gets real day-to-day access and a
-  revoked one is genuinely locked out on their very next request.
+  confirming a newly-granted co-owner gets real day-to-day access, a
+  revoked one is genuinely locked out on their very next request, and a
+  non-nominee can't accept someone else's transfer. That verification
+  also caught and fixed a real API design mistake: checking for a pending
+  transfer 404'd on every single page view (the ordinary case for most
+  applications most of the time), not just an occasional mistaken lookup —
+  fixed to a real `200` with a null payload instead.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this

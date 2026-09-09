@@ -60,6 +60,19 @@ export interface ApplicationOwner {
   assigned_at: string;
 }
 
+export type TransferStatus = "pending" | "accepted" | "expired";
+
+export interface OwnershipTransfer {
+  id: string;
+  application_id: string;
+  from_user_id: string;
+  to_user_id: string;
+  status: TransferStatus;
+  initiated_at: string;
+  expires_at: string;
+  resolved_at?: string;
+}
+
 export interface RunningContainer {
   container_id: string;
   host_port: number;

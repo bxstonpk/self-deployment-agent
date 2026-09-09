@@ -297,14 +297,32 @@ func (h *ApplicationHandler) InitiateTransfer(w http.ResponseWriter, r *http.Req
 }
 
 // GetPendingTransfer handles GET /applications/{id}/ownership-transfer.
+//
+// "No transfer currently pending" is the ordinary state of the vast
+// majority of applications at any given time, not an exceptional one —
+// unlike domain.ErrTransferNotFound's other caller (AcceptTransfer, where
+// an unresolvable id genuinely is an error), so it's deliberately NOT
+// surfaced as an HTTP 404 here. A 404 on every routine page load (found
+// via real browser testing, not guessed: the admin portal calls this on
+// every single application detail page view) is a worse API than a 200
+// with a null payload for what is, for most applications most of the
+// time, simply "there's nothing to report" — the same reasoning
+// GetDeployment/LatestBuild elsewhere in this codebase do NOT follow,
+// because a deployment/build genuinely either exists or the caller made a
+// mistake asking; a pending transfer is different, closer to
+// "is anyone currently on call" than "fetch this specific record".
 func (h *ApplicationHandler) GetPendingTransfer(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	transfer, err := h.svc.GetPendingTransfer(r.Context(), id)
+	if errors.Is(err, domain.ErrTransferNotFound) {
+		writeJSON(w, http.StatusOK, map[string]any{"transfer": nil})
+		return
+	}
 	if err != nil {
 		writeApplicationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toTransferResponse(transfer))
+	writeJSON(w, http.StatusOK, map[string]any{"transfer": toTransferResponse(transfer)})
 }
 
 // AcceptTransfer handles POST /ownership-transfers/{transferId}/accept —
