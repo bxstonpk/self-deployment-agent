@@ -60,6 +60,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{id}", cfg.Applications.Get)
 		r.Patch("/{id}", cfg.Applications.UpdateMetadata)
 		r.Get("/{id}/owners", cfg.Applications.ListOwners)
+		r.Post("/{id}/owners", cfg.Applications.GrantOwner)
+		r.Delete("/{id}/owners/{userId}", cfg.Applications.RevokeOwner)
 		r.Put("/{id}/deployment-yaml", cfg.Validation.SaveDeploymentYAML)
 		r.Post("/{id}/validate", cfg.Validation.Validate)
 		r.Post("/{id}/build", cfg.Builds.TriggerBuild)

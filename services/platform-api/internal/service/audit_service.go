@@ -32,13 +32,29 @@ type AuditRecorder interface {
 	Record(ctx context.Context, entry domain.AuditEntry) error
 }
 
-type AuditService struct {
-	repo   AuditRepository
-	owners ApplicationOwnerRepository
+// deploymentApplicationLookup and buildApplicationLookup are the narrow
+// seams Query needs to extend FR-104's "or it concerns an application they
+// own" scope check to deployment- and build-scoped entries
+// (deployment.deploy/rollback/approval_decision, build.trigger) — not just
+// application-scoped ones. Satisfied by DeploymentRepository/
+// BuildRepository's existing GetByID methods; no wrapper needed.
+type deploymentApplicationLookup interface {
+	GetByID(ctx context.Context, deploymentID string) (domain.Deployment, error)
 }
 
-func NewAuditService(repo AuditRepository, owners ApplicationOwnerRepository) *AuditService {
-	return &AuditService{repo: repo, owners: owners}
+type buildApplicationLookup interface {
+	GetByID(ctx context.Context, buildID string) (domain.Build, error)
+}
+
+type AuditService struct {
+	repo        AuditRepository
+	owners      ApplicationOwnerRepository
+	deployments deploymentApplicationLookup
+	builds      buildApplicationLookup
+}
+
+func NewAuditService(repo AuditRepository, owners ApplicationOwnerRepository, deployments deploymentApplicationLookup, builds buildApplicationLookup) *AuditService {
+	return &AuditService{repo: repo, owners: owners, deployments: deployments, builds: builds}
 }
 
 // Record implements AuditRecorder. Every instrumented service method calls
@@ -89,17 +105,55 @@ func (s *AuditService) isOwner(ctx context.Context, requesterID, applicationID s
 	return false
 }
 
+// applicationIDFor resolves an entry's own resource back to the
+// application it concerns, so FR-104's ownership check applies uniformly
+// regardless of which resource type actually recorded the entry
+// (deploy_service.go records under "deployment", build_service.go under
+// "build" — only application_service.go/lifecycle_service.go/
+// validation_service.go record directly under "application"). Returns ""
+// for a resource type this doesn't (or can't) resolve — audit_log.export
+// entries in particular are never resolved this way, since Export always
+// records the requester as the actor, which the caller-is-actor branch
+// above already handles.
+func (s *AuditService) applicationIDFor(ctx context.Context, e domain.AuditEntry) string {
+	switch e.ResourceType {
+	case "application":
+		return e.ResourceID
+	case "deployment":
+		dep, err := s.deployments.GetByID(ctx, e.ResourceID)
+		if err != nil {
+			return ""
+		}
+		return dep.ApplicationID
+	case "build":
+		build, err := s.builds.GetByID(ctx, e.ResourceID)
+		if err != nil {
+			return ""
+		}
+		return build.ApplicationID
+	default:
+		return ""
+	}
+}
+
 // Query implements FR-104, scoped to what this platform can actually
 // authorize without the Auditor/Security Administrator/Platform
 // Administrator roles FR-104 assumes (blocked on DEC-001/DEC-002): a
 // requester sees an entry if they performed the action themselves, or it
-// concerns an application they own.
+// concerns an application they own — regardless of which resource type
+// (application/deployment/build) actually recorded it, per
+// applicationIDFor's doc comment.
 //
-// Known gap: FR-104's business rule that "every audit query is itself
-// logged" (self-referential auditing, to prevent unchecked surveillance of
-// employee activity) is not implemented — that would need this method to
-// call Record on every read, which risks a logging feedback loop worth its
-// own careful design rather than bolting on here.
+// Real bug found and fixed here: this used to check e.ResourceType ==
+// "application" directly, silently skipping every deployment- and
+// build-scoped entry (deployment.deploy, deployment.rollback,
+// deployment.approval_decision, build.trigger) for anyone but the actor
+// themselves — invisible until FR-017 (Co-Owner/Contributor Management)
+// made a second owner on the same application possible for the first
+// time. Verified live: with Bob granted co-owner access on an application
+// Alice primary-owns, Bob deploying it produced a deployment.deploy entry
+// Alice — the accountable primary owner — could not see via this query at
+// all, despite the deployment concerning an application she owns.
 func (s *AuditService) Query(ctx context.Context, requesterID string, q domain.AuditQuery) ([]domain.AuditEntry, error) {
 	entries, err := s.repo.Query(ctx, q)
 	if err != nil {
@@ -113,13 +167,14 @@ func (s *AuditService) Query(ctx context.Context, requesterID string, q domain.A
 			visible = append(visible, e)
 			continue
 		}
-		if e.ResourceType != "application" || e.ResourceID == "" {
+		applicationID := s.applicationIDFor(ctx, e)
+		if applicationID == "" {
 			continue
 		}
-		owned, cached := ownedCache[e.ResourceID]
+		owned, cached := ownedCache[applicationID]
 		if !cached {
-			owned = s.isOwner(ctx, requesterID, e.ResourceID)
-			ownedCache[e.ResourceID] = owned
+			owned = s.isOwner(ctx, requesterID, applicationID)
+			ownedCache[applicationID] = owned
 		}
 		if owned {
 			visible = append(visible, e)
