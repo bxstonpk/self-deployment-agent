@@ -97,7 +97,11 @@ async def main() -> None:
             await session.initialize()
             tools = await session.list_tools()
             tool_names = sorted(t.name for t in tools.tools)
-            _check(len(tool_names) == 13, f"all 13 Section-13 tools discovered via MCP protocol: {tool_names}")
+            _check(
+                len(tool_names) == 16,
+                f"all 13 Section-13 tools plus query_audit_log/list_notifications/"
+                f"mark_notification_read discovered via MCP protocol: {tool_names}",
+            )
 
             info = _print_result("get_platform_info", await session.call_tool("get_platform_info", {}))
             _check(info["status"] == "success", "get_platform_info succeeded")
@@ -168,6 +172,54 @@ async def main() -> None:
             async with httpx.AsyncClient(timeout=10) as http:
                 live_v1 = await http.get(status["data"]["url"])
             _check("v1" in live_v1.text, f"live traffic serves v1's response: {live_v1.text.strip()!r}")
+
+            print("--- query_audit_log / list_notifications: beyond Section 13's original catalog ---")
+            app_audit_entries = _print_result(
+                "query_audit_log (resource_type=application, this application)",
+                await session.call_tool("query_audit_log", {"resource_type": "application", "resource_id": app_id}),
+            )
+            app_actions_seen = {e["action"] for e in app_audit_entries["data"]["entries"]}
+            _check(
+                {"application.register", "application.validate"} <= app_actions_seen,
+                f"audit log (application-scoped) shows register/validate for this real run: {sorted(app_actions_seen)}",
+            )
+
+            deploy_audit_entries = _print_result(
+                "query_audit_log (resource_type=deployment, v1's deployment)",
+                await session.call_tool(
+                    "query_audit_log", {"resource_type": "deployment", "resource_id": v1_deployment_id}
+                ),
+            )
+            deploy_actions_seen = {e["action"] for e in deploy_audit_entries["data"]["entries"]}
+            _check(
+                "deployment.deploy" in deploy_actions_seen,
+                f"audit log (deployment-scoped, not application-scoped — deploy_service.go's "
+                f"auditDeployOutcome records these under resource_type=deployment) shows deployment.deploy: "
+                f"{sorted(deploy_actions_seen)}",
+            )
+
+            unread = _print_result(
+                "list_notifications (unread_only)",
+                await session.call_tool("list_notifications", {"unread_only": True}),
+            )
+            deploy_notifications = [
+                n for n in unread["data"]["notifications"] if n["resource_type"] == "deployment" and n["resource_id"] == v1_deployment_id
+            ]
+            _check(len(deploy_notifications) == 1, f"real deployment_status notification for v1's deploy: {deploy_notifications}")
+
+            marked = _print_result(
+                "mark_notification_read", await session.call_tool("mark_notification_read", {"notification_id": deploy_notifications[0]["id"]})
+            )
+            _check(marked["data"]["read_at"] is not None, "mark_notification_read set a real read_at")
+
+            unread_after = _print_result(
+                "list_notifications (unread_only, after marking read)",
+                await session.call_tool("list_notifications", {"unread_only": True}),
+            )
+            _check(
+                all(n["id"] != deploy_notifications[0]["id"] for n in unread_after["data"]["notifications"]),
+                "the marked-read notification no longer appears in the unread list",
+            )
 
             dep_status = _print_result(
                 "get_deployment_status", await session.call_tool("get_deployment_status", {"deployment_id": v1_deployment_id})

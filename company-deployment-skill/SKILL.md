@@ -25,15 +25,31 @@ Every platform interaction goes through these, and nothing else:
 `create_application`, `validate_application`, `deploy_application`,
 `get_application_status`, `get_deployment_status`, `get_application_logs`,
 `get_application_metrics`, `rollback_application`, `restart_application`,
-`delete_application`.
+`delete_application`, `query_audit_log`, `list_notifications`,
+`mark_notification_read`.
 
-(Thirteen tools are actually registered on the MCP server as of this
-writing — the platform's own docs describe this set as "12 tools" in
-several places while listing 13 numbered entries in the tool catalog
-itself. That's a numbering inconsistency in the platform's own
-specification, not something to resolve by pretending one tool doesn't
-exist. Don't be surprised by the count; go by what `list_tools()` /
+(Thirteen of these are the platform's own documented tool catalog — the
+platform's docs describe this set as "12 tools" in several places while
+listing 13 numbered entries in the tool catalog itself; that's a numbering
+inconsistency in the platform's own specification, not something to
+resolve by pretending one tool doesn't exist. The remaining three
+(`query_audit_log`, `list_notifications`, `mark_notification_read`) are
+newer additions exposing Modules W/X — Audit Log and Notification — which
+didn't exist when the platform's tool catalog document was written; they
+follow the same envelope and error-handling contract as every other tool
+here. Don't be surprised by the count; go by what `list_tools()` /
 `get_platform_info` actually report.)
+
+Use `list_notifications(unread_only=true)` to check whether anything —
+most usefully a pending production-approval request — is waiting on the
+employee before assuming a `deploy_application` call to production is
+actually done; `PENDING_APPROVAL` in that call's own response already
+tells you it's paused, but `list_notifications` is how to check status
+later without re-calling `get_deployment_status` on every deployment one
+at a time. Use `query_audit_log` to answer "what actually happened" —
+e.g. after an ambiguous report from the employee about a past action —
+rather than guessing from `get_application_status`'s current-state-only
+view.
 
 Every tool response is the structured envelope: `{status, data, error,
 request_id, server_time}`. Always read `status` and, on failure,

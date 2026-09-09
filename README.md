@@ -27,7 +27,10 @@ README for exactly what was tested and how):
   approve flow, including that a rejected production deployment notifies
   every owner, not just the one who rejected it.
 - An MCP server exposing that lifecycle to an AI agent (Claude Code),
-  matching the platform's own `docs/07_MCP_Requirements.md` tool catalog.
+  matching the platform's own `docs/07_MCP_Requirements.md` tool catalog —
+  plus `query_audit_log`/`list_notifications`/`mark_notification_read`,
+  three tools beyond that catalog exposing Modules W/X, which shipped
+  after the catalog was written.
 - A Markdown skill package instructing Claude Code how to use that MCP
   server correctly.
 - A React admin portal covering the same lifecycle for a human, calling
