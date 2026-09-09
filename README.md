@@ -26,6 +26,15 @@ README for exactly what was tested and how):
   production-approval events — verified against a real deploy/build/
   approve flow, including that a rejected production deployment notifies
   every owner, not just the one who rejected it.
+- Co-Owner/Contributor Management (Module E, `FR-017`) — an application's
+  primary owner can grant/revoke a teammate day-to-day access, using data
+  model support (`application_owners`) that existed since the very first
+  PR but was never wired to an actual endpoint until now. Verifying it for
+  real surfaced and fixed a genuine, previously-unreachable bug in Module
+  W: audit entries for a deploy/build weren't visible to the application's
+  own primary owner unless they happened to be the one who performed the
+  action — invisible before this PR because there was never a second
+  owner to expose it.
 - An MCP server exposing that lifecycle to an AI agent (Claude Code),
   matching the platform's own `docs/07_MCP_Requirements.md` tool catalog —
   plus `query_audit_log`/`list_notifications`/`mark_notification_read`,

@@ -67,14 +67,16 @@ func (f *fakeAuditRepo) VerifyChain(ctx context.Context) (bool, int64, error) {
 	return f.chainOK, f.chainBrokenAt, nil
 }
 
-func newAuditService() (*service.AuditService, *fakeAuditRepo, *fakeOwnerRepo) {
+func newAuditService() (*service.AuditService, *fakeAuditRepo, *fakeOwnerRepo, *fakeDeploymentRepo, *fakeBuildRepo) {
 	repo := newFakeAuditRepo()
 	owners := newFakeOwnerRepo()
-	return service.NewAuditService(repo, owners), repo, owners
+	deployments := newFakeDeploymentRepo()
+	builds := newFakeBuildRepo()
+	return service.NewAuditService(repo, owners, deployments, builds), repo, owners, deployments, builds
 }
 
 func TestAuditRecord_Success_WritesEntry(t *testing.T) {
-	svc, repo, _ := newAuditService()
+	svc, repo, _, _, _ := newAuditService()
 
 	err := svc.Record(context.Background(), domain.AuditEntry{
 		ActorUserID: "user-1", Action: domain.AuditActionSuspend,
@@ -92,7 +94,7 @@ func TestAuditRecord_Success_WritesEntry(t *testing.T) {
 }
 
 func TestAuditRecord_RepoFailure_ReturnsWrappedError(t *testing.T) {
-	svc, repo, _ := newAuditService()
+	svc, repo, _, _, _ := newAuditService()
 	repo.recordErr = errors.New("db unavailable")
 
 	err := svc.Record(context.Background(), domain.AuditEntry{ActorUserID: "user-1", Action: domain.AuditActionSuspend})
@@ -105,7 +107,7 @@ func TestAuditRecord_RepoFailure_ReturnsWrappedError(t *testing.T) {
 }
 
 func TestAuditQuery_VisibleToTheActorThemselves(t *testing.T) {
-	svc, repo, _ := newAuditService()
+	svc, repo, _, _, _ := newAuditService()
 	repo.entries = []domain.AuditEntry{
 		{Seq: 1, ActorUserID: "user-1", Action: domain.AuditActionRegisterApplication, ResourceType: "application", ResourceID: "app-1"},
 	}
@@ -120,7 +122,7 @@ func TestAuditQuery_VisibleToTheActorThemselves(t *testing.T) {
 }
 
 func TestAuditQuery_VisibleToAnApplicationOwnerEvenIfNotTheActor(t *testing.T) {
-	svc, repo, owners := newAuditService()
+	svc, repo, owners, _, _ := newAuditService()
 	owners.owners["app-1"] = []domain.ApplicationOwner{
 		{ApplicationID: "app-1", UserID: "owner-1", OwnershipRole: domain.OwnerRolePrimary, Status: "active"},
 	}
@@ -137,8 +139,55 @@ func TestAuditQuery_VisibleToAnApplicationOwnerEvenIfNotTheActor(t *testing.T) {
 	}
 }
 
+// Real bug, found via manual verification once FR-017 (Co-Owner
+// Management) made a second owner on one application possible for the
+// first time: Query used to check e.ResourceType == "application"
+// directly, so a deployment-scoped entry (deploy_service.go's
+// auditDeployOutcome records resource_type="deployment", not
+// "application") was invisible to every owner except whoever performed
+// the deploy — even the application's own primary owner.
+func TestAuditQuery_DeploymentScopedEntry_VisibleToApplicationOwnerEvenIfNotTheActor(t *testing.T) {
+	svc, repo, owners, deployments, _ := newAuditService()
+	owners.owners["app-1"] = []domain.ApplicationOwner{
+		{ApplicationID: "app-1", UserID: "primary-owner", OwnershipRole: domain.OwnerRolePrimary, Status: "active"},
+	}
+	deployments.byID["dep-1"] = domain.Deployment{ID: "dep-1", ApplicationID: "app-1"}
+	repo.entries = []domain.AuditEntry{
+		{Seq: 1, ActorUserID: "co-owner-who-deployed", Action: domain.AuditActionInitiateDeploy, ResourceType: "deployment", ResourceID: "dep-1"},
+	}
+
+	got, err := svc.Query(context.Background(), "primary-owner", domain.AuditQuery{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected the primary owner to see a co-owner's deployment-scoped entry, got %d entries", len(got))
+	}
+}
+
+// Same fix, build-scoped entries (build_service.go records
+// resource_type="build").
+func TestAuditQuery_BuildScopedEntry_VisibleToApplicationOwnerEvenIfNotTheActor(t *testing.T) {
+	svc, repo, owners, _, builds := newAuditService()
+	owners.owners["app-1"] = []domain.ApplicationOwner{
+		{ApplicationID: "app-1", UserID: "primary-owner", OwnershipRole: domain.OwnerRolePrimary, Status: "active"},
+	}
+	builds.byID["build-1"] = domain.Build{ID: "build-1", ApplicationID: "app-1"}
+	repo.entries = []domain.AuditEntry{
+		{Seq: 1, ActorUserID: "co-owner-who-built", Action: domain.AuditActionTriggerBuild, ResourceType: "build", ResourceID: "build-1"},
+	}
+
+	got, err := svc.Query(context.Background(), "primary-owner", domain.AuditQuery{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected the primary owner to see a co-owner's build-scoped entry, got %d entries", len(got))
+	}
+}
+
 func TestAuditQuery_HiddenFromNeitherActorNorOwner(t *testing.T) {
-	svc, repo, owners := newAuditService()
+	svc, repo, owners, _, _ := newAuditService()
 	owners.owners["app-1"] = []domain.ApplicationOwner{
 		{ApplicationID: "app-1", UserID: "owner-1", OwnershipRole: domain.OwnerRolePrimary, Status: "active"},
 	}
@@ -156,7 +205,7 @@ func TestAuditQuery_HiddenFromNeitherActorNorOwner(t *testing.T) {
 }
 
 func TestAuditQuery_RevokedOwnerNoLongerSeesEntries(t *testing.T) {
-	svc, repo, owners := newAuditService()
+	svc, repo, owners, _, _ := newAuditService()
 	owners.owners["app-1"] = []domain.ApplicationOwner{
 		{ApplicationID: "app-1", UserID: "former-owner", OwnershipRole: domain.OwnerRolePrimary, Status: "revoked"},
 	}
@@ -174,7 +223,7 @@ func TestAuditQuery_RevokedOwnerNoLongerSeesEntries(t *testing.T) {
 }
 
 func TestAuditExport_ProducesCSVAndRecordsTheExportItself(t *testing.T) {
-	svc, repo, _ := newAuditService()
+	svc, repo, _, _, _ := newAuditService()
 	repo.entries = []domain.AuditEntry{
 		{Seq: 1, ActorUserID: "user-1", Action: domain.AuditActionSuspend, ResourceType: "application", ResourceID: "app-1", Outcome: domain.AuditSuccess},
 	}
@@ -201,7 +250,7 @@ func TestAuditExport_ProducesCSVAndRecordsTheExportItself(t *testing.T) {
 }
 
 func TestAuditVerifyIntegrity_DelegatesToRepo(t *testing.T) {
-	svc, repo, _ := newAuditService()
+	svc, repo, _, _, _ := newAuditService()
 	repo.chainOK = false
 	repo.chainBrokenAt = 7
 

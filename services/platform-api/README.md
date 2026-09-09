@@ -26,8 +26,9 @@ stable proxy URL, real event logging); `FR-045`, `FR-047`, `FR-048`,
 `FR-049`, `FR-050` (Module K — the full Application Lifecycle model, plus
 Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
 `FR-101` (Module V — Rollback — see below); `FR-103`, `FR-104`,
-`FR-105`, `FR-106` (Module W — Audit Log — see below); and `FR-107`,
-`FR-108` (Module X — Notification — see below). See
+`FR-105`, `FR-106` (Module W — Audit Log — see below); `FR-107`,
+`FR-108` (Module X — Notification — see below); and `FR-017` (Module E —
+Co-Owner/Contributor Management — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -42,6 +43,8 @@ for how it fits the Control Plane.
 | `GET /applications/{id}` | — | |
 | `PATCH /applications/{id}` | FR-013 | Metadata only — never changes lifecycle state; owner-only |
 | `GET /applications/{id}/owners` | FR-015 | |
+| `POST /applications/{id}/owners` | FR-017 | Grants co-owner (`secondary`) or contributor (`technical`) access by email; primary-owner-only — see **How Co-Owner/Contributor Management works** |
+| `DELETE /applications/{id}/owners/{userId}` | FR-017 | Revokes a previously-granted co-owner/contributor; primary-owner-only; never touches the primary owner's own row |
 | `PUT /applications/{id}/deployment-yaml` | FR-023 | Saves a `deployment.yaml` draft (must parse as YAML); reverts `validated` back to `draft` since the contract changed; owner-only |
 | `POST /applications/{id}/validate` | FR-029–034 | Runs the aggregate validation pass; `draft` → `validated` on success. Only callable from `draft`. Owner-only |
 | `GET /supported-stacks` | FR-019 | Lists the IT-governed Supported Stack catalog (seeded by migration `0002`) |
@@ -652,6 +655,87 @@ rejected outright (`security_precheck` check, via strict YAML field
 checking) — there is no way to smuggle raw Kubernetes/Docker config through
 `deployment.yaml`, regardless of who or what generated it.
 
+## How Co-Owner/Contributor Management works (Module E, FR-017)
+
+`domain.ApplicationOwner`'s `OwnershipRole` type (`primary`/`secondary`/
+`technical`) and the `application_owners` table's schema (migration
+`0001`) already anticipated multiple owners per application from the very
+first PR — but until this one, nothing ever actually *granted* a second
+owner: `Register` always creates exactly one `primary` row, and there was
+no endpoint to add another. This closes that gap.
+
+- **Grant** (`POST /applications/{id}/owners`, body `{"email", "ownership_role"}`)
+  — only the current **primary** owner may call this (`requirePrimaryOwner`,
+  stricter than every other service's plain "any active owner"
+  `requireOwner`). The target must already be a known platform user
+  (`UserRepository.GetByEmail`) — granting access to an email that has
+  never signed in is rejected (`target_user_unknown`), not silently
+  auto-provisioned; only dev-auth's own self-service upsert, driven by
+  that person's own authenticated request, creates a user record. A
+  deactivated target is rejected too (`target_user_inactive`), though
+  since Module B (User Management) has no deactivation endpoint either,
+  this check is currently unreachable in practice — implemented anyway
+  per FR-017's exception flow, not for a scenario that can occur yet.
+  Re-granting the same role to someone whose access was previously
+  revoked is idempotent (an `UPSERT` on the `(application_id, user_id,
+  ownership_role)` unique constraint), not an error.
+- **Revoke** (`DELETE /applications/{id}/owners/{userId}`) — same
+  primary-owner-only gate. Its `UPDATE` WHERE clause explicitly excludes
+  `ownership_role = 'primary'`, so there is no way to revoke the primary
+  owner this way even by passing their own id — that's Module V/FR-016's
+  (not yet built) Transfer Ownership flow.
+- **Day-to-day access requires no new code at all**: every other
+  service's `requireOwner` check already accepts *any* active owner row
+  regardless of `OwnershipRole` — a granted co-owner or contributor
+  immediately gets real deploy/build/validate/config access the moment
+  the grant lands, exactly matching FR-017's business rule ("co-owners
+  may perform day-to-day configuration and deployment actions"). Verified
+  live: granted a second user co-owner access, had them build and deploy
+  the application themselves, confirmed the primary owner could still act
+  on it too, then revoked access and confirmed the same user was
+  immediately rejected (`forbidden`) on the next call.
+
+**A real, pre-existing bug found and fixed while verifying this, in code
+that shipped two PRs ago (Module W, Audit Log):** `AuditService.Query`
+used to check `resource_type == "application"` directly to decide whether
+a non-actor requester owned the application an entry concerned — but
+`deploy_service.go` records deploy/rollback/approval-decision entries
+under `resource_type="deployment"`, and `build_service.go` records builds
+under `resource_type="build"`, *never* `"application"`. Every such entry
+was therefore invisible to every owner except whoever performed the
+action — including the application's own primary owner. This was
+unreachable before this PR: with only ever one owner per application,
+"the actor" and "an owner" were always the same person, so the gap never
+manifested. Verified live: granted a co-owner, had them deploy, confirmed
+the primary owner's `GET /audit-log?resource_type=deployment&resource_id=...`
+query returned nothing for it — then fixed `Query` to resolve a
+deployment/build id back to its owning application
+(`deploymentApplicationLookup`/`buildApplicationLookup`, thin adapters
+over `DeploymentRepository`/`BuildRepository`'s existing `GetByID`) before
+the ownership check, rebuilt, and confirmed the same query now correctly
+returns the entry — while a genuinely uninvolved third party still sees
+nothing.
+
+**Known gaps, documented not hidden:**
+- FR-016 (Transfer Ownership) isn't implemented — a fast-follow this
+  directly sets up for (the `Notification` infrastructure FR-016's main
+  flow needs to notify the nominated new owner already exists, Module X).
+- FR-018 (Ownership Verification Gate)'s broader "block production
+  deploy/destructive lifecycle actions when no active owner exists" is
+  currently **vacuously satisfied**, not actively enforced: `Register`
+  always assigns exactly one primary owner and nothing can currently
+  remove it (`Revoke` explicitly excludes the primary role; there is no
+  Transfer yet), so an application can never actually end up owner-less
+  today. This becomes a real gap to actively guard once FR-016 ships,
+  since a careless transfer implementation is the first place that could
+  change.
+- FR-017's "contributor" access level is not actually distinguished from
+  "co-owner" anywhere in authorization logic — both `secondary` and
+  `technical` roles get identical access via the shared `requireOwner`
+  check. FR-017 doesn't specify what a contributor should be blocked from
+  that a co-owner isn't; implementing a real distinction would mean
+  inventing that boundary rather than reading it from the spec.
+
 ## What's deliberately NOT here yet
 
 Each will land as its own feature branch/PR, per the Application Lifecycle:
@@ -714,9 +798,10 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
 - Production de-registration approval gate (FR-050, "mirrors FR-014") —
   needs Module C, not built; same category of gap as the production-deploy
   approver-independence limitation.
-- Application Owner transfer, co-owner management (FR-016, FR-017) — the
-  data model (`application_owners`, multiple rows per app) already
-  supports it; no endpoints exist yet.
+- Application Owner **transfer** (FR-016) — co-owner/contributor
+  management (FR-017) is now implemented, see **How Co-Owner/Contributor
+  Management works** above; transfer (a *different* primary owner taking
+  over, with the nominated new owner accepting) is not.
 
 ## Dev-mode auth (temporary — see DEC-001)
 

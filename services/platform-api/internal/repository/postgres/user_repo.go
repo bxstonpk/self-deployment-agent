@@ -29,6 +29,23 @@ func (r *UserRepo) GetByID(ctx context.Context, id string) (domain.User, error) 
 	return u, nil
 }
 
+// GetByEmail looks up an already-known user without creating one — used by
+// Co-Owner/Contributor grants (FR-017), which must never silently
+// provision an account for someone else just because their email was
+// referenced; only GetOrCreateByEmail (below), driven by the person's own
+// authenticated request, does that.
+func (r *UserRepo) GetByEmail(ctx context.Context, email string) (domain.User, error) {
+	var u domain.User
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, full_name, email, COALESCE(department_id::text, ''), status, created_at
+		FROM users WHERE email = $1
+	`, email).Scan(&u.ID, &u.FullName, &u.Email, &u.DepartmentID, &u.Status, &u.CreatedAt)
+	if err != nil {
+		return domain.User{}, domain.ErrTargetUserUnknown
+	}
+	return u, nil
+}
+
 // GetOrCreateByEmail backs the dev-mode authenticator: until an IdP is
 // wired up (DEC-001, docs/17_Decision_Log.md), a caller identifies
 // themselves via the X-Dev-User-Email header and is upserted here.

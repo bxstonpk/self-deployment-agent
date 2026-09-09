@@ -92,21 +92,74 @@ func (f *fakeOwnerRepo) ListForApplication(ctx context.Context, applicationID st
 	return f.owners[applicationID], nil
 }
 
+// AddOwner mirrors application_owner_repo.go's real upsert semantics: a
+// second grant of the same (application, user, role) re-activates rather
+// than erroring or duplicating.
+func (f *fakeOwnerRepo) AddOwner(ctx context.Context, applicationID, userID string, role domain.OwnershipRole, assignedBy string) (domain.ApplicationOwner, error) {
+	for i, o := range f.owners[applicationID] {
+		if o.UserID == userID && o.OwnershipRole == role {
+			f.owners[applicationID][i].Status = "active"
+			f.owners[applicationID][i].AssignedBy = assignedBy
+			f.owners[applicationID][i].AssignedAt = time.Now()
+			return f.owners[applicationID][i], nil
+		}
+	}
+	o := domain.ApplicationOwner{
+		ID: "owner-" + userID + "-" + string(role), ApplicationID: applicationID, UserID: userID,
+		OwnershipRole: role, AssignedBy: assignedBy, AssignedAt: time.Now(), Status: "active",
+	}
+	f.owners[applicationID] = append(f.owners[applicationID], o)
+	return o, nil
+}
+
+// Revoke mirrors application_owner_repo.go's real WHERE clause: never
+// touches a 'primary' role row.
+func (f *fakeOwnerRepo) Revoke(ctx context.Context, applicationID, userID string) (int64, error) {
+	var revoked int64
+	for i, o := range f.owners[applicationID] {
+		if o.UserID == userID && o.Status == "active" && o.OwnershipRole != domain.OwnerRolePrimary {
+			f.owners[applicationID][i].Status = "revoked"
+			revoked++
+		}
+	}
+	return revoked, nil
+}
+
 type fakeDepartmentRepo struct{ known map[string]bool }
 
 func (f *fakeDepartmentRepo) Exists(ctx context.Context, id string) (bool, error) {
 	return f.known[id], nil
 }
 
-func newService() (*service.ApplicationService, *fakeApplicationRepo, *fakeOwnerRepo) {
+// fakeUserRepo mirrors user_repo.go's GetByEmail: returns ErrTargetUserUnknown
+// for any email it wasn't explicitly seeded with, matching the real
+// "never silently provision an account for someone else" behavior.
+type fakeUserRepo struct {
+	byEmail map[string]domain.User
+}
+
+func newFakeUserRepo() *fakeUserRepo {
+	return &fakeUserRepo{byEmail: map[string]domain.User{}}
+}
+
+func (f *fakeUserRepo) GetByEmail(ctx context.Context, email string) (domain.User, error) {
+	u, ok := f.byEmail[email]
+	if !ok {
+		return domain.User{}, domain.ErrTargetUserUnknown
+	}
+	return u, nil
+}
+
+func newService() (*service.ApplicationService, *fakeApplicationRepo, *fakeOwnerRepo, *fakeUserRepo) {
 	apps := newFakeApplicationRepo()
 	owners := newFakeOwnerRepo()
 	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
-	return service.NewApplicationService(apps, owners, depts, newFakeAuditRecorder()), apps, owners
+	users := newFakeUserRepo()
+	return service.NewApplicationService(apps, owners, depts, users, newFakeAuditRecorder()), apps, owners, users
 }
 
 func TestRegister_Success_AssignsPrimaryOwnerAndDraftStatus(t *testing.T) {
-	svc, _, owners := newService()
+	svc, _, owners, _ := newService()
 	caller := domain.User{ID: "user-1", Email: "alice@example.com"}
 
 	app, err := svc.Register(context.Background(), service.RegisterApplicationInput{
@@ -129,7 +182,7 @@ func TestRegister_Success_AssignsPrimaryOwnerAndDraftStatus(t *testing.T) {
 }
 
 func TestRegister_DuplicateName_Rejected(t *testing.T) {
-	svc, _, _ := newService()
+	svc, _, _, _ := newService()
 	caller := domain.User{ID: "user-1"}
 	in := service.RegisterApplicationInput{Name: "overtime", OwningDepartmentID: "dept-1", RegisteredBy: caller}
 
@@ -143,7 +196,7 @@ func TestRegister_DuplicateName_Rejected(t *testing.T) {
 }
 
 func TestRegister_InvalidName_Rejected(t *testing.T) {
-	svc, _, _ := newService()
+	svc, _, _, _ := newService()
 	caller := domain.User{ID: "user-1"}
 
 	// Genuinely invalid per FR-012 (DNS-label rules) or the reserved-name list.
@@ -161,7 +214,7 @@ func TestRegister_InvalidName_Rejected(t *testing.T) {
 }
 
 func TestRegister_NameIsNormalizedToLowercase(t *testing.T) {
-	svc, _, _ := newService()
+	svc, _, _, _ := newService()
 	caller := domain.User{ID: "user-1"}
 
 	app, err := svc.Register(context.Background(), service.RegisterApplicationInput{
@@ -176,7 +229,7 @@ func TestRegister_NameIsNormalizedToLowercase(t *testing.T) {
 }
 
 func TestRegister_ShortValidDNSLabelNames_Accepted(t *testing.T) {
-	svc, _, _ := newService()
+	svc, _, _, _ := newService()
 	caller := domain.User{ID: "user-1"}
 
 	for _, name := range []string{"a", "ov"} {
@@ -189,7 +242,7 @@ func TestRegister_ShortValidDNSLabelNames_Accepted(t *testing.T) {
 }
 
 func TestRegister_UnknownDepartment_Rejected(t *testing.T) {
-	svc, _, _ := newService()
+	svc, _, _, _ := newService()
 	caller := domain.User{ID: "user-1"}
 
 	_, err := svc.Register(context.Background(), service.RegisterApplicationInput{
@@ -201,7 +254,7 @@ func TestRegister_UnknownDepartment_Rejected(t *testing.T) {
 }
 
 func TestUpdateMetadata_NonOwner_Rejected(t *testing.T) {
-	svc, _, _ := newService()
+	svc, _, _, _ := newService()
 	owner := domain.User{ID: "user-1"}
 	stranger := domain.User{ID: "user-2"}
 
@@ -219,7 +272,7 @@ func TestUpdateMetadata_NonOwner_Rejected(t *testing.T) {
 }
 
 func TestUpdateMetadata_Owner_Succeeds_WithoutChangingLifecycleStatus(t *testing.T) {
-	svc, _, _ := newService()
+	svc, _, _, _ := newService()
 	owner := domain.User{ID: "user-1"}
 
 	app, err := svc.Register(context.Background(), service.RegisterApplicationInput{
@@ -246,7 +299,7 @@ func TestRegister_Success_RecordsAuditEntry(t *testing.T) {
 	owners := newFakeOwnerRepo()
 	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
 	audit := newFakeAuditRecorder()
-	svc := service.NewApplicationService(apps, owners, depts, audit)
+	svc := service.NewApplicationService(apps, owners, depts, newFakeUserRepo(), audit)
 	caller := domain.User{ID: "user-1"}
 
 	app, err := svc.Register(context.Background(), service.RegisterApplicationInput{
@@ -272,7 +325,7 @@ func TestRegister_AuditWriteFailure_SurfacesAsError(t *testing.T) {
 	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
 	audit := newFakeAuditRecorder()
 	audit.failNext = true
-	svc := service.NewApplicationService(apps, owners, depts, audit)
+	svc := service.NewApplicationService(apps, owners, depts, newFakeUserRepo(), audit)
 
 	// FR-103: a critical action must not report a bare, unaudited success —
 	// see audit_service.go's Record doc comment. The application row is
@@ -283,5 +336,213 @@ func TestRegister_AuditWriteFailure_SurfacesAsError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an error when the audit trail write fails")
+	}
+}
+
+// --- FR-017: Co-Owner/Contributor Management ---
+
+func registerApp(t *testing.T, svc *service.ApplicationService, ownerID string) domain.Application {
+	t.Helper()
+	app, err := svc.Register(context.Background(), service.RegisterApplicationInput{
+		Name: "overtime", OwningDepartmentID: "dept-1", RegisteredBy: domain.User{ID: ownerID},
+	})
+	if err != nil {
+		t.Fatalf("setup: register application: %v", err)
+	}
+	return app
+}
+
+func TestGrantCoOwner_ByPrimaryOwner_Succeeds(t *testing.T) {
+	svc, _, owners, users := newService()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Email: "bob@example.com", Status: "active"}
+
+	granted, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if granted.UserID != "bob-1" || granted.OwnershipRole != domain.OwnerRoleSecondary || granted.Status != "active" {
+		t.Fatalf("unexpected grant result: %+v", granted)
+	}
+
+	all, _ := owners.ListForApplication(context.Background(), app.ID)
+	if len(all) != 2 {
+		t.Fatalf("expected primary + new co-owner, got %+v", all)
+	}
+}
+
+func TestGrantCoOwner_ByNonPrimaryOwner_Rejected(t *testing.T) {
+	svc, _, _, users := newService()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	users.byEmail["carol@example.com"] = domain.User{ID: "carol-1", Status: "active"}
+
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary); err != nil {
+		t.Fatalf("setup: grant bob: %v", err)
+	}
+
+	// Bob is now an active co-owner, but not the primary owner - FR-017's
+	// precondition requires the primary specifically.
+	_, err := svc.GrantCoOwner(context.Background(), app.ID, "bob-1", "carol@example.com", domain.OwnerRoleTechnical)
+	if !errors.Is(err, domain.ErrNotPrimaryOwner) {
+		t.Fatalf("expected ErrNotPrimaryOwner, got %v", err)
+	}
+}
+
+func TestGrantCoOwner_UnknownTargetEmail_Rejected(t *testing.T) {
+	svc, _, _, _ := newService()
+	app := registerApp(t, svc, "primary-1")
+
+	_, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "nobody@example.com", domain.OwnerRoleSecondary)
+	if !errors.Is(err, domain.ErrTargetUserUnknown) {
+		t.Fatalf("expected ErrTargetUserUnknown, got %v", err)
+	}
+}
+
+func TestGrantCoOwner_InactiveTargetUser_Rejected(t *testing.T) {
+	svc, _, _, users := newService()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "offboarded"}
+
+	_, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary)
+	if !errors.Is(err, domain.ErrTargetUserInactive) {
+		t.Fatalf("expected ErrTargetUserInactive, got %v", err)
+	}
+}
+
+func TestGrantCoOwner_InvalidRole_Rejected(t *testing.T) {
+	svc, _, _, users := newService()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+
+	_, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRolePrimary)
+	if !errors.Is(err, domain.ErrInvalidOwnershipRole) {
+		t.Fatalf("expected ErrInvalidOwnershipRole for role=primary, got %v", err)
+	}
+}
+
+func TestGrantCoOwner_RegrantingAfterRevoke_IsIdempotentNotAnError(t *testing.T) {
+	svc, _, owners, users := newService()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary); err != nil {
+		t.Fatalf("first grant: %v", err)
+	}
+	if err := svc.RevokeCoOwner(context.Background(), app.ID, "primary-1", "bob-1"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary); err != nil {
+		t.Fatalf("re-grant after revoke should succeed, got: %v", err)
+	}
+
+	all, _ := owners.ListForApplication(context.Background(), app.ID)
+	var bobRows int
+	for _, o := range all {
+		if o.UserID == "bob-1" {
+			bobRows++
+			if o.Status != "active" {
+				t.Errorf("expected bob's re-granted row to be active, got %+v", o)
+			}
+		}
+	}
+	if bobRows != 1 {
+		t.Fatalf("expected exactly one row for bob (re-activated, not duplicated), got %d", bobRows)
+	}
+}
+
+func TestRevokeCoOwner_ByPrimaryOwner_Succeeds(t *testing.T) {
+	svc, _, owners, users := newService()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := svc.RevokeCoOwner(context.Background(), app.ID, "primary-1", "bob-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	all, _ := owners.ListForApplication(context.Background(), app.ID)
+	for _, o := range all {
+		if o.UserID == "bob-1" && o.Status != "revoked" {
+			t.Errorf("expected bob's grant to be revoked, got %+v", o)
+		}
+	}
+}
+
+func TestRevokeCoOwner_CannotRevokeThePrimaryOwner(t *testing.T) {
+	svc, _, owners, _ := newService()
+	app := registerApp(t, svc, "primary-1")
+
+	// No co-owner exists at all - attempting to revoke the primary owner's
+	// own id must be a no-op ErrCoOwnerGrantNotFound, not an accidental
+	// removal of the only owner (Revoke's WHERE clause excludes
+	// ownership_role='primary').
+	err := svc.RevokeCoOwner(context.Background(), app.ID, "primary-1", "primary-1")
+	if !errors.Is(err, domain.ErrCoOwnerGrantNotFound) {
+		t.Fatalf("expected ErrCoOwnerGrantNotFound, got %v", err)
+	}
+
+	all, _ := owners.ListForApplication(context.Background(), app.ID)
+	if len(all) != 1 || all[0].Status != "active" {
+		t.Fatalf("expected the primary owner to remain untouched, got %+v", all)
+	}
+}
+
+func TestRevokeCoOwner_ByNonPrimaryOwner_Rejected(t *testing.T) {
+	svc, _, _, users := newService()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	users.byEmail["carol@example.com"] = domain.User{ID: "carol-1", Status: "active"}
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary); err != nil {
+		t.Fatalf("setup grant bob: %v", err)
+	}
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "carol@example.com", domain.OwnerRoleTechnical); err != nil {
+		t.Fatalf("setup grant carol: %v", err)
+	}
+
+	err := svc.RevokeCoOwner(context.Background(), app.ID, "bob-1", "carol-1")
+	if !errors.Is(err, domain.ErrNotPrimaryOwner) {
+		t.Fatalf("expected ErrNotPrimaryOwner, got %v", err)
+	}
+}
+
+func TestRevokeCoOwner_UnknownTarget_ReturnsCoOwnerGrantNotFound(t *testing.T) {
+	svc, _, _, _ := newService()
+	app := registerApp(t, svc, "primary-1")
+
+	err := svc.RevokeCoOwner(context.Background(), app.ID, "primary-1", "no-such-user")
+	if !errors.Is(err, domain.ErrCoOwnerGrantNotFound) {
+		t.Fatalf("expected ErrCoOwnerGrantNotFound, got %v", err)
+	}
+}
+
+func TestGrantCoOwner_RecordsAuditEntry(t *testing.T) {
+	apps := newFakeApplicationRepo()
+	owners := newFakeOwnerRepo()
+	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
+	users := newFakeUserRepo()
+	audit := newFakeAuditRecorder()
+	svc := service.NewApplicationService(apps, owners, depts, users, audit)
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries := audit.all()
+	var grantEntry *domain.AuditEntry
+	for i := range entries {
+		if entries[i].Action == domain.AuditActionGrantOwner {
+			grantEntry = &entries[i]
+		}
+	}
+	if grantEntry == nil {
+		t.Fatalf("expected a grant_owner audit entry among %+v", entries)
+	}
+	if grantEntry.Outcome != domain.AuditSuccess || grantEntry.ResourceID != app.ID || grantEntry.ActorUserID != "primary-1" {
+		t.Fatalf("unexpected grant audit entry: %+v", *grantEntry)
 	}
 }

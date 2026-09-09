@@ -44,6 +44,8 @@ const (
 	AuditActionArchive             AuditAction = "application.archive"
 	AuditActionDelete              AuditAction = "application.delete"
 	AuditActionExport              AuditAction = "audit_log.export"
+	AuditActionGrantOwner          AuditAction = "application.grant_owner"
+	AuditActionRevokeOwner         AuditAction = "application.revoke_owner"
 )
 
 // AuditEntry is one append-only row. PrevHash/EntryHash implement FR-106:

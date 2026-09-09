@@ -6,6 +6,8 @@
 //	GET    /applications/{id}
 //	PATCH  /applications/{id}
 //	GET    /applications/{id}/owners
+//	POST   /applications/{id}/owners        (FR-017: grant co-owner/contributor)
+//	DELETE /applications/{id}/owners/{userId} (FR-017: revoke)
 package httpapi
 
 import (
@@ -182,6 +184,59 @@ func (h *ApplicationHandler) ListOwners(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"owners": out})
 }
 
+type grantOwnerRequest struct {
+	Email         string `json:"email"`
+	OwnershipRole string `json:"ownership_role"` // "secondary" (co-owner) or "technical" (contributor)
+}
+
+// GrantOwner handles POST /applications/{id}/owners — FR-017 main flow.
+func (h *ApplicationHandler) GrantOwner(w http.ResponseWriter, r *http.Request) {
+	caller, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing authenticated caller")
+		return
+	}
+	id := chi.URLParam(r, "id")
+
+	var req grantOwnerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be valid JSON")
+		return
+	}
+	if req.Email == "" {
+		writeError(w, http.StatusBadRequest, "missing_fields", "email is required")
+		return
+	}
+
+	owner, err := h.svc.GrantCoOwner(r.Context(), id, caller.ID, req.Email, domain.OwnershipRole(req.OwnershipRole))
+	if err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, ownerResponse{
+		UserID: owner.UserID, OwnershipRole: string(owner.OwnershipRole),
+		Status: owner.Status, AssignedAt: owner.AssignedAt.Format("2006-01-02T15:04:05Z07:00"),
+	})
+}
+
+// RevokeOwner handles DELETE /applications/{id}/owners/{userId} — FR-017
+// alternative flow.
+func (h *ApplicationHandler) RevokeOwner(w http.ResponseWriter, r *http.Request) {
+	caller, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing authenticated caller")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	targetUserID := chi.URLParam(r, "userId")
+
+	if err := h.svc.RevokeCoOwner(r.Context(), id, caller.ID, targetUserID); err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func writeApplicationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
@@ -200,6 +255,16 @@ func writeApplicationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "no_deployment_yaml", err.Error())
 	case errors.Is(err, domain.ErrInvalidYAML):
 		writeError(w, http.StatusBadRequest, "invalid_yaml", err.Error())
+	case errors.Is(err, domain.ErrNotPrimaryOwner):
+		writeError(w, http.StatusForbidden, "not_primary_owner", err.Error())
+	case errors.Is(err, domain.ErrTargetUserUnknown):
+		writeError(w, http.StatusNotFound, "target_user_unknown", err.Error())
+	case errors.Is(err, domain.ErrTargetUserInactive):
+		writeError(w, http.StatusConflict, "target_user_inactive", err.Error())
+	case errors.Is(err, domain.ErrInvalidOwnershipRole):
+		writeError(w, http.StatusBadRequest, "invalid_ownership_role", err.Error())
+	case errors.Is(err, domain.ErrCoOwnerGrantNotFound):
+		writeError(w, http.StatusNotFound, "co_owner_grant_not_found", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "unexpected error")
 	}
