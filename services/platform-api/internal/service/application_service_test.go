@@ -125,6 +125,40 @@ func (f *fakeOwnerRepo) Revoke(ctx context.Context, applicationID, userID string
 	return revoked, nil
 }
 
+// ReplacePrimaryOwner mirrors application_owner_repo.go's real behavior:
+// revokes the prior primary row, upserts the new one, and revokes any
+// other active non-primary role the new primary previously held.
+func (f *fakeOwnerRepo) ReplacePrimaryOwner(ctx context.Context, applicationID, oldPrimaryUserID, newPrimaryUserID, assignedBy string) (domain.ApplicationOwner, error) {
+	for i, o := range f.owners[applicationID] {
+		if o.UserID == oldPrimaryUserID && o.OwnershipRole == domain.OwnerRolePrimary && o.Status == "active" {
+			f.owners[applicationID][i].Status = "revoked"
+		}
+	}
+	var result domain.ApplicationOwner
+	found := false
+	for i, o := range f.owners[applicationID] {
+		if o.UserID == newPrimaryUserID && o.OwnershipRole == domain.OwnerRolePrimary {
+			f.owners[applicationID][i].Status = "active"
+			f.owners[applicationID][i].AssignedBy = assignedBy
+			f.owners[applicationID][i].AssignedAt = time.Now()
+			result, found = f.owners[applicationID][i], true
+		}
+	}
+	if !found {
+		result = domain.ApplicationOwner{
+			ID: "owner-" + newPrimaryUserID + "-primary", ApplicationID: applicationID, UserID: newPrimaryUserID,
+			OwnershipRole: domain.OwnerRolePrimary, AssignedBy: assignedBy, AssignedAt: time.Now(), Status: "active",
+		}
+		f.owners[applicationID] = append(f.owners[applicationID], result)
+	}
+	for i, o := range f.owners[applicationID] {
+		if o.UserID == newPrimaryUserID && o.OwnershipRole != domain.OwnerRolePrimary && o.Status == "active" {
+			f.owners[applicationID][i].Status = "revoked"
+		}
+	}
+	return result, nil
+}
+
 type fakeDepartmentRepo struct{ known map[string]bool }
 
 func (f *fakeDepartmentRepo) Exists(ctx context.Context, id string) (bool, error) {
@@ -150,12 +184,79 @@ func (f *fakeUserRepo) GetByEmail(ctx context.Context, email string) (domain.Use
 	return u, nil
 }
 
+// fakeTransferRepo mirrors ownership_transfer_repo.go's real behavior,
+// including the one-pending-transfer-per-application constraint and the
+// "only ever resolve from pending" guard on MarkResolved.
+type fakeTransferRepo struct {
+	byID  map[string]domain.OwnershipTransfer
+	next  int
+	clock int
+}
+
+func newFakeTransferRepo() *fakeTransferRepo {
+	return &fakeTransferRepo{byID: map[string]domain.OwnershipTransfer{}}
+}
+
+func (f *fakeTransferRepo) Create(ctx context.Context, applicationID, fromUserID, toUserID string, expiresAt time.Time) (domain.OwnershipTransfer, error) {
+	for _, t := range f.byID {
+		if t.ApplicationID == applicationID && t.Status == domain.TransferPending {
+			return domain.OwnershipTransfer{}, domain.ErrTransferAlreadyPending
+		}
+	}
+	f.next++
+	f.clock++
+	t := domain.OwnershipTransfer{
+		ID: "transfer-" + string(rune('0'+f.next)), ApplicationID: applicationID,
+		FromUserID: fromUserID, ToUserID: toUserID, Status: domain.TransferPending,
+		InitiatedAt: time.Now(), ExpiresAt: expiresAt,
+	}
+	f.byID[t.ID] = t
+	return t, nil
+}
+
+func (f *fakeTransferRepo) GetByID(ctx context.Context, id string) (domain.OwnershipTransfer, error) {
+	t, ok := f.byID[id]
+	if !ok {
+		return domain.OwnershipTransfer{}, domain.ErrTransferNotFound
+	}
+	return t, nil
+}
+
+func (f *fakeTransferRepo) GetPendingForApplication(ctx context.Context, applicationID string) (domain.OwnershipTransfer, error) {
+	for _, t := range f.byID {
+		if t.ApplicationID == applicationID && t.Status == domain.TransferPending {
+			return t, nil
+		}
+	}
+	return domain.OwnershipTransfer{}, domain.ErrTransferNotFound
+}
+
+func (f *fakeTransferRepo) MarkResolved(ctx context.Context, id string, status domain.TransferStatus) (domain.OwnershipTransfer, error) {
+	t, ok := f.byID[id]
+	if !ok || t.Status != domain.TransferPending {
+		return domain.OwnershipTransfer{}, domain.ErrTransferNotPending
+	}
+	t.Status = status
+	now := time.Now()
+	t.ResolvedAt = &now
+	f.byID[id] = t
+	return t, nil
+}
+
 func newService() (*service.ApplicationService, *fakeApplicationRepo, *fakeOwnerRepo, *fakeUserRepo) {
+	svc, apps, owners, users, _, _ := newServiceFull()
+	return svc, apps, owners, users
+}
+
+func newServiceFull() (*service.ApplicationService, *fakeApplicationRepo, *fakeOwnerRepo, *fakeUserRepo, *fakeTransferRepo, *fakeNotificationRecorder) {
 	apps := newFakeApplicationRepo()
 	owners := newFakeOwnerRepo()
 	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
 	users := newFakeUserRepo()
-	return service.NewApplicationService(apps, owners, depts, users, newFakeAuditRecorder()), apps, owners, users
+	transfers := newFakeTransferRepo()
+	notifications := newFakeNotificationRecorder()
+	svc := service.NewApplicationService(apps, owners, depts, users, transfers, notifications, 7*24*time.Hour, newFakeAuditRecorder())
+	return svc, apps, owners, users, transfers, notifications
 }
 
 func TestRegister_Success_AssignsPrimaryOwnerAndDraftStatus(t *testing.T) {
@@ -299,7 +400,7 @@ func TestRegister_Success_RecordsAuditEntry(t *testing.T) {
 	owners := newFakeOwnerRepo()
 	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
 	audit := newFakeAuditRecorder()
-	svc := service.NewApplicationService(apps, owners, depts, newFakeUserRepo(), audit)
+	svc := service.NewApplicationService(apps, owners, depts, newFakeUserRepo(), newFakeTransferRepo(), newFakeNotificationRecorder(), 7*24*time.Hour, audit)
 	caller := domain.User{ID: "user-1"}
 
 	app, err := svc.Register(context.Background(), service.RegisterApplicationInput{
@@ -325,7 +426,7 @@ func TestRegister_AuditWriteFailure_SurfacesAsError(t *testing.T) {
 	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
 	audit := newFakeAuditRecorder()
 	audit.failNext = true
-	svc := service.NewApplicationService(apps, owners, depts, newFakeUserRepo(), audit)
+	svc := service.NewApplicationService(apps, owners, depts, newFakeUserRepo(), newFakeTransferRepo(), newFakeNotificationRecorder(), 7*24*time.Hour, audit)
 
 	// FR-103: a critical action must not report a bare, unaudited success —
 	// see audit_service.go's Record doc comment. The application row is
@@ -524,7 +625,7 @@ func TestGrantCoOwner_RecordsAuditEntry(t *testing.T) {
 	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
 	users := newFakeUserRepo()
 	audit := newFakeAuditRecorder()
-	svc := service.NewApplicationService(apps, owners, depts, users, audit)
+	svc := service.NewApplicationService(apps, owners, depts, users, newFakeTransferRepo(), newFakeNotificationRecorder(), 7*24*time.Hour, audit)
 	app := registerApp(t, svc, "primary-1")
 	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
 
@@ -544,5 +645,245 @@ func TestGrantCoOwner_RecordsAuditEntry(t *testing.T) {
 	}
 	if grantEntry.Outcome != domain.AuditSuccess || grantEntry.ResourceID != app.ID || grantEntry.ActorUserID != "primary-1" {
 		t.Fatalf("unexpected grant audit entry: %+v", *grantEntry)
+	}
+}
+
+// --- FR-016: Transfer Application Ownership ---
+
+func TestInitiateTransfer_ByPrimaryOwner_Succeeds(t *testing.T) {
+	svc, _, _, users, transfers, notifications := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+
+	transfer, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "bob@example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if transfer.Status != domain.TransferPending || transfer.FromUserID != "primary-1" || transfer.ToUserID != "bob-1" {
+		t.Fatalf("unexpected transfer: %+v", transfer)
+	}
+
+	stored, err := transfers.GetPendingForApplication(context.Background(), app.ID)
+	if err != nil || stored.ID != transfer.ID {
+		t.Fatalf("expected the transfer to be queryable as pending, got %+v (err=%v)", stored, err)
+	}
+
+	userCalls := notifications.allUserCalls()
+	if len(userCalls) != 1 || userCalls[0].RecipientUserID != "bob-1" || userCalls[0].Category != domain.NotificationOwnershipTransfer {
+		t.Fatalf("expected the nominee to be notified, got %+v", userCalls)
+	}
+}
+
+func TestInitiateTransfer_ByNonPrimaryOwner_Rejected(t *testing.T) {
+	svc, _, _, users, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	users.byEmail["carol@example.com"] = domain.User{ID: "carol-1", Status: "active"}
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err := svc.InitiateTransfer(context.Background(), app.ID, "bob-1", "carol@example.com")
+	if !errors.Is(err, domain.ErrNotPrimaryOwner) {
+		t.Fatalf("expected ErrNotPrimaryOwner, got %v", err)
+	}
+}
+
+func TestInitiateTransfer_UnknownTargetEmail_Rejected(t *testing.T) {
+	svc, _, _, _, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+
+	_, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "nobody@example.com")
+	if !errors.Is(err, domain.ErrTargetUserUnknown) {
+		t.Fatalf("expected ErrTargetUserUnknown, got %v", err)
+	}
+}
+
+func TestInitiateTransfer_InactiveTargetUser_Rejected(t *testing.T) {
+	svc, _, _, users, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "offboarded"}
+
+	_, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "bob@example.com")
+	if !errors.Is(err, domain.ErrTargetUserInactive) {
+		t.Fatalf("expected ErrTargetUserInactive, got %v", err)
+	}
+}
+
+func TestInitiateTransfer_AlreadyPending_Rejected(t *testing.T) {
+	svc, _, _, users, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	users.byEmail["carol@example.com"] = domain.User{ID: "carol-1", Status: "active"}
+	if _, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "bob@example.com"); err != nil {
+		t.Fatalf("first nomination: %v", err)
+	}
+
+	_, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "carol@example.com")
+	if !errors.Is(err, domain.ErrTransferAlreadyPending) {
+		t.Fatalf("expected ErrTransferAlreadyPending, got %v", err)
+	}
+}
+
+func TestAcceptTransfer_ByNominee_Succeeds(t *testing.T) {
+	svc, _, owners, users, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	transfer, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "bob@example.com")
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	newOwner, err := svc.AcceptTransfer(context.Background(), transfer.ID, "bob-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if newOwner.UserID != "bob-1" || newOwner.OwnershipRole != domain.OwnerRolePrimary || newOwner.Status != "active" {
+		t.Fatalf("unexpected new owner: %+v", newOwner)
+	}
+
+	all, _ := owners.ListForApplication(context.Background(), app.ID)
+	var oldPrimaryStatus string
+	for _, o := range all {
+		if o.UserID == "primary-1" && o.OwnershipRole == domain.OwnerRolePrimary {
+			oldPrimaryStatus = o.Status
+		}
+	}
+	if oldPrimaryStatus != "revoked" {
+		t.Fatalf("expected the prior primary owner's row to be revoked (retained, not deleted), got status %q", oldPrimaryStatus)
+	}
+
+	// Confirms bob now actually passes the same primary-owner gate every
+	// owner-only action uses, not just that AcceptTransfer's return value
+	// looked right — initiating a second transfer is itself primary-owner-gated.
+	users.byEmail["carol@example.com"] = domain.User{ID: "carol-1", Status: "active"}
+	if _, err := svc.InitiateTransfer(context.Background(), app.ID, "bob-1", "carol@example.com"); err != nil {
+		t.Fatalf("expected bob to now pass the primary-owner check by successfully initiating a transfer himself: %v", err)
+	}
+}
+
+func TestAcceptTransfer_ByNonNominee_Rejected(t *testing.T) {
+	svc, _, _, users, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	users.byEmail["carol@example.com"] = domain.User{ID: "carol-1", Status: "active"}
+	transfer, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "bob@example.com")
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err = svc.AcceptTransfer(context.Background(), transfer.ID, "carol-1")
+	if !errors.Is(err, domain.ErrNotTransferNominee) {
+		t.Fatalf("expected ErrNotTransferNominee, got %v", err)
+	}
+}
+
+func TestAcceptTransfer_AlreadyAccepted_Rejected(t *testing.T) {
+	svc, _, _, users, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	transfer, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "bob@example.com")
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if _, err := svc.AcceptTransfer(context.Background(), transfer.ID, "bob-1"); err != nil {
+		t.Fatalf("first accept: %v", err)
+	}
+
+	_, err = svc.AcceptTransfer(context.Background(), transfer.ID, "bob-1")
+	if !errors.Is(err, domain.ErrTransferNotPending) {
+		t.Fatalf("expected ErrTransferNotPending on a second accept attempt, got %v", err)
+	}
+}
+
+func TestAcceptTransfer_UnknownID_ReturnsNotFound(t *testing.T) {
+	svc, _, _, _, _, _ := newServiceFull()
+
+	_, err := svc.AcceptTransfer(context.Background(), "no-such-transfer", "bob-1")
+	if !errors.Is(err, domain.ErrTransferNotFound) {
+		t.Fatalf("expected ErrTransferNotFound, got %v", err)
+	}
+}
+
+func TestAcceptTransfer_Expired_RejectedAndMarkedExpired(t *testing.T) {
+	apps := newFakeApplicationRepo()
+	owners := newFakeOwnerRepo()
+	depts := &fakeDepartmentRepo{known: map[string]bool{"dept-1": true}}
+	users := newFakeUserRepo()
+	transfers := newFakeTransferRepo()
+	notifications := newFakeNotificationRecorder()
+	// A negative window means expires_at is already in the past the
+	// moment InitiateTransfer creates the row — exercises the lazy expiry
+	// check in AcceptTransfer without needing to mock the clock.
+	svc := service.NewApplicationService(apps, owners, depts, users, transfers, notifications, -1*time.Hour, newFakeAuditRecorder())
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	transfer, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "bob@example.com")
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err = svc.AcceptTransfer(context.Background(), transfer.ID, "bob-1")
+	if !errors.Is(err, domain.ErrTransferExpired) {
+		t.Fatalf("expected ErrTransferExpired, got %v", err)
+	}
+
+	resolved, getErr := transfers.GetByID(context.Background(), transfer.ID)
+	if getErr != nil || resolved.Status != domain.TransferExpired {
+		t.Fatalf("expected the transfer to be marked expired, got %+v (err=%v)", resolved, getErr)
+	}
+
+	all, _ := owners.ListForApplication(context.Background(), app.ID)
+	for _, o := range all {
+		if o.UserID == "primary-1" && o.Status != "active" {
+			t.Errorf("expected the original primary owner to remain untouched after an expired transfer, got %+v", o)
+		}
+	}
+}
+
+func TestAcceptTransfer_PromotedFromCoOwner_OldRoleCleanedUp(t *testing.T) {
+	svc, _, owners, users, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+	users.byEmail["bob@example.com"] = domain.User{ID: "bob-1", Status: "active"}
+	if _, err := svc.GrantCoOwner(context.Background(), app.ID, "primary-1", "bob@example.com", domain.OwnerRoleSecondary); err != nil {
+		t.Fatalf("setup grant: %v", err)
+	}
+	transfer, err := svc.InitiateTransfer(context.Background(), app.ID, "primary-1", "bob@example.com")
+	if err != nil {
+		t.Fatalf("setup transfer: %v", err)
+	}
+
+	if _, err := svc.AcceptTransfer(context.Background(), transfer.ID, "bob-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	all, _ := owners.ListForApplication(context.Background(), app.ID)
+	var bobPrimaryActive, bobSecondaryActive bool
+	for _, o := range all {
+		if o.UserID != "bob-1" {
+			continue
+		}
+		if o.OwnershipRole == domain.OwnerRolePrimary && o.Status == "active" {
+			bobPrimaryActive = true
+		}
+		if o.OwnershipRole == domain.OwnerRoleSecondary && o.Status == "active" {
+			bobSecondaryActive = true
+		}
+	}
+	if !bobPrimaryActive {
+		t.Error("expected bob to hold an active primary row after accepting")
+	}
+	if bobSecondaryActive {
+		t.Error("expected bob's now-redundant co-owner row to be revoked, not left active alongside primary")
+	}
+}
+
+func TestGetPendingTransfer_NoneReturnsNotFound(t *testing.T) {
+	svc, _, _, _, _, _ := newServiceFull()
+	app := registerApp(t, svc, "primary-1")
+
+	_, err := svc.GetPendingTransfer(context.Background(), app.ID)
+	if !errors.Is(err, domain.ErrTransferNotFound) {
+		t.Fatalf("expected ErrTransferNotFound when nothing is pending, got %v", err)
 	}
 }

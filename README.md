@@ -35,6 +35,14 @@ README for exactly what was tested and how):
   own primary owner unless they happened to be the one who performed the
   action — invisible before this PR because there was never a second
   owner to expose it.
+- Ownership Transfer (Module E, `FR-016`) — the primary owner nominates a
+  new one, who is notified and must explicitly accept before anything
+  changes; the prior owner's record is revoked, not deleted, for audit
+  history. Verified with a real (not mocked) expiry: set the acceptance
+  window to 2 real seconds, waited 3, confirmed acceptance was correctly
+  rejected — which is also how a real gap in `docker-compose.yml` (the new
+  config value wasn't being forwarded into the container at all) was
+  found and fixed.
 - An MCP server exposing that lifecycle to an AI agent (Claude Code),
   matching the platform's own `docs/07_MCP_Requirements.md` tool catalog —
   plus `query_audit_log`/`list_notifications`/`mark_notification_read`,

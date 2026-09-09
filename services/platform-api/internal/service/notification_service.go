@@ -27,6 +27,15 @@ type NotificationRecorder interface {
 	NotifyOwners(ctx context.Context, applicationID string, category domain.NotificationCategory, title, detail, resourceType, resourceID string)
 }
 
+// SingleUserNotifier is the narrow seam ApplicationService's ownership
+// transfer flow depends on (FR-016 main flow step 2): unlike every other
+// notification in this platform, the recipient is one specific nominated
+// person, not "every active owner" — the nominee may not be an owner at
+// all yet.
+type SingleUserNotifier interface {
+	NotifyUser(ctx context.Context, recipientUserID string, category domain.NotificationCategory, title, detail, resourceType, resourceID string)
+}
+
 type NotificationService struct {
 	repo   NotificationRepository
 	owners ApplicationOwnerRepository
@@ -63,6 +72,18 @@ func (s *NotificationService) NotifyOwners(ctx context.Context, applicationID st
 		}); err != nil {
 			log.Printf("notification: failed to notify %s about application %s: %v", o.UserID, applicationID, err)
 		}
+	}
+}
+
+// NotifyUser implements SingleUserNotifier — same best-effort, log-only
+// failure handling as NotifyOwners (see its doc comment), just addressed
+// to one specific recipient instead of derived from an owner list.
+func (s *NotificationService) NotifyUser(ctx context.Context, recipientUserID string, category domain.NotificationCategory, title, detail, resourceType, resourceID string) {
+	if _, err := s.repo.Create(ctx, domain.Notification{
+		RecipientUserID: recipientUserID, Category: category, Title: title, Detail: detail,
+		ResourceType: resourceType, ResourceID: resourceID,
+	}); err != nil {
+		log.Printf("notification: failed to notify %s: %v", recipientUserID, err)
 	}
 }
 
