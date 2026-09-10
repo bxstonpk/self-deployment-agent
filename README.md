@@ -8,7 +8,7 @@ case and requirements: [`docs/01_BRD.md`](docs/01_BRD.md).
 This README orients a new contributor/maintainer picking up the project:
 what exists, what doesn't, how the pieces fit together, and where to start.
 
-## Status: early-stage, ~30–35% of the full documented scope
+## Status: early-stage, ~35% of the full documented scope
 
 **What's real and tested** (every claim below has been verified against a
 live, running system — Docker builds, real HTTP calls, a real headless
@@ -80,14 +80,34 @@ README for exactly what was tested and how):
   deploys and a real rollback, then confirmed the report's
   succeeded/failed/rolled-back totals reconcile exactly with the raw
   audit log queried independently.
+- Database Management (Module N, `FR-061`/`062`/`063`/`065`) — declaring
+  `database: type: postgres` in `deployment.yaml` provisions a real,
+  dedicated Postgres container on the application's own private network,
+  with a platform-generated password injected into the application's
+  runtime — never into `deployment.yaml`, source control or build logs,
+  though see the plaintext-storage gap below before relying on that;
+  deleting the application tears it down. Verified by connecting rather
+  than by reading configuration (see
+  `services/platform-api/scripts/verify_module_n.py`): a client on the
+  private network reads and writes real data, the identical connection
+  from off that network fails by name *and* by raw IP, and the deployed
+  application itself completes a Postgres handshake using the injected
+  environment — which survives resume, restart and a real scale-to-zero
+  cold start, each of which starts a brand-new container. That
+  verification is what caught the isolation being wrong in the first
+  place: the database container was on Docker's default bridge as well as
+  its private network, reachable by every other application, and it
+  passed every unit test while it was.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this
 application," full stop — no IT/Platform/Security Administrator roles),
-Database/Secret/Domain/Network management, Logging, Monitoring, Resource
-quotas. See "Known gaps" below and each
+Secret/Domain/Network management, Logging, Monitoring, Resource quotas.
+See "Known gaps" below and each
 component's own README for the honest, itemized list — nothing here claims
-these exist when they don't.
+these exist when they don't. Note in particular that Module N above ships
+with a real security limitation of its own, listed there — a module being
+implemented is not the same as it being safe to rely on.
 
 ## Repository map
 
@@ -135,6 +155,12 @@ Requires Docker, Go 1.25+, Python 3.11+, and Node 20+.
    ```
    See [`services/platform-api/README.md`](services/platform-api/README.md).
 
+   Deployed applications run as containers on the same Docker daemon,
+   outside this compose project — `platform-run-*` for application
+   containers and, for an application that declares a database,
+   `platform-db-*` plus a `platform-net-*` network. `docker compose down`
+   does not remove those; deleting the application through the API does.
+
 2. **MCP server** (optional — only needed to test the AI-agent path):
    ```
    cd services/mcp-server
@@ -171,16 +197,23 @@ These block real production use, not just missing polish:
 - **`deploy_application`/the admin portal's Deploy runs synchronously**,
   not as a real queued/async job — fine at today's scale, a real gap
   before this could serve many concurrent deployments.
-- **No Secret, Domain, or Network management** (Modules O/P/Q). Module N
-  (Database Management) *is* implemented — `database.type: postgres` in
-  `deployment.yaml` provisions a real, network-isolated Postgres container
-  — but with one gap that matters: **the generated database password is
-  stored in plaintext in the platform's own database**, because Module O
-  is the secret store `FR-063` names and it doesn't exist. Anyone with
-  read access to the platform database can read every application's
-  database password. See `services/platform-api/README.md`'s "How
-  Database Management works" for the full scope, including that `FR-064`
-  (backups) is not implemented.
+- **Provisioned database passwords are stored in plaintext** in the
+  platform's own database. Module N (Database Management) is implemented,
+  but `FR-063` names Module O (Secret Management) as where those
+  credentials are supposed to live, and Module O doesn't exist. The half
+  of `FR-063` that protects the employee/agent is real — the password
+  never appears in `deployment.yaml`, source control or build logs — but
+  anyone with read access to the platform database can read every
+  application's database password. **This is the single biggest reason
+  Module O should come before Module N is relied on for anything real.**
+- **No Secret, Domain, or Network management** (Modules O/P/Q). Beyond the
+  credential-storage consequence above, Module Q's absence also means
+  `FR-062`'s *detection* half is missing: a cross-application connection
+  attempt is prevented, but not detected or logged as a policy violation.
+  `FR-064` (database backups) is not implemented either — it needs a
+  scheduler this platform doesn't have and a retention policy the
+  requirement itself marks TBD. See `services/platform-api/README.md`'s
+  "How Database Management works" for the full scope.
 - **No Logging or Monitoring** (Modules S/T) — the MCP server's
   log/metric tools return an honest "not implemented" error rather than
   fabricating data. (Modules W, X and AB — Audit Log, Notification and
