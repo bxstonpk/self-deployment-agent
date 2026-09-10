@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -92,6 +93,23 @@ func (f *fakeOwnerRepo) ListForApplication(ctx context.Context, applicationID st
 	return f.owners[applicationID], nil
 }
 
+// ListApplicationIDsForUser mirrors application_owner_repo.go's reverse
+// lookup: every application this user holds any ACTIVE role on.
+func (f *fakeOwnerRepo) ListApplicationIDsForUser(ctx context.Context, userID string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for appID, owners := range f.owners {
+		for _, o := range owners {
+			if o.UserID == userID && o.Status == "active" && !seen[appID] {
+				seen[appID] = true
+				out = append(out, appID)
+			}
+		}
+	}
+	sort.Strings(out) // map iteration order isn't stable; tests assert on content
+	return out, nil
+}
+
 // AddOwner mirrors application_owner_repo.go's real upsert semantics: a
 // second grant of the same (application, user, role) re-activates rather
 // than erroring or duplicating.
@@ -159,10 +177,23 @@ func (f *fakeOwnerRepo) ReplacePrimaryOwner(ctx context.Context, applicationID, 
 	return result, nil
 }
 
-type fakeDepartmentRepo struct{ known map[string]bool }
+type fakeDepartmentRepo struct {
+	known map[string]bool
+	// names backs the DepartmentLister side (Module AB's reports); left
+	// empty by every test that only needs Exists.
+	names map[string]string
+}
 
 func (f *fakeDepartmentRepo) Exists(ctx context.Context, id string) (bool, error) {
 	return f.known[id], nil
+}
+
+func (f *fakeDepartmentRepo) List(ctx context.Context) ([]domain.Department, error) {
+	var out []domain.Department
+	for id, name := range f.names {
+		out = append(out, domain.Department{ID: id, Name: name, Status: "active"})
+	}
+	return out, nil
 }
 
 // fakeUserRepo mirrors user_repo.go's GetByEmail: returns ErrTargetUserUnknown

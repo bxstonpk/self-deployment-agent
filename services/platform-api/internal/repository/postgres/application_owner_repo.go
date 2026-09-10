@@ -130,6 +130,35 @@ func (r *ApplicationOwnerRepo) ReplacePrimaryOwner(ctx context.Context, applicat
 	return o, nil
 }
 
+// ListApplicationIDsForUser is the reverse of ListForApplication: every
+// application this user currently holds any active ownership role on
+// (primary, secondary or technical alike — Module AB's reports scope to
+// "applications you own" without distinguishing which kind, the same way
+// every requireOwner check already does). Added for Module AB (Reporting);
+// nothing needed this direction before, which is why the table's
+// idx_application_owners_user index existed unused until now.
+func (r *ApplicationOwnerRepo) ListApplicationIDsForUser(ctx context.Context, userID string) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT application_id
+		FROM application_owners
+		WHERE user_id = $1 AND status = 'active'
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list applications for user: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan application id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (r *ApplicationOwnerRepo) ListForApplication(ctx context.Context, applicationID string) ([]domain.ApplicationOwner, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, application_id, user_id, ownership_role, COALESCE(assigned_by::text, ''), assigned_at, status

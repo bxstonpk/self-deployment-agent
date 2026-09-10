@@ -1,4 +1,4 @@
-# Platform API — Draft through Archive/Delete (State 1–8) + Audit Log + Notifications
+# Platform API — Draft through Archive/Delete (State 1–8) + Audit Log, Notifications, Ownership, Reporting
 
 Go implementation of the Business API, built one Application Lifecycle state
 at a time. Currently covers **Draft**, **Validated**, **Build**,
@@ -7,9 +7,12 @@ application), **Suspend/Resume/Restart**, **Rollback**, **Archive/Delete**
 — every Application Lifecycle state reachable without Modules N/O/P
 (Database/Secret/Domain Management), which don't exist yet — plus
 **Module W (Audit Log)**, an append-only, hash-chained record of every
-state-changing action across all of the above, and **Module X
+state-changing action across all of the above; **Module X
 (Notification)**, an in-app notification inbox for deployment status and
-production-approval events.
+production-approval events; **Module E**'s ownership management
+(co-owner/contributor grants and primary-ownership transfer); and
+**Module AB (Reporting)**, two read-only reports derived from data the
+platform already holds.
 
 Implements from
 [`../../docs/02_Functional_Requirements.md`](../../docs/02_Functional_Requirements.md):
@@ -27,9 +30,9 @@ stable proxy URL, real event logging); `FR-045`, `FR-047`, `FR-048`,
 Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
 `FR-101` (Module V — Rollback — see below); `FR-103`, `FR-104`,
 `FR-105`, `FR-106` (Module W — Audit Log — see below); `FR-107`,
-`FR-108` (Module X — Notification — see below); and `FR-016`, `FR-017`
+`FR-108` (Module X — Notification — see below); `FR-016`, `FR-017`
 (Module E — Co-Owner/Contributor Management and Transfer Ownership — see
-below). See
+below); and `FR-127`, `FR-128` (Module AB — Reporting — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -71,6 +74,8 @@ for how it fits the Control Plane.
 | `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
 | `GET /notifications` | FR-107, FR-108 | The caller's own notifications, newest first; `?unread_only=true` filters to unread |
 | `POST /notifications/{id}/read` | — | Marks one of the caller's own notifications read; a different user's notification id 404s, not 403 — see **How Notifications work** |
+| `GET /reports/application-inventory` | FR-127 | Current-state inventory of every application the caller owns — see **How Reporting works** |
+| `GET /reports/deployment-activity` | FR-128 | Deployment outcomes over a period (`?from=&to=` RFC3339, default last 30 days), broken down by environment and department |
 
 ### How Build works
 
@@ -818,6 +823,93 @@ applications most of the time, not an exceptional one) — fixed to always
 return `200` with `{"transfer": ...}` or `{"transfer": null}`. See the
 handler's own doc comment for the full reasoning, including why this is
 different from e.g. `GetDeployment`, which correctly still 404s.
+
+## How Reporting works (Module AB, FR-127/FR-128)
+
+Two read-only reports derived entirely from data this platform already
+holds — no new tables, no new tracking, nothing invented:
+
+- **`GET /reports/application-inventory`** (FR-127) — current state of
+  every application the caller owns: department (resolved to its name),
+  every *active* owner, lifecycle state, stack, and the environment of
+  its most recent deployment. "Stack" is read from the application's
+  current `deployment.yaml` draft; a draft that no longer parses yields
+  an empty runtime list rather than failing the whole report over one bad
+  application. Per FR-127's own business rule this is deliberately
+  current-state only — history is Module W's job, not this report's.
+- **`GET /reports/deployment-activity`** (FR-128) — deployment outcomes
+  over a period, broken down by environment and by department.
+
+**Both are owner-scoped**, which is a scope adaptation worth being
+explicit about: FR-127's main flow describes a platform-wide report for a
+"Management/Auditor, Platform Administrator" holding a reporting-access
+role, and no such role exists anywhere in this platform (`DEC-002`). By
+FR-127's own exception flow — "requester's scope exceeds their
+authorization → scope is limited to what they are authorized to see, not
+rejected outright" — every caller today falls into its *alternative*
+flow: "Application Owner views a scoped inventory limited to applications
+they own." Treating everyone as an unprivileged owner is the safer
+reading than treating everyone as a de-facto Auditor, and it matches how
+Module W and Module X already scope their own reads. Note this is
+deliberately *stricter* than `GET /applications`, which has been
+unscoped since the first PR — a pre-existing inconsistency this doesn't
+copy forward.
+
+**Why the succeeded/failed/rolled-back split reads the audit log.** It
+can't come from `deployments.status` alone: a rollback produces an
+ordinary deployment row that ends up `running` or `failed` like any
+other — there is no `rolled_back` deployment status (see
+`domain.DeploymentStatus`). What distinguishes them is *which action
+created it*, and only the audit log records that
+(`deployment.deploy` vs `deployment.rollback`, both written against the
+new deployment's own id by `auditDeployOutcome`). That's exactly what
+FR-128's acceptance criterion asks for — "a generated report's totals
+reconcile with the underlying audit log for the same period and scope" —
+so the audit log is the source of truth for the classification rather
+than a second, drifting copy of it on the deployments table. One audit
+query per report, not one per deployment: every rollback in the window is
+fetched once and turned into a set to test membership against.
+
+In-flight deployments (`scanning`/`pending_approval`/`deploying`/
+`health_check`) are counted in **none** of the three buckets — FR-128
+counts *outcomes*, and one that hasn't reached an outcome isn't a success
+or a failure to report yet. And per FR-128's exception flow, a requested
+range starting before any data exists comes back with `available_from`
+naming the earliest data actually held, rather than silently reporting
+zeros for a period there was nothing to report on.
+
+**Verified for real** against a running stack, including the part that
+matters most — FR-128's reconciliation criterion, checked rather than
+assumed: registered and validated a real application (confirmed the
+inventory read `runtimes: ["go"]` from the real `deployment.yaml`, the
+real department name, and an empty environment for a never-deployed
+app), then ran two real `docker build` + deploy cycles and a real
+rollback, and confirmed the report returned `succeeded: 2, failed: 0,
+rolled_back: 1` — reconciling exactly with the raw audit log queried
+independently (2 × `deployment.deploy`, 1 × `deployment.rollback`).
+Confirmed an unrelated user's report comes back empty rather than
+exposing someone else's applications, confirmed `available_from` appears
+for an over-wide range, and confirmed malformed and backwards
+`from`/`to` values are rejected with `400`s.
+
+**Known gaps, documented not hidden:**
+- **FR-129 (Resource Utilization Report) is not implemented.** It reports
+  consumption *against quota*, "building on the real-time usage
+  visibility of Module M" — and Module M (Resource Management) doesn't
+  exist. There is no quota to report against and nothing tracking
+  allocation, so any number this produced would be invented rather than
+  measured.
+- FR-127's platform-wide administrator view (its main flow) needs the
+  reporting-access role described above; only the owner-scoped
+  alternative flow is built.
+- FR-127's "scheduled periodic generation where the platform supports it"
+  isn't built — both reports are ad-hoc query-time only. There is no
+  scheduler here beyond the scale-to-zero sweeper, and adding one for
+  reports would be inventing a delivery mechanism (to where? in what
+  format?) the spec doesn't describe.
+- Neither report paginates. Both are bounded by how many applications one
+  person owns, which is small by construction today; a real gap if a
+  single owner ever accumulates hundreds.
 
 ## What's deliberately NOT here yet
 
