@@ -171,9 +171,16 @@ These block real production use, not just missing polish:
 - **`deploy_application`/the admin portal's Deploy runs synchronously**,
   not as a real queued/async job — fine at today's scale, a real gap
   before this could serve many concurrent deployments.
-- **No Database, Secret, Domain, or Network management** (Modules N/O/P/Q)
-  — `deployment.yaml` can declare `database.type: postgres`, but nothing
-  actually provisions one.
+- **No Secret, Domain, or Network management** (Modules O/P/Q). Module N
+  (Database Management) *is* implemented — `database.type: postgres` in
+  `deployment.yaml` provisions a real, network-isolated Postgres container
+  — but with one gap that matters: **the generated database password is
+  stored in plaintext in the platform's own database**, because Module O
+  is the secret store `FR-063` names and it doesn't exist. Anyone with
+  read access to the platform database can read every application's
+  database password. See `services/platform-api/README.md`'s "How
+  Database Management works" for the full scope, including that `FR-064`
+  (backups) is not implemented.
 - **No Logging or Monitoring** (Modules S/T) — the MCP server's
   log/metric tools return an honest "not implemented" error rather than
   fabricating data. (Modules W, X and AB — Audit Log, Notification and

@@ -12,6 +12,15 @@ import (
 func newLifecycleService(app domain.Application, deployment domain.Deployment, ownerID string) (
 	*service.LifecycleService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeServiceRuntimeStateRepo, *fakeRuntime,
 ) {
+	return newLifecycleServiceWithDatabase(app, deployment, ownerID, newFakeDatabaseService())
+}
+
+// newLifecycleServiceWithDatabase is the same construction with the Module
+// N seam left in the test's hands, so it can assert what resume and
+// restart do with an application that has a database.
+func newLifecycleServiceWithDatabase(app domain.Application, deployment domain.Deployment, ownerID string, databases *fakeDatabaseService) (
+	*service.LifecycleService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeServiceRuntimeStateRepo, *fakeRuntime,
+) {
 	apps := newFakeLifecycleRepo(app)
 	owners := newFakeOwnerRepo()
 	owners.owners[app.ID] = []domain.ApplicationOwner{{
@@ -22,7 +31,7 @@ func newLifecycleService(app domain.Application, deployment domain.Deployment, o
 	states := newFakeServiceRuntimeStateRepo()
 	runtime := newHealthyRuntime()
 
-	svc := service.NewLifecycleService(apps, owners, deployments, states, runtime, newFakeAuditRecorder())
+	svc := service.NewLifecycleService(apps, owners, deployments, states, runtime, newFakeAuditRecorder(), databases)
 	return svc, apps, deployments, states, runtime
 }
 
@@ -407,7 +416,7 @@ func newLifecycleServiceWithAudit(app domain.Application, deployment domain.Depl
 	states := newFakeServiceRuntimeStateRepo()
 	runtime := newHealthyRuntime()
 	audit := newFakeAuditRecorder()
-	return service.NewLifecycleService(apps, owners, deployments, states, runtime, audit), audit
+	return service.NewLifecycleService(apps, owners, deployments, states, runtime, audit, newFakeDatabaseService()), audit
 }
 
 func TestSuspend_Success_RecordsAuditEntry(t *testing.T) {

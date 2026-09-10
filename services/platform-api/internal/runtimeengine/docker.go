@@ -20,6 +20,8 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 
@@ -37,10 +39,17 @@ func NewDockerRuntime(cli *client.Client) *DockerRuntime {
 // StartContainer implements the Deployment pipeline step: starts one
 // container for a built image, publishing a host port Docker picks freely
 // (host port 0) so multiple services/deployments never collide.
-func (r *DockerRuntime) StartContainer(ctx context.Context, name, imageRef string, containerPort int) (domain.RunningContainer, error) {
-	portKey := nat.Port(fmt.Sprintf("%d/tcp", containerPort))
+//
+// spec.Env and spec.NetworkID carry Module N's database wiring: the
+// generated connection string as an environment variable, and the
+// application's own private Docker network so it can reach its database
+// (see StartDatabase). Both are empty for an application that declares no
+// database, in which case this behaves exactly as it did before Module N.
+func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.ContainerSpec) (domain.RunningContainer, error) {
+	portKey := nat.Port(fmt.Sprintf("%d/tcp", spec.ContainerPort))
 	cfg := &container.Config{
-		Image:        imageRef,
+		Image:        spec.ImageRef,
+		Env:          spec.Env,
 		ExposedPorts: nat.PortSet{portKey: struct{}{}},
 	}
 	hostCfg := &container.HostConfig{
@@ -49,9 +58,17 @@ func (r *DockerRuntime) StartContainer(ctx context.Context, name, imageRef strin
 		},
 	}
 
-	created, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
+	created, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, spec.Name)
 	if err != nil {
 		return domain.RunningContainer{}, fmt.Errorf("create container: %w", err)
+	}
+	// Attached as an ADDITIONAL network, not a replacement: the container
+	// keeps its default-bridge connectivity, which is what publishes its
+	// host port and lets the platform health-check it.
+	if spec.NetworkID != "" {
+		if err := r.cli.NetworkConnect(ctx, spec.NetworkID, created.ID, nil); err != nil {
+			return domain.RunningContainer{}, fmt.Errorf("attach container to its application network: %w", err)
+		}
 	}
 	if err := r.cli.ContainerStart(ctx, created.ID, types.ContainerStartOptions{}); err != nil {
 		return domain.RunningContainer{}, fmt.Errorf("start container: %w", err)
@@ -123,4 +140,114 @@ func (r *DockerRuntime) Stop(ctx context.Context, containerID string) error {
 		return fmt.Errorf("remove container: %w", err)
 	}
 	return nil
+}
+
+// --- Module N (Database Management) ---------------------------------------
+
+// CreateNetwork implements FR-062's isolation mechanism: one private
+// Docker network per application. The application's own containers join it
+// (StartContainer's spec.NetworkID) and so does its database
+// (StartDatabase) — nothing else can, so another application cannot reach
+// or even resolve it. That enforcement is at the network layer, not in
+// application code, exactly as FR-062 requires ("even a misconfigured or
+// malicious application cannot reach another's database").
+//
+// Idempotent: an existing network with this name is reused rather than
+// duplicated, so a redeploy of an application that already has one is a
+// no-op instead of an error.
+func (r *DockerRuntime) CreateNetwork(ctx context.Context, name string) (string, error) {
+	existing, err := r.cli.NetworkList(ctx, types.NetworkListOptions{
+		Filters: filters.NewArgs(filters.Arg("name", name)),
+	})
+	if err != nil {
+		return "", fmt.Errorf("list networks: %w", err)
+	}
+	for _, n := range existing {
+		if n.Name == name {
+			return n.ID, nil
+		}
+	}
+
+	created, err := r.cli.NetworkCreate(ctx, name, types.NetworkCreate{Driver: "bridge"})
+	if err != nil {
+		return "", fmt.Errorf("create application network: %w", err)
+	}
+	return created.ID, nil
+}
+
+// RemoveNetwork is FR-065's counterpart to CreateNetwork. An already-gone
+// network is not an error — deprovisioning has to be safely repeatable.
+func (r *DockerRuntime) RemoveNetwork(ctx context.Context, networkID string) error {
+	if networkID == "" {
+		return nil
+	}
+	if err := r.cli.NetworkRemove(ctx, networkID); err != nil {
+		if client.IsErrNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("remove application network: %w", err)
+	}
+	return nil
+}
+
+// StartDatabase implements FR-061: a real, dedicated PostgreSQL container
+// for one application.
+//
+// It deliberately publishes NO host port. The only way to reach it is from
+// inside spec.NetworkID — which is FR-061's business rule that databases
+// are "never directly reachable by the employee/agent for raw admin
+// commands", enforced rather than asked for politely. The application
+// reaches it by container name, which Docker resolves within that network.
+//
+// The private network is attached at CREATE time, via NetworkMode +
+// EndpointsConfig, and that detail is the whole of FR-062. Creating the
+// container first and connecting the network afterwards — which is what
+// StartContainer does, for the reason documented there — would leave the
+// database on Docker's default bridge as well, where every other
+// application's container also sits. The first end-to-end run of
+// scripts/verify_module_n.py caught exactly that: the database was on
+// ["bridge", "platform-net-..."], so the isolation this function's own
+// comment claimed was not real.
+func (r *DockerRuntime) StartDatabase(ctx context.Context, spec domain.DatabaseSpec) (string, error) {
+	cfg := &container.Config{
+		Image: spec.ImageRef,
+		Env: []string{
+			"POSTGRES_DB=" + spec.DatabaseName,
+			"POSTGRES_USER=" + spec.Username,
+			"POSTGRES_PASSWORD=" + spec.Password,
+		},
+	}
+	hostCfg := &container.HostConfig{NetworkMode: container.NetworkMode(spec.NetworkID)}
+	netCfg := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			spec.NetworkID: {NetworkID: spec.NetworkID},
+		},
+	}
+
+	created, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, spec.Name)
+	if err != nil {
+		return "", fmt.Errorf("create database container: %w", err)
+	}
+	if err := r.cli.ContainerStart(ctx, created.ID, types.ContainerStartOptions{}); err != nil {
+		return "", fmt.Errorf("start database container: %w", err)
+	}
+
+	// Verified rather than assumed: if this container is ever on more than
+	// its own network, FR-062 is not being enforced, and the platform must
+	// say so loudly instead of provisioning a database that quietly isn't
+	// isolated.
+	inspected, err := r.cli.ContainerInspect(ctx, created.ID)
+	if err != nil {
+		return "", fmt.Errorf("inspect database container: %w", err)
+	}
+	if len(inspected.NetworkSettings.Networks) != 1 {
+		attached := make([]string, 0, len(inspected.NetworkSettings.Networks))
+		for name := range inspected.NetworkSettings.Networks {
+			attached = append(attached, name)
+		}
+		_ = r.Stop(ctx, created.ID)
+		return "", fmt.Errorf("database container is not isolated: attached to %v, expected only its application network", attached)
+	}
+
+	return created.ID, nil
 }

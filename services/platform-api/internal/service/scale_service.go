@@ -45,6 +45,17 @@ type ApplicationByNameRepository interface {
 
 type RunningDeploymentLookup interface {
 	CurrentRunning(ctx context.Context, applicationID string) (domain.Deployment, error)
+	// GetByID resolves a cold start back to the application it belongs to,
+	// which is what Module N's database wiring is keyed on. The
+	// scale-to-zero path only ever carries a deployment id.
+	GetByID(ctx context.Context, deploymentID string) (domain.Deployment, error)
+}
+
+// DatabaseWirer is the read-only half of Module N's seam: everything that
+// starts a container needs the application's database environment and
+// private network, but only the deploy path ever provisions one.
+type DatabaseWirer interface {
+	WiringFor(ctx context.Context, applicationID string) (RuntimeWiring, error)
 }
 
 type ScaleService struct {
@@ -53,6 +64,7 @@ type ScaleService struct {
 	states      ServiceRuntimeStateRepository
 	events      ScaleEventRepository
 	stacks      StackRepository
+	databases   DatabaseWirer
 	runtime     RuntimeEngine
 
 	// coldStart coalesces concurrent EnsureRunning calls for the same
@@ -74,9 +86,12 @@ type ScaleService struct {
 func NewScaleService(
 	apps ApplicationByNameRepository, deployments RunningDeploymentLookup,
 	states ServiceRuntimeStateRepository, events ScaleEventRepository,
-	stacks StackRepository, runtime RuntimeEngine,
+	stacks StackRepository, runtime RuntimeEngine, databases DatabaseWirer,
 ) *ScaleService {
-	return &ScaleService{apps: apps, deployments: deployments, states: states, events: events, stacks: stacks, runtime: runtime}
+	return &ScaleService{
+		apps: apps, deployments: deployments, states: states, events: events,
+		stacks: stacks, runtime: runtime, databases: databases,
+	}
 }
 
 // InitializeForDeployment implements FR-051: determines and persists each
@@ -169,7 +184,21 @@ func (s *ScaleService) EnsureRunning(ctx context.Context, deploymentID, serviceN
 		}
 
 		containerName := fmt.Sprintf("platform-run-%s-%s", shortID(deploymentID), sanitizeName(serviceName))
-		running, err := s.runtime.StartContainer(ctx, containerName, state.ImageRef, state.ContainerPort)
+		// FR-062/FR-063: a cold-started container is a new container too —
+		// scaling to zero and back must not quietly drop the application's
+		// database connection.
+		dep, err := s.deployments.GetByID(ctx, deploymentID)
+		if err != nil {
+			return nil, fmt.Errorf("cold start: failed to resolve the deployment's application: %w", err)
+		}
+		wiring, err := s.databases.WiringFor(ctx, dep.ApplicationID)
+		if err != nil {
+			return nil, fmt.Errorf("cold start: failed to resolve database connection details: %w", err)
+		}
+		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
+			Name: containerName, ImageRef: state.ImageRef, ContainerPort: state.ContainerPort,
+			Env: wiring.Env, NetworkID: wiring.NetworkID,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("cold start service %s: %w", serviceName, err)
 		}
