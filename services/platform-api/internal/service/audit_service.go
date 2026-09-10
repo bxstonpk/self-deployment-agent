@@ -61,8 +61,10 @@ func NewAuditService(repo AuditRepository, owners ApplicationOwnerRepository, de
 // this immediately after its own state-changing write succeeds or fails —
 // see e.g. lifecycle_service.go's Suspend. Deliberately best-effort with
 // respect to *when* it runs relative to that write (not the same database
-// transaction — no cross-repository transaction wrapper exists in this
-// codebase), but not best-effort with respect to the caller finding out:
+// transaction — no wrapper exists for spanning one across repositories;
+// application_owner_repo.go's ReplacePrimaryOwner opens a transaction
+// internally, but that's one repository guarding its own invariant, not a
+// seam a service can join), but not best-effort about the caller finding out:
 // unlike scale_event_repo.go's Record (whose doc comment explicitly asks
 // callers to treat a failure as non-fatal), a failure here is returned as a
 // real error, satisfying FR-103's "no critical action succeeds silently

@@ -793,25 +793,35 @@ correctly returned `transfer_expired`, confirmed the transfer's status
 was durably marked `expired` (not just rejected in that one response),
 and confirmed the original owner was completely untouched.
 
-**Known gap, updated by this PR, not newly hidden:** an earlier PR's
-"Known gaps" note about FR-018 (Ownership Verification Gate) described
-its broader "no active owner exists" guard as *vacuously* satisfied —
-true then, because nothing could yet remove an application's only owner.
-That's no longer quite accurate now that `ReplacePrimaryOwner` exists:
-its two statements (revoke the prior primary, then insert the new one)
-are sequential, not one database transaction — this codebase has no
-cross-repository transaction wrapper anywhere (see
-`deploy_service.go`'s `markDeploymentFailedFrom` doc comment for the same
-trade-off elsewhere) — so there is a real, if narrow, same-request window
-between them where the application briefly has zero active primary
-owners. No code anywhere currently reads ownership state in a way that
-could observe this window from a *different* concurrent request (nothing
-does a bare "is there any active primary owner" check independent of "is
-*this specific caller* one") — but it is a real gap now, not a
-hypothetical one, and the honest thing is to say so rather than quietly
-leave the prior "vacuously satisfied" claim standing after the PR that
-was explicitly flagged as "the first place that could change" actually
-shipped.
+### The owner-less window, found, demonstrated and closed
+
+When Transfer Ownership first shipped, the note here said FR-018's
+"no active owner exists" guard had gone from *vacuously* satisfied (back
+when nothing could remove an application's only owner) to a real, if
+narrow, gap: `ReplacePrimaryOwner`'s statements ran sequentially, so
+between revoking the prior primary and inserting the new one an
+application briefly had **zero** active primary owners. That note has now
+been made good on rather than left standing.
+
+It was worse than "narrow" suggested. Replaying those statements
+unguarded against a real database — with the second one failing, exactly
+as it would if the nominated user were removed between nomination and
+acceptance — left the application with zero active primary owners
+**permanently**: nothing retries, `Revoke` refuses to touch primary rows
+by design, and every path that could repair it (grant, transfer) requires
+an active owner to authorize it. The application became untouchable by
+anyone, including the employee who created it — `not_primary_owner` on
+every ownership action, `forbidden` on everything else. FR-018's
+"orphaned application operating unaccountably", reached for real.
+
+`ReplacePrimaryOwner` now runs its three statements inside a real
+database transaction — **the only place in this codebase that opens
+one**, and worth the exception precisely because the invariant it
+protects ("an application always has exactly one active primary owner")
+is what every owner-gated action depends on. Verified the same way the
+gap was found: the identical failing sequence, wrapped, leaves the prior
+owner `active` and the application fully usable, and a real
+nominate-and-accept transfer still commits correctly end to end.
 
 **A response-shape fix, made in the follow-up Admin Portal PR, not this
 one:** `GET /applications/{id}/ownership-transfer` originally 404'd when
