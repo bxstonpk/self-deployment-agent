@@ -65,12 +65,19 @@ README for exactly what was tested and how):
   transfer 404'd on every single page view (the ordinary case for most
   applications most of the time), not just an occasional mistaken lookup —
   fixed to a real `200` with a null payload instead.
+- Reporting (Module AB, `FR-127`/`FR-128`) — an application inventory and
+  a deployment activity report (outcomes by environment and department),
+  both derived entirely from data the platform already holds. Verified
+  against FR-128's own acceptance criterion for real: ran two real
+  deploys and a real rollback, then confirmed the report's
+  succeeded/failed/rolled-back totals reconcile exactly with the raw
+  audit log queried independently.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this
 application," full stop — no IT/Platform/Security Administrator roles),
 Database/Secret/Domain/Network management, Logging, Monitoring, Resource
-quotas, Reporting. See "Known gaps" below and each
+quotas. See "Known gaps" below and each
 component's own README for the honest, itemized list — nothing here claims
 these exist when they don't.
 
@@ -159,13 +166,15 @@ These block real production use, not just missing polish:
 - **No Database, Secret, Domain, or Network management** (Modules N/O/P/Q)
   — `deployment.yaml` can declare `database.type: postgres`, but nothing
   actually provisions one.
-- **No Logging, Monitoring, or Reporting** (Modules S/T/AB) — the MCP
-  server's log/metric tools return an honest "not implemented" error
-  rather than fabricating data. (Module W, Audit Log, and Module X,
-  Notification, are both implemented — see
-  `services/platform-api/README.md`'s "How Audit Logging works" and "How
-  Notifications work" sections for what each does and doesn't cover; note
-  Module X is in-app only, no email/Slack/webhook delivery.)
+- **No Logging or Monitoring** (Modules S/T) — the MCP server's
+  log/metric tools return an honest "not implemented" error rather than
+  fabricating data. (Modules W, X and AB — Audit Log, Notification and
+  Reporting — are implemented; see `services/platform-api/README.md`'s
+  "How Audit Logging works", "How Notifications work" and "How Reporting
+  works" sections for what each does and doesn't cover. Notably Module X
+  is in-app only, no email/Slack/webhook delivery, and Module AB covers
+  `FR-127`/`FR-128` but not `FR-129`, which reports against quotas that
+  Module M would have to define first.)
 - **No resource quota enforcement** (Module M) — `validate_application`
   always reports this check as `skipped`, never a fake pass.
 - **The Admin Portal is intentionally scoped to MOD-19 (Application

@@ -21,6 +21,7 @@ type RouterConfig struct {
 	Lifecycle     *LifecycleHandler
 	Audit         *AuditHandler
 	Notifications *NotificationHandler
+	Reports       *ReportHandler
 	// PlatformEnv gates DevOnlyGuard. The only Authenticator implementation
 	// today is DevHeaderAuthenticator, so this is always enforced until a
 	// real one lands per DEC-001 (docs/17_Decision_Log.md).
@@ -105,6 +106,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Notifications.List)
 		r.Post("/{id}/read", cfg.Notifications.MarkRead)
+	})
+
+	r.Route("/reports", func(r chi.Router) {
+		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		r.Use(RequireAuth(cfg.Authenticator))
+		r.Get("/application-inventory", cfg.Reports.ApplicationInventory)
+		r.Get("/deployment-activity", cfg.Reports.DeploymentActivity)
 	})
 
 	r.Route("/ownership-transfers", func(r chi.Router) {
