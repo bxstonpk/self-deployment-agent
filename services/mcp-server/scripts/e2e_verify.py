@@ -98,9 +98,9 @@ async def main() -> None:
             tools = await session.list_tools()
             tool_names = sorted(t.name for t in tools.tools)
             _check(
-                len(tool_names) == 16,
-                f"all 13 Section-13 tools plus query_audit_log/list_notifications/"
-                f"mark_notification_read discovered via MCP protocol: {tool_names}",
+                len(tool_names) == 21,
+                f"all 13 Section-13 tools plus the 8 later-module tools (Modules W/X/AB/E) "
+                f"discovered via MCP protocol: {tool_names}",
             )
 
             info = _print_result("get_platform_info", await session.call_tool("get_platform_info", {}))
@@ -219,6 +219,62 @@ async def main() -> None:
             _check(
                 all(n["id"] != deploy_notifications[0]["id"] for n in unread_after["data"]["notifications"]),
                 "the marked-read notification no longer appears in the unread list",
+            )
+
+            print("--- Module AB (reporting) and Module E (ownership): also beyond Section 13 ---")
+            inventory = _print_result(
+                "get_application_inventory", await session.call_tool("get_application_inventory", {})
+            )
+            mine = [a for a in inventory["data"]["applications"] if a["application_id"] == app_id]
+            _check(len(mine) == 1, "the inventory lists this employee's own application")
+            _check(
+                mine[0]["runtimes"] == ["go"] and mine[0]["environment"] == "dev",
+                f"inventory read the real stack and environment off the live application: {mine[0]}",
+            )
+            _check(
+                inventory["data"]["count"] == len(inventory["data"]["applications"]),
+                "inventory count matches the rows returned",
+            )
+
+            activity = _print_result(
+                "get_deployment_activity", await session.call_tool("get_deployment_activity", {})
+            )
+            _check(
+                activity["data"]["total"]["succeeded"] >= 1,
+                f"deployment activity counts this run's real deploy: {activity['data']['total']}",
+            )
+            _check("dev" in activity["data"]["by_environment"], "activity is broken down by the real environment")
+
+            owners = _print_result(
+                "list_application_owners", await session.call_tool("list_application_owners", {"application_id": app_id})
+            )
+            _check(
+                any(o["ownership_role"] == "primary" and o["status"] == "active" for o in owners["data"]["owners"]),
+                "the application reports its real active primary owner",
+            )
+
+            bad_grant = _print_result(
+                "grant_application_access (invalid level -> VALIDATION_ERROR)",
+                await session.call_tool(
+                    "grant_application_access",
+                    {"application_id": app_id, "email": "nobody@sti-th.com", "access_level": "primary"},
+                ),
+            )
+            _check(
+                bad_grant["status"] == "error" and bad_grant["error"]["code"] == "VALIDATION_ERROR",
+                "granting 'primary' is rejected — it is never grantable, only assigned or transferred",
+            )
+
+            unknown_grant = _print_result(
+                "grant_application_access (unknown email -> NOT_FOUND)",
+                await session.call_tool(
+                    "grant_application_access",
+                    {"application_id": app_id, "email": "never-signed-in@sti-th.com", "access_level": "co_owner"},
+                ),
+            )
+            _check(
+                unknown_grant["status"] == "error" and unknown_grant["error"]["code"] == "NOT_FOUND",
+                "granting access to an employee who has never signed in is rejected by the Platform API",
             )
 
             dep_status = _print_result(
