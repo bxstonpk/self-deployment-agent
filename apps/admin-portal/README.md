@@ -100,6 +100,22 @@ app doesn't pretend to offer anything they can't actually deliver.
     button instead (shown to everyone viewing the page, not just the
     nominee — same "don't hide, let the real error surface" convention;
     `platform-api`'s own `not_transfer_nominee` rejects anyone else).
+- **Reports** (`Reports.tsx`, reachable from the header nav) — Module AB's
+  two reports: deployment activity over a selectable date range (a
+  three-tile KPI row of succeeded / failed / rolled-back totals, plus
+  per-environment and per-department breakdown tables) and the application
+  inventory (name, department, lifecycle status, stack, environment, owner
+  count), each name linking through to its detail page.
+
+  **Deliberately not charts.** Three headline numbers is a stat-tile row,
+  not a three-bar chart, and two-to-three-row breakdowns are tables — at
+  this size a charting dependency would be more machinery than the data
+  justifies. Each tile carries its own text label, so the status color is
+  never the only thing distinguishing them, and the values use the
+  existing `--success`/`--danger`/`--accent` tokens (which already have
+  validated dark-mode variants) rather than introducing a new palette.
+  Rolled-back takes the informational accent, not danger red: it's a
+  distinct outcome, not a failure.
 
 ## How button-enablement mirrors the real service preconditions
 
@@ -478,3 +494,43 @@ rebuilt the backend image, and re-ran the same driver end to end: the
 Carol's and Alice's deliberately-triggered rejection scenarios above —
 the same benign pattern this file's very first verification pass already
 established.
+
+### Reports UI (Module AB), verified for real
+
+A seventh Playwright pass, this one **in both colour schemes** (two
+browser contexts, `colorScheme: "light"` and `"dark"`), against a stack
+seeded with genuinely real activity: a real application taken through
+build → deploy → rebuild → redeploy → rollback, plus a second one left in
+`draft`. Confirmed the stat tiles showed the real totals from the live
+API (2 succeeded / 0 failed / 1 rolled back — the same numbers
+`GET /reports/deployment-activity` returns), the environment and
+department breakdowns rendered real rows (with the department's *name*,
+not a raw UUID), the inventory read the stack (`go`) out of the real
+`deployment.yaml` and marked the never-deployed application as such
+rather than leaving a blank cell, and an inventory name linked through to
+its detail page. Changing the date range genuinely re-queried the API (a
+2020 window correctly reported zeros and surfaced the `available_from`
+note). Zero console errors in either scheme.
+
+**Two real bugs found, both by driving the page rather than by any
+test:**
+
+1. **Clearing a date input crashed the whole page.** An empty `<input
+   type="date">` gives `""`, `new Date("T00:00:00")` is an Invalid Date,
+   and `.toISOString()` on it *throws* — so clearing a date to retype it
+   white-screened the component. The unit test written for the
+   backwards-range guard below is what surfaced it, because clearing the
+   field is how you type a new one.
+2. **A half-edited range flashed a red error banner.** Editing the two
+   dates in sequence necessarily passes through `from` being later than
+   `to`, and that fired a real request that came back `400
+   invalid_range` — an error banner shown to someone who was simply
+   mid-edit. Both are now guarded client-side before the request is ever
+   made, with a plain hint instead of an error; the API still validates
+   the range itself regardless.
+
+**And one layout defect only visible by looking at the render**, not
+catchable by any assertion: the environment and department breakdown
+tables sat directly on top of each other with no separation, reading as
+one table with a stray repeated header row. Fixed with spacing between
+them, then re-rendered and re-checked.

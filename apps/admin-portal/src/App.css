@@ -256,3 +256,67 @@ form textarea {
   text-align: center;
   line-height: 16px;
 }
+
+/* KPI row (Module AB's deployment outcomes). Three headline numbers is a
+   stat-tile row, not a three-bar chart — and at this size a chart library
+   would be more machinery than the data justifies. Each tile carries its
+   own text label, so the status color is never the only thing telling
+   them apart. */
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.stat-tile {
+  flex: 1 1 140px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+}
+
+.stat-tile .stat-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Deliberately NOT tabular-nums: at display size that pads every digit to
+   a '0' width and reads loose. Tabular figures stay on table columns,
+   where vertical alignment is the point. */
+.stat-tile .stat-value {
+  display: block;
+  margin-top: 2px;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.stat-succeeded .stat-value {
+  color: var(--success);
+}
+
+.stat-failed .stat-value {
+  color: var(--danger);
+}
+
+/* Rolled back is a distinct outcome, not a failure — the informational
+   accent, not the danger red. */
+.stat-rolled-back .stat-value {
+  color: var(--accent);
+}
+
+.data-table td.numeric,
+.data-table th.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two breakdown tables stacked directly on top of each other read as one
+   table with a stray repeated header — caught by looking at the rendered
+   page, not by any test. Separate them. */
+.breakdown-table {
+  margin-bottom: 20px;
+}

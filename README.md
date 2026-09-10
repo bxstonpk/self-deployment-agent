@@ -55,8 +55,10 @@ README for exactly what was tested and how):
   and platform-wide, with filtering, CSV export, and chain-integrity
   verification), a Notifications inbox (unread-count header badge,
   mark-read, unread-only filter), an Owners section for granting/
-  revoking co-owner/contributor access, and a Transfer primary ownership
-  flow (nominate, notify, accept) — verified with up to three genuinely
+  revoking co-owner/contributor access, a Transfer primary ownership
+  flow (nominate, notify, accept), and a Reports page (a KPI row of
+  deployment outcomes over a selectable range, plus the application
+  inventory) — verified with up to three genuinely
   independent signed-in identities at once (separate browser contexts),
   confirming a newly-granted co-owner gets real day-to-day access, a
   revoked one is genuinely locked out on their very next request, and a

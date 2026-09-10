@@ -8,6 +8,7 @@ import { ApplicationDetail } from "./pages/ApplicationDetail";
 import { RegisterApplication } from "./pages/RegisterApplication";
 import { AuditLog } from "./pages/AuditLog";
 import { Notifications } from "./pages/Notifications";
+import { Reports } from "./pages/Reports";
 import "./App.css";
 
 // Polled rather than pushed — there's no websocket/SSE channel anywhere in
@@ -57,6 +58,7 @@ function Layout({ children }: { children: React.ReactNode }) {
               Notifications
               {unreadCount > 0 && <span className="unread-count-badge">{unreadCount}</span>}
             </Link>
+            <Link to="/reports">Reports</Link>
             <Link to="/audit-log">Audit Log</Link>
             <span>{identity.email}</span>
             <button onClick={signOut}>Sign out</button>
@@ -103,6 +105,14 @@ function App() {
           element={
             <RequireIdentity>
               <AuditLog />
+            </RequireIdentity>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <RequireIdentity>
+              <Reports />
             </RequireIdentity>
           }
         />
