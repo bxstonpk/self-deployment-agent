@@ -122,6 +122,7 @@ func (f *fakeAppByNameRepo) GetByName(ctx context.Context, name string) (domain.
 
 type fakeRunningDeploymentLookup struct {
 	byApp map[string]domain.Deployment
+	byID  map[string]domain.Deployment
 }
 
 func (f *fakeRunningDeploymentLookup) CurrentRunning(ctx context.Context, applicationID string) (domain.Deployment, error) {
@@ -132,15 +133,38 @@ func (f *fakeRunningDeploymentLookup) CurrentRunning(ctx context.Context, applic
 	return d, nil
 }
 
+// GetByID resolves a deployment id back to its application, which is what
+// the cold-start path needs to find the application's database. An id the
+// test never registered still resolves — to a deployment with an empty
+// application id, which is exactly the "no database" case — so the
+// pre-existing cold-start tests keep exercising cold start rather than
+// failing on a lookup they were never written to set up.
+func (f *fakeRunningDeploymentLookup) GetByID(ctx context.Context, deploymentID string) (domain.Deployment, error) {
+	if d, ok := f.byID[deploymentID]; ok {
+		return d, nil
+	}
+	return domain.Deployment{ID: deploymentID}, nil
+}
+
 func newScaleService() (*service.ScaleService, *fakeServiceRuntimeStateRepo, *fakeScaleEventRepo, *fakeRuntime) {
+	svc, states, events, runtime, _ := newScaleServiceWithDatabase(newFakeDatabaseService())
+	return svc, states, events, runtime
+}
+
+// newScaleServiceWithDatabase is the same construction with the Module N
+// seam left in the test's hands, so it can assert what the cold-start path
+// does with an application that has a database.
+func newScaleServiceWithDatabase(databases *fakeDatabaseService) (
+	*service.ScaleService, *fakeServiceRuntimeStateRepo, *fakeScaleEventRepo, *fakeRuntime, *fakeRunningDeploymentLookup,
+) {
 	states := newFakeServiceRuntimeStateRepo()
 	events := &fakeScaleEventRepo{}
 	stacks := newFakeStackRepo()
 	runtime := newHealthyRuntime()
 	apps := &fakeAppByNameRepo{byName: map[string]domain.Application{}}
-	deployments := &fakeRunningDeploymentLookup{byApp: map[string]domain.Deployment{}}
-	svc := service.NewScaleService(apps, deployments, states, events, stacks, runtime)
-	return svc, states, events, runtime
+	deployments := &fakeRunningDeploymentLookup{byApp: map[string]domain.Deployment{}, byID: map[string]domain.Deployment{}}
+	svc := service.NewScaleService(apps, deployments, states, events, stacks, runtime, databases)
+	return svc, states, events, runtime, deployments
 }
 
 const multiServiceYAML = `

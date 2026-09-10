@@ -28,13 +28,27 @@ type LifecycleService struct {
 	states      ServiceRuntimeStateRepository
 	runtime     RuntimeEngine
 	audit       AuditRecorder
+	databases   DatabaseDeprovisioner
+}
+
+// DatabaseDeprovisioner is Module N's seam for the lifecycle paths: every
+// container this service starts (Resume, Restart) needs the application's
+// database wiring, and Delete has to take the database down with the
+// application (FR-065).
+type DatabaseDeprovisioner interface {
+	WiringFor(ctx context.Context, applicationID string) (RuntimeWiring, error)
+	Deprovision(ctx context.Context, applicationID string) error
 }
 
 func NewLifecycleService(
 	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository,
 	deployments DeploymentRepository, states ServiceRuntimeStateRepository, runtime RuntimeEngine, audit AuditRecorder,
+	databases DatabaseDeprovisioner,
 ) *LifecycleService {
-	return &LifecycleService{apps: apps, owners: owners, deployments: deployments, states: states, runtime: runtime, audit: audit}
+	return &LifecycleService{
+		apps: apps, owners: owners, deployments: deployments, states: states,
+		runtime: runtime, audit: audit, databases: databases,
+	}
 }
 
 // auditAction records one lifecycle action's outcome, called via defer from
@@ -160,13 +174,23 @@ func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterI
 	if err != nil {
 		return domain.Deployment{}, err
 	}
+	// FR-062/FR-063: a resumed application must come back attached to its
+	// own database, exactly as it was when suspended. Fetched once per
+	// resume rather than per service.
+	wiring, err := s.databases.WiringFor(ctx, applicationID)
+	if err != nil {
+		return domain.Deployment{}, fmt.Errorf("resume: failed to resolve database connection details: %w", err)
+	}
 	containers := make(map[string]domain.RunningContainer)
 	for _, st := range states {
 		if st.Eligible {
 			continue // resume back to addressable-but-zero; cold-starts on demand like any other idle period
 		}
 		containerName := fmt.Sprintf("platform-run-%s-%s", shortID(deployment.ID), sanitizeName(st.ServiceName))
-		running, err := s.runtime.StartContainer(ctx, containerName, st.ImageRef, st.ContainerPort)
+		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
+			Name: containerName, ImageRef: st.ImageRef, ContainerPort: st.ContainerPort,
+			Env: wiring.Env, NetworkID: wiring.NetworkID,
+		})
 		if err != nil {
 			return domain.Deployment{}, fmt.Errorf("resume: failed to start service %s: %w", st.ServiceName, err)
 		}
@@ -234,6 +258,12 @@ func (s *LifecycleService) Restart(ctx context.Context, applicationID, requester
 		return domain.Deployment{}, err
 	}
 	containers := make(map[string]domain.RunningContainer)
+	// Same reasoning as Resume: a restarted container is a NEW container,
+	// so it needs the database wiring handed to it again.
+	wiring, err := s.databases.WiringFor(ctx, applicationID)
+	if err != nil {
+		return domain.Deployment{}, fmt.Errorf("restart: failed to resolve database connection details: %w", err)
+	}
 	for _, st := range states {
 		if st.ContainerID == nil {
 			continue // nothing running to recycle
@@ -244,7 +274,10 @@ func (s *LifecycleService) Restart(ctx context.Context, applicationID, requester
 		if err := s.runtime.Stop(ctx, oldContainerID); err != nil {
 			return domain.Deployment{}, fmt.Errorf("restart: failed to stop old instance of %s: %w", st.ServiceName, err)
 		}
-		running, err := s.runtime.StartContainer(ctx, containerName, st.ImageRef, st.ContainerPort)
+		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
+			Name: containerName, ImageRef: st.ImageRef, ContainerPort: st.ContainerPort,
+			Env: wiring.Env, NetworkID: wiring.NetworkID,
+		})
 		if err != nil {
 			return domain.Deployment{}, fmt.Errorf("restart: failed to start new instance of %s: %w", st.ServiceName, err)
 		}
@@ -382,6 +415,17 @@ func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterI
 		}
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return domain.Application{}, err
+	}
+
+	// FR-065: no live database instance survives a Deleted application.
+	// Ordered after the containers stop so nothing is still connected, and
+	// BEFORE the lifecycle status moves — FR-065's exception flow is
+	// explicit that "deletion is not marked fully complete until
+	// [deprovisioning is] confirmed", so a failure here leaves the
+	// application in its prior state to be retried rather than marking it
+	// Deleted with a database still running.
+	if err := s.databases.Deprovision(ctx, applicationID); err != nil {
+		return domain.Application{}, fmt.Errorf("delete: failed to deprovision the application's database: %w", err)
 	}
 
 	return s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, domain.StatusDeleted, false)

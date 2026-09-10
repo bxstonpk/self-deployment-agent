@@ -125,7 +125,15 @@ Populate from what you inspected and confirmed with the employee:
   `get_supported_stacks`, e.g. `go`, not `golang` — the live catalog names
   win over any packaged assumption) and `.port` (**required** for
   backend-kind services; omit for static frontends).
-- `database.type`, if the app has one.
+- `database.type`, if the app has one. `postgres` is the only supported
+  value today. Declaring it provisions a real, dedicated, network-isolated
+  database on deploy, and the platform injects `DATABASE_URL` (plus the
+  individual `DATABASE_HOST`/`PORT`/`NAME`/`USER`/`PASSWORD` parts) into
+  the application's runtime. **Never write connection details or a
+  password into `deployment.yaml`, source, or anything you show the
+  employee — the platform generates them and the application reads them
+  from its environment.** The database is deprovisioned when the
+  application is deleted.
 - `scaling.min`/`max` — default to scale-to-zero-friendly (`min: 0`) for
   stateless web/API services unless the employee has a reason to opt out
   (`min >= 1` keeps an instance always warm, at the cost of not

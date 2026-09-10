@@ -201,6 +201,7 @@ func (f *fakeScanner) Scan(ctx context.Context, imageRef string) (domain.ScanRep
 }
 
 type fakeRuntime struct {
+	startedSpecs   []domain.ContainerSpec
 	started        []string
 	stopped        []string
 	healthCheckErr error
@@ -212,13 +213,16 @@ func newHealthyRuntime() *fakeRuntime {
 	return &fakeRuntime{nextPort: 20000}
 }
 
-func (f *fakeRuntime) StartContainer(ctx context.Context, name, imageRef string, containerPort int) (domain.RunningContainer, error) {
+func (f *fakeRuntime) StartContainer(ctx context.Context, spec domain.ContainerSpec) (domain.RunningContainer, error) {
 	if f.startErr != nil {
 		return domain.RunningContainer{}, f.startErr
 	}
-	f.started = append(f.started, name)
+	f.started = append(f.started, spec.Name)
+	// Recorded so tests can assert Module N actually handed the database
+	// wiring to every start path, not just the deploy one.
+	f.startedSpecs = append(f.startedSpecs, spec)
 	f.nextPort++
-	return domain.RunningContainer{ContainerID: "container-" + name, HostPort: f.nextPort, URL: "http://localhost:0"}, nil
+	return domain.RunningContainer{ContainerID: "container-" + spec.Name, HostPort: f.nextPort, URL: "http://localhost:0"}, nil
 }
 
 func (f *fakeRuntime) HealthCheck(ctx context.Context, url string, timeout time.Duration) error {
@@ -248,6 +252,15 @@ func (f *fakeScaleInitializer) CleanupForDeployment(ctx context.Context, deploym
 func newDeployService(app domain.Application, build domain.Build, ownerID string) (
 	*service.DeploymentService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeRuntime, *fakeScanner, *fakeBuildRepo,
 ) {
+	return newDeployServiceWithDatabase(app, build, ownerID, newFakeDatabaseService())
+}
+
+// newDeployServiceWithDatabase is the same construction with the Module N
+// seam left in the test's hands, so it can assert what the deploy path
+// does with an application that declares a database.
+func newDeployServiceWithDatabase(app domain.Application, build domain.Build, ownerID string, databases *fakeDatabaseService) (
+	*service.DeploymentService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeRuntime, *fakeScanner, *fakeBuildRepo,
+) {
 	apps := newFakeLifecycleRepo(app)
 	owners := newFakeOwnerRepo()
 	owners.owners[app.ID] = []domain.ApplicationOwner{{
@@ -262,7 +275,7 @@ func newDeployService(app domain.Application, build domain.Build, ownerID string
 	runtime := newHealthyRuntime()
 	scale := &fakeScaleInitializer{}
 
-	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder(), newFakeNotificationRecorder())
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder(), newFakeNotificationRecorder(), databases)
 	return svc, apps, deployments, runtime, scanner, builds
 }
 
@@ -742,7 +755,7 @@ func newDeployServiceWithAudit(app domain.Application, build domain.Build, owner
 	scale := &fakeScaleInitializer{}
 	audit := newFakeAuditRecorder()
 
-	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, audit, newFakeNotificationRecorder())
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, audit, newFakeNotificationRecorder(), newFakeDatabaseService())
 	return svc, runtime, builds, audit
 }
 
@@ -835,7 +848,7 @@ func newDeployServiceWithNotifications(app domain.Application, build domain.Buil
 	scale := &fakeScaleInitializer{}
 	notifications := newFakeNotificationRecorder()
 
-	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder(), notifications)
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder(), notifications, newFakeDatabaseService())
 	return svc, runtime, notifications
 }
 

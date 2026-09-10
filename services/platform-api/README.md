@@ -57,7 +57,7 @@ for how it fits the Control Plane.
 | `GET /supported-stacks` | FR-019 | Lists the IT-governed Supported Stack catalog (seeded by migration `0002`) |
 | `POST /applications/{id}/build` | FR-035–038 | Triggers a real Docker build from an uploaded source archive; `validated` → `build` (success) or `failed`. Only callable from `validated`. Owner-only |
 | `GET /applications/{id}/builds/latest` | FR-036 | Queryable build status |
-| `POST /applications/{id}/deploy` | FR-039–044 | Runs the deploy pipeline (Image Scan → [prod approval gate] → Deploy → Health Check → Traffic Activation). Only callable with a successful build. Owner-only |
+| `POST /applications/{id}/deploy` | FR-039–044, FR-061 | Runs the deploy pipeline (Image Scan → [prod approval gate] → Deploy → Health Check → Traffic Activation). Provisions the application's database first if `deployment.yaml` declares one — see **How Database Management works**. Only callable with a successful build. Owner-only |
 | `GET /applications/{id}/deployments/latest` | FR-043 | Queryable deployment status |
 | `GET /applications/{id}/deployments` | FR-095 | Full deployment/version history, newest first — what a Rollback target is picked from |
 | `POST /applications/{id}/rollback` | FR-098, FR-100, FR-101 | Redeploys a previously-successful deployment's build artifact; requires `{"target_deployment_id": "..."}`. Owner-only |
@@ -68,7 +68,7 @@ for how it fits the Control Plane.
 | `POST /applications/{id}/resume` | FR-048 | `suspended` → `running`: restarts non-eligible services immediately; eligible ones stay at zero and cold-start on demand as usual. Owner-only |
 | `POST /applications/{id}/restart` | FR-048 | Recycles currently-running instances in place — same version, fresh containers, no redeploy. Owner-only |
 | `POST /applications/{id}/archive` | FR-049 | `running`/`suspended` → `archived`: releases compute more permanently than Suspend, retains config/history. Owner-only |
-| `POST /applications/{id}/delete` | FR-050 | `archived`/`suspended` → `deleted` (terminal); requires `{"confirm": true}`. Owner-only |
+| `POST /applications/{id}/delete` | FR-050, FR-065 | `archived`/`suspended` → `deleted` (terminal); requires `{"confirm": true}`. Deprovisions the application's database, if it has one, before the status moves. Owner-only |
 | `GET /audit-log` | FR-104 | Filter by `actor_user_id`/`resource_type`/`resource_id`/`action`/`from`/`to`/`limit`; scoped to entries the caller performed or that concern an application they own |
 | `GET /audit-log/export` | FR-105 | Same filters, CSV response; the export itself is recorded as a new audit entry |
 | `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
@@ -462,10 +462,12 @@ to refuse an archived application either.
 **Known gaps, documented not hidden — this is the module where "not built
 yet" is most visible, because FR-050 in particular is *mostly* about
 deprovisioning resources that don't exist yet:**
-- Database deprovisioning (Module N), secret revocation (Module O), and
-  domain release (Module P) are all no-ops on both Archive and Delete —
-  none of those modules are built. What Delete DOES do for real: guarantees
-  no container is left running for the application.
+- Secret revocation (Module O) and domain release (Module P) are still
+  no-ops on both Archive and Delete — neither module is built. Database
+  deprovisioning is no longer in that list: Delete really does tear down
+  the application's database (see **How Database Management works**
+  below). What Delete DOES do for real: guarantees no container is left
+  running for the application, and no database instance either.
 - FR-050's production-deletion approval gate ("mirrors FR-014") isn't
   enforced — needs the de-registration approval workflow (Module C), the
   same category of gap as the production-deploy approval gate's
@@ -921,6 +923,127 @@ for an over-wide range, and confirmed malformed and backwards
   person owns, which is small by construction today; a real gap if a
   single owner ever accumulates hundreds.
 
+## How Database Management works (Module N, FR-061/062/063/065)
+
+Module N has **no endpoints of its own**, and that is the design, not an
+omission: FR-061's business rule is that provisioned databases are "never
+directly reachable by the employee/agent for raw admin commands". An
+employee declares `database: type: postgres` in `deployment.yaml` and
+gets a database; there is no API to poke at it with.
+
+What actually happens, on deploy:
+
+1. **`EnsureProvisioned` (FR-061).** A private Docker network is created
+   for the application, then a dedicated `postgres:16-alpine` container is
+   started on it with a platform-generated password (`crypto/rand`,
+   base64url so it can't corrupt a DSN). Idempotent: an application that
+   already has a live database keeps it, so a redeploy never silently
+   replaces the database and loses its data. A declared type other than
+   `postgres` is rejected before anything touches the runtime.
+2. **`WiringFor` (FR-062/063).** Every path that starts an application
+   container asks this one helper for `{Env, NetworkID}` and passes it
+   straight through. Both are zero-valued for an application with no
+   database, which is why no call site branches on whether one exists.
+3. **`Deprovision` (FR-065).** Delete stops the container, removes the
+   network and closes the record — ordered *before* the lifecycle status
+   moves, per FR-065's "deletion is not marked fully complete until
+   confirmed". Best-effort on the runtime teardown itself: a container or
+   network a previous partial attempt already removed is a success, so a
+   repeated deletion can always finish.
+
+### Four start paths, one helper — and why that matters
+
+Deploy, resume, restart and scale-to-zero cold start each create a brand
+new container. A version of this module that wired up only the deploy path
+would look completely fine in a demo and then silently drop an
+application's database the first time it was restarted — the container
+starts, the health check passes, and the app just can't reach its data.
+That failure mode is why `WiringFor` is a single function rather than four
+copies of a lookup, and why `internal/service/database_wiring_test.go`
+asserts the wiring reaches all four paths, cold start included (that one
+carries only a deployment id, so it has to resolve its way back to the
+application first).
+
+### FR-062 isolation is enforced at the network layer, and it was wrong at first
+
+The database container publishes **no host port** and sits on **exactly
+one** network — its application's. Its host is its own container name,
+which Docker resolves inside that network and nowhere else.
+
+The first end-to-end run of `scripts/verify_module_n.py` found that this
+was not actually true. `StartDatabase` created the container and then
+attached the private network with `NetworkConnect`, the same two-step
+`StartContainer` uses — which leaves the container on Docker's **default
+bridge as well**, where every other application's container also sits. The
+isolation the code's own comment claimed was not real: any container on
+the default bridge could reach the database directly.
+
+The fix attaches the network at *create* time (`NetworkMode` +
+`EndpointsConfig`), and `StartDatabase` now inspects the container it just
+started and refuses to return success if it is attached to more than one
+network — an unisolated database is a failure to provision, not something
+to hand over quietly.
+
+Both halves are then proved from outside the code, by connecting:
+
+- a `psql` client **on** the private network authenticates with the
+  generated credentials and reads and writes real data;
+- the identical connection **off** that network fails — by container name
+  (Docker's DNS is per-network) *and* by raw IP, which is the check that
+  actually matters, since a name lookup failing on its own proves much
+  less;
+- the deployed application itself opens a TCP connection to its database
+  and completes a Postgres `SSLRequest` handshake, so what answered really
+  is Postgres, reached with the environment the platform injected.
+
+### Known gaps — the first one is serious
+
+- **`FR-063`'s at-rest half is NOT satisfied. The generated password is
+  stored in plaintext in the platform's own database.** `FR-063` names
+  Module O (Secret Management) as the mechanism, and Module O does not
+  exist. The half that protects the employee/agent *is* real — the
+  password never appears in `deployment.yaml`, source control or build
+  logs — but anyone with read access to the platform database can read
+  every application's database password. This is the single biggest
+  reason Module O should land before this is used for anything real.
+- **`FR-064` (Backup Scheduling) is not implemented.** It needs a
+  scheduler this platform doesn't have and a frequency/retention policy
+  the requirement itself marks TBD. Inventing one would be inventing a
+  business decision.
+- **`FR-065`'s "purge or retain-then-purge, per policy" is purge, full
+  stop.** Retention would need the data-retention policy FR-065 defers to,
+  which doesn't exist; a final backup would need FR-064, which isn't built.
+- **`FR-062`'s detection half** ("a cross-application connection attempt is
+  detected and logged as a policy violation") is not implemented — that
+  needs Module Q's network policy layer. Only the *prevention* half is
+  real, which is the half that stops the attempt succeeding.
+- **Postgres only.** `supported_stacks` also lists `redis` under
+  `cache`, and nothing provisions one.
+- **The database container's data lives in the container**, not a named
+  volume — it survives restarts and cold starts (verified), but not a
+  `docker rm` of the database container itself.
+
+### Verifying it
+
+`scripts/verify_module_n.py` runs the whole thing against a live stack and
+a real Docker daemon — two real applications built and deployed from
+source, no mocks anywhere:
+
+```bash
+docker compose up -d --build      # from the repo root, with .env present
+python services/platform-api/scripts/verify_module_n.py
+```
+
+Phase 1 uses a `scaling.min: 1` application (not scale-to-zero-eligible,
+so resume and restart really do start containers for it) to check
+provisioning, isolation from both sides, credential delivery, resume,
+restart, data surviving all of it, and deprovision-on-delete. Phase 2 uses
+an ordinary elastic application to check the cold-start path, waiting for
+a real scale-to-zero first. Both phases delete their application at the
+end and confirm the container, the network *and* the platform's own record
+are gone. It needs a low `SCALE_TO_ZERO_IDLE_SECONDS` (e.g. `20`) for the
+cold-start phase, and says so rather than hanging if it isn't.
+
 ## What's deliberately NOT here yet
 
 Each will land as its own feature branch/PR, per the Application Lifecycle:
@@ -972,8 +1095,9 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   not built yet.
 - Security Administrator force-suspend, bypassing owner-initiated Suspend
   — see **How Suspend/Resume/Restart works**'s known gap.
-- Real deprovisioning on Archive/Delete (Modules N/O/P — Database/Secret/
-  Domain Management) — see **How Archive/Delete work**. Every Application
+- Real deprovisioning on Archive/Delete for secrets and domains (Modules
+  O/P) — see **How Archive/Delete work**. Databases (Module N) *are*
+  deprovisioned for real. Every Application
   Lifecycle state reachable without those modules existing (`Draft` →
   `Validated` → `Build` → `Deploying`/`Running`, `Suspended`, `Rolled Back`
   as a transient step back to `Running`, `Archived`, `Deleted`) is now
@@ -1186,3 +1310,14 @@ result of testing against the real thing instead of only fakes:
   `Suspended` too, not only from `Archived` — both of FR-050's documented
   valid preconditions exercised for real, not just one. `docker ps` showed
   zero leftover containers for either application at the end.
+- **Database Management (Module N)**: automated rather than described, as
+  `scripts/verify_module_n.py` — see **How Database Management works**
+  above for what it covers and how to run it. Its first run is what found
+  the FR-062 isolation defect documented in that section: the database
+  container was on `["bridge", "platform-net-..."]`, not on its private
+  network alone, so every other application's container could reach it.
+  Worth stating plainly, because it is the argument for writing the
+  verification before believing the code: the isolation was asserted in a
+  doc comment, passed every unit test, and was not real. After the fix the
+  same script proves it by connecting from off the network by raw IP and
+  timing out.
