@@ -10,6 +10,8 @@ import {
   type Department,
   type DepartmentRaw,
   type Deployment,
+  type DeploymentActivityReport,
+  type InventoryRow,
   type Notification,
   type OwnershipRole,
   type OwnershipTransfer,
@@ -287,4 +289,20 @@ export function listNotifications(identity: Identity, unreadOnly = false): Promi
 
 export function markNotificationRead(identity: Identity, id: string): Promise<Notification> {
   return request(identity, "POST", `/notifications/${id}/read`);
+}
+
+// --- Reporting (Module AB) -------------------------------------------------
+
+// Both reports are scoped server-side to applications the caller owns —
+// there's no "whose" parameter, same as the audit log and notifications.
+export function applicationInventory(identity: Identity): Promise<{ applications: InventoryRow[] }> {
+  return request(identity, "GET", "/reports/application-inventory");
+}
+
+export function deploymentActivity(identity: Identity, from?: string, to?: string): Promise<DeploymentActivityReport> {
+  const q = new URLSearchParams();
+  if (from) q.set("from", from);
+  if (to) q.set("to", to);
+  const query = q.toString();
+  return request(identity, "GET", `/reports/deployment-activity${query ? `?${query}` : ""}`);
 }

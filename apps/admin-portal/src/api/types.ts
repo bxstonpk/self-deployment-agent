@@ -207,6 +207,36 @@ export interface Notification {
   created_at: string;
 }
 
+// --- Reporting (Module AB) ---
+
+export interface InventoryRow {
+  application_id: string;
+  name: string;
+  department_id: string;
+  department_name: string;
+  lifecycle_status: LifecycleStatus;
+  owner_user_ids: string[];
+  runtimes: string[];
+  environment: string;
+}
+
+export interface OutcomeCounts {
+  succeeded: number;
+  failed: number;
+  rolled_back: number;
+}
+
+export interface DeploymentActivityReport {
+  from: string;
+  to: string;
+  // Present only when the requested range starts before any data this
+  // platform actually holds (FR-128's exception flow).
+  available_from?: string;
+  total: OutcomeCounts;
+  by_environment: Record<string, OutcomeCounts>;
+  by_department: Record<string, OutcomeCounts>;
+}
+
 // --- API error envelope ---
 
 export interface ApiErrorBody {
