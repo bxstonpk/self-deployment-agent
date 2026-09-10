@@ -247,3 +247,29 @@ class PlatformClient:
 
     async def mark_notification_read(self, notification_id: str) -> dict[str, Any]:
         return await self._request("POST", f"/notifications/{notification_id}/read")
+
+    # --- Reporting (Module AB) / Ownership (Module E) ----------------------
+    # Also outside Section 13's original catalog — both modules shipped
+    # after it was written. See tools/reporting.py and tools/ownership.py.
+
+    async def application_inventory(self) -> list[dict[str, Any]]:
+        data = await self._request("GET", "/reports/application-inventory")
+        return data.get("applications", [])
+
+    async def deployment_activity(self, from_time: str | None, to_time: str | None) -> dict[str, Any]:
+        params = {k: v for k, v in {"from": from_time, "to": to_time}.items() if v is not None}
+        return await self._request("GET", "/reports/deployment-activity", params=params or None)
+
+    async def list_owners(self, application_id: str) -> list[dict[str, Any]]:
+        data = await self._request("GET", f"/applications/{application_id}/owners")
+        return data.get("owners", [])
+
+    async def grant_owner(self, application_id: str, email: str, ownership_role: str) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/applications/{application_id}/owners",
+            json={"email": email, "ownership_role": ownership_role},
+        )
+
+    async def revoke_owner(self, application_id: str, user_id: str) -> dict[str, Any]:
+        return await self._request("DELETE", f"/applications/{application_id}/owners/{user_id}")

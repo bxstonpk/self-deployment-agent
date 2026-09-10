@@ -45,9 +45,15 @@ README for exactly what was tested and how):
   found and fixed.
 - An MCP server exposing that lifecycle to an AI agent (Claude Code),
   matching the platform's own `docs/07_MCP_Requirements.md` tool catalog —
-  plus `query_audit_log`/`list_notifications`/`mark_notification_read`,
-  three tools beyond that catalog exposing Modules W/X, which shipped
-  after the catalog was written.
+  plus eight tools beyond it, exposing Audit Log, Notification, Reporting
+  and ownership management, all of which shipped after that catalog was
+  written. One of them, `get_application_inventory`, closes a gap older
+  than the modules themselves: the documented catalog is entirely
+  single-application, so until now nothing could answer "which
+  applications do I have?" at all. Ownership *transfer* is deliberately
+  left out — making someone accountable for an application is a decision
+  a human should take in their own name, not one an agent takes for
+  them.
 - A Markdown skill package instructing Claude Code how to use that MCP
   server correctly.
 - A React admin portal covering the same lifecycle for a human, calling

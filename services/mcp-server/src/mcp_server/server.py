@@ -8,10 +8,14 @@ own. It authenticates as the one employee identity this process is bound to
 allow/deny is re-derived by the Platform API on every call), translates
 each of Section 13's tool calls into the corresponding Platform API
 call(s), and relays the result inside the structured envelope Section 8
-defines. Also registers query_audit_log, list_notifications, and
-mark_notification_read — three tools beyond Section 13's original catalog,
-added after Modules W/X shipped (see tools/audit_log.py and
-tools/notifications.py's module docs for why).
+defines. Also registers eight tools beyond Section 13's original
+catalog, added as later modules shipped: query_audit_log (Module W),
+list_notifications / mark_notification_read (Module X),
+get_application_inventory / get_deployment_activity (Module AB), and
+list_application_owners / grant_application_access /
+revoke_application_access (Module E). Each tool module's own docstring
+says why — including, in tools/ownership.py, why FR-016's ownership
+*transfer* is deliberately not among them.
 """
 
 from __future__ import annotations
@@ -26,7 +30,17 @@ from .config import ConfigError, load_config
 from .envelope import ErrorCode, ToolError, error
 from .idempotency import IdempotencyStore
 from .platform_client import PlatformClient
-from .tools import application, audit_log, deployment, discovery, lifecycle, notifications, observability
+from .tools import (
+    application,
+    audit_log,
+    deployment,
+    discovery,
+    lifecycle,
+    notifications,
+    observability,
+    ownership,
+    reporting,
+)
 
 
 async def _run_tool(
@@ -312,6 +326,53 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
         return await _run_tool(
             audit("mark_notification_read", params, None),
             notifications.mark_notification_read(client, notification_id),
+        )
+
+    # --- Module AB (Reporting) and Module E (ownership management),
+    # both shipped after Section 13's catalog — see tools/reporting.py and
+    # tools/ownership.py, including why FR-016 transfer is NOT here -----
+
+    @mcp.tool()
+    async def get_application_inventory() -> dict[str, Any]:
+        return await _run_tool(
+            audit("get_application_inventory", {}, None),
+            reporting.get_application_inventory(client),
+        )
+
+    @mcp.tool()
+    async def get_deployment_activity(
+        from_time: str | None = None, to_time: str | None = None
+    ) -> dict[str, Any]:
+        params = {"from_time": from_time, "to_time": to_time}
+        return await _run_tool(
+            audit("get_deployment_activity", params, None),
+            reporting.get_deployment_activity(client, from_time, to_time),
+        )
+
+    @mcp.tool()
+    async def list_application_owners(application_id: str) -> dict[str, Any]:
+        params = {"application_id": application_id}
+        return await _run_tool(
+            audit("list_application_owners", params, application_id),
+            ownership.list_application_owners(client, application_id),
+        )
+
+    @mcp.tool()
+    async def grant_application_access(
+        application_id: str, email: str, access_level: str
+    ) -> dict[str, Any]:
+        params = {"application_id": application_id, "email": email, "access_level": access_level}
+        return await _run_tool(
+            audit("grant_application_access", params, application_id),
+            ownership.grant_application_access(client, application_id, email, access_level),
+        )
+
+    @mcp.tool()
+    async def revoke_application_access(application_id: str, user_id: str) -> dict[str, Any]:
+        params = {"application_id": application_id, "user_id": user_id}
+        return await _run_tool(
+            audit("revoke_application_access", params, application_id),
+            ownership.revoke_application_access(client, application_id, user_id),
         )
 
     return mcp

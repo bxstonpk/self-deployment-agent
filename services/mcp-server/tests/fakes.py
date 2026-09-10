@@ -29,6 +29,15 @@ class FakePlatformClient:
         self.next_build_result: dict[str, Any] = {"status": "succeeded", "image_refs": {"api": "platform-build/x:1"}}
         self.audit_entries: list[dict[str, Any]] = []
         self.notifications: list[dict[str, Any]] = []
+        self.inventory: list[dict[str, Any]] = []
+        self.activity: dict[str, Any] = {
+            "from": "2026-01-01T00:00:00Z",
+            "to": "2026-01-31T00:00:00Z",
+            "total": {"succeeded": 0, "failed": 0, "rolled_back": 0},
+            "by_environment": {},
+            "by_department": {},
+        }
+        self.owners: dict[str, list[dict[str, Any]]] = {}
 
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -186,6 +195,32 @@ class FakePlatformClient:
         if unread_only:
             return [n for n in self.notifications if n.get("read_at") is None]
         return list(self.notifications)
+
+    async def application_inventory(self) -> list[dict[str, Any]]:
+        self._record("application_inventory")
+        return list(self.inventory)
+
+    async def deployment_activity(self, from_time: str | None, to_time: str | None) -> dict[str, Any]:
+        self._record("deployment_activity", from_time, to_time)
+        return dict(self.activity)
+
+    async def list_owners(self, application_id: str) -> list[dict[str, Any]]:
+        self._record("list_owners", application_id)
+        return list(self.owners.get(application_id, []))
+
+    async def grant_owner(self, application_id: str, email: str, ownership_role: str) -> dict[str, Any]:
+        self._record("grant_owner", application_id, email, ownership_role)
+        owner = {"user_id": f"user-{email}", "ownership_role": ownership_role, "status": "active"}
+        self.owners.setdefault(application_id, []).append(owner)
+        return owner
+
+    async def revoke_owner(self, application_id: str, user_id: str) -> dict[str, Any]:
+        self._record("revoke_owner", application_id, user_id)
+        remaining = [o for o in self.owners.get(application_id, []) if o["user_id"] != user_id]
+        if len(remaining) == len(self.owners.get(application_id, [])):
+            raise ToolError(ErrorCode.NOT_FOUND, "no active co-owner/contributor grant found")
+        self.owners[application_id] = remaining
+        return {}
 
     async def mark_notification_read(self, notification_id: str) -> dict[str, Any]:
         self._record("mark_notification_read", notification_id)

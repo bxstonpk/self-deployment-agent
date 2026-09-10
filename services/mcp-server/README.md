@@ -38,15 +38,47 @@ something this server works around by dropping one):
 | `restart_application` | 13.12 | `POST .../restart` | |
 | `delete_application` | 13.13 | `GET /applications/{id}`, `POST .../archive` (if `running`), `POST .../delete` | Orchestrates two Platform API calls behind one tool — see below |
 
-Plus three tools **beyond** Section 13's original catalog — Modules W
-(Audit Log) and X (Notification) both shipped after that catalog was
-written, so the doc has no section number for them:
+Plus eight tools **beyond** Section 13's original catalog — Modules W
+(Audit Log), X (Notification), AB (Reporting) and E's ownership
+management all shipped after that catalog was written, so the doc has no
+section number for them:
 
 | Tool | Platform API call | Notes |
 |---|---|---|
 | `query_audit_log` | `GET /audit-log` | Same server-side scoping as the Admin Portal's Audit Log page — entries the caller performed themselves, or that concern an application they own |
 | `list_notifications` | `GET /notifications` | The caller's own deployment-status/approval-request inbox — see `platform-api/README.md`'s "How Notifications work" |
 | `mark_notification_read` | `POST /notifications/{id}/read` | |
+| `get_application_inventory` | `GET /reports/application-inventory` | **The only tool that can enumerate an employee's applications at all** — see below |
+| `get_deployment_activity` | `GET /reports/deployment-activity` | Succeeded/failed/rolled-back totals over a range, by environment and department |
+| `list_application_owners` | `GET /applications/{id}/owners` | |
+| `grant_application_access` | `POST /applications/{id}/owners` | `access_level` is `co_owner` or `contributor`; anything else (including `primary`) is rejected before the platform is called |
+| `revoke_application_access` | `DELETE /applications/{id}/owners/{userId}` | |
+
+#### `get_application_inventory` closes a gap older than Module AB
+
+Section 13's entire catalog is single-application: `get_application_status`
+takes one `application_id`, `get_deployment_status` one `deployment_id`,
+and so on. Nothing in it could answer **"which applications do I have?"** —
+an agent had no way to enumerate an employee's applications without being
+handed the ids first, which in practice meant asking the employee to go
+look them up in the Admin Portal. Module AB's inventory report happens to
+be exactly that list, so exposing it makes this the natural first call in
+most conversations rather than merely a reporting nicety.
+
+#### Why FR-016 (ownership transfer) is deliberately NOT exposed
+
+Granting or revoking co-owner access is reversible, scoped to a single
+application, and is ordinary team-membership housekeeping an employee
+would reasonably ask an agent to do for them. **Accepting an ownership
+transfer is categorically different**: it makes a specific person
+*accountable* for an application — FR-016's own business rule calls it "a
+pure accountability change" — and that is a decision a human should take
+in their own name through the Admin Portal, not one an agent should take
+on their behalf. Initiating a transfer is left out for the same reason: an
+agent nominating someone commits that person to a decision they then have
+to field. This is the same discipline Section 13.13 applies to deletion
+via its explicit-confirmation rule, pointed at accountability instead of
+destruction.
 
 ### Two small Platform API additions this PR needed
 
@@ -338,8 +370,8 @@ This is what was actually run to verify this server for real, not just
 unit-tested against fakes. What it covers, in order, all through the real
 MCP stdio protocol (not calling Python functions directly):
 
-1. Confirms all 16 tools (13 from Section 13, plus `query_audit_log`/
-   `list_notifications`/`mark_notification_read`) are discovered via
+1. Confirms all 21 tools (13 from Section 13, plus the eight
+   later-module tools for Modules W/X/AB/E) are discovered via
    protocol-level `list_tools()`.
 2. `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`
    — real reads against the real catalog.
@@ -390,11 +422,21 @@ notification for v1's deploy, confirmed `mark_notification_read` sets a
 real `read_at`, and confirmed the notification then drops out of the
 unread list.
 
-Every one of the 16 tools was exercised for real in this run — including
+Between steps 6 and 7 it also exercises Module AB and Module E's tools
+against that same live application: confirmed `get_application_inventory`
+listed it with the real stack (`["go"]`) and environment (`dev`) read off
+the live record, confirmed the inventory's own `count` matched its rows,
+confirmed `get_deployment_activity` counted this run's real deploy and
+broke it down by the real environment, confirmed
+`list_application_owners` reported the real active primary owner, and
+confirmed both of `grant_application_access`'s rejections for real — an
+`access_level` of `primary` refused before the platform is even called,
+and a genuinely unknown employee refused by the Platform API itself.
+
+Every one of the 21 tools was exercised for real in this run — including
 both the two that will never succeed (`get_application_logs`,
 `get_application_metrics`) — not just the ones that were easy to make
-pass. The first full run of this exact script (before these three tools
-existed) is also what surfaced the context-cancellation bug described
-above: it failed partway through step 8 with a stuck build, which is what
-led to finding and fixing the root cause rather than just retrying past
-it.
+pass. The first full run of this exact script (back when it covered 13)
+is also what surfaced the context-cancellation bug described above: it
+failed partway through step 8 with a stuck build, which is what led to
+finding and fixing the root cause rather than just retrying past it.
