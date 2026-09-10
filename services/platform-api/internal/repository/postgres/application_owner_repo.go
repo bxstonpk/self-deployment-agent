@@ -90,14 +90,34 @@ func (r *ApplicationOwnerRepo) Revoke(ctx context.Context, applicationID, userID
 // application (e.g. they were a co-owner being promoted) is revoked too,
 // so they don't end up listed twice under two simultaneous roles.
 //
-// Two sequential statements, not one database transaction — this
-// codebase has no cross-repository transaction wrapper (see
-// deploy_service.go's markDeploymentFailedFrom doc comment for the same
-// trade-off elsewhere). Revoking the old primary first is what lets the
-// second statement's new ACTIVE primary row satisfy
-// one_active_primary_owner_per_application at all.
+// Runs its three statements inside a real database transaction — the one
+// place in this codebase that does, and deliberately so. Revoking the
+// prior primary has to happen before inserting the new one (otherwise the
+// insert trips one_active_primary_owner_per_application), which means an
+// unguarded sequence leaves a window where the application has *zero*
+// active primary owners. That is not a theoretical concern: an
+// application in that state is permanently stranded, because every
+// owner-gated action — including the transfer and grant paths that could
+// repair it — requires an active owner to authorize it. Verified by
+// replaying these statements unguarded against a real database and
+// watching the application become untouchable by anyone, including the
+// employee who created it. FR-018's "orphaned application", exactly.
+//
+// The prior primary's row is revoked, never deleted — retained for audit
+// history, per FR-016's own business rule. Any other active,
+// now-redundant role the new primary held on this same application (e.g.
+// they were a co-owner being promoted) is revoked too, so they aren't
+// listed twice under two simultaneous roles.
 func (r *ApplicationOwnerRepo) ReplacePrimaryOwner(ctx context.Context, applicationID, oldPrimaryUserID, newPrimaryUserID, assignedBy string) (domain.ApplicationOwner, error) {
-	if _, err := r.pool.Exec(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.ApplicationOwner{}, fmt.Errorf("begin ownership transfer: %w", err)
+	}
+	// No-op once Commit has succeeded; on any early return below this is
+	// what puts the prior owner back.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
 		UPDATE application_owners SET status = 'revoked'
 		WHERE application_id = $1 AND user_id = $2 AND ownership_role = 'primary' AND status = 'active'
 	`, applicationID, oldPrimaryUserID); err != nil {
@@ -106,7 +126,7 @@ func (r *ApplicationOwnerRepo) ReplacePrimaryOwner(ctx context.Context, applicat
 
 	var o domain.ApplicationOwner
 	var roleStr string
-	err := r.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO application_owners (application_id, user_id, ownership_role, assigned_by)
 		VALUES ($1, $2, 'primary', $3)
 		ON CONFLICT (application_id, user_id, ownership_role)
@@ -120,13 +140,16 @@ func (r *ApplicationOwnerRepo) ReplacePrimaryOwner(ctx context.Context, applicat
 	}
 	o.OwnershipRole = domain.OwnershipRole(roleStr)
 
-	if _, err := r.pool.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		UPDATE application_owners SET status = 'revoked'
 		WHERE application_id = $1 AND user_id = $2 AND ownership_role != 'primary' AND status = 'active'
 	`, applicationID, newPrimaryUserID); err != nil {
 		return domain.ApplicationOwner{}, fmt.Errorf("clean up new primary owner's prior role: %w", err)
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ApplicationOwner{}, fmt.Errorf("commit ownership transfer: %w", err)
+	}
 	return o, nil
 }
 
