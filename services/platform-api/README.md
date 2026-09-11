@@ -1328,6 +1328,22 @@ text, which could itself be sensitive. A refused read is deliberately
 *not* recorded: the audit log shows people their own actions, so an
 entry for the refusal would tell them what the 404 was careful not to.
 
+### Also fixed here: a container that crashed on start was never removed
+
+Verifying the crash case above found it. `StartContainer` returned an
+error without removing the container whenever anything failed after
+creating it, and a container that exits before its port is published
+always fails there. It stayed on the host, exited, for good: every
+failed deploy of a crashing application left one more. `StartContainer`
+now removes the container on any failure after creating it, the way
+`Stop` does (its last lines stored first), and reports that the
+container "exited as it started" instead of that it "published no host
+port". The deploy pipeline also now stops the services it had already
+started when a later one fails to start, as it already did when a health
+check failed. The verification's first version missed this, because it
+looked for leftover containers among running ones only; it now checks
+every state.
+
 ### Known gaps
 
 - **FR-088 (retention and purge) is not implemented.** The retention

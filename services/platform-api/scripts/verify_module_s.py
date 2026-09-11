@@ -48,7 +48,7 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
 sys.path.insert(0, str(HERE))
 import verify_module_o as vo  # noqa: E402
-from verify_module_n import _app_containers, _docker  # noqa: E402
+from verify_module_n import _docker  # noqa: E402
 
 BASE_URL = vo.BASE_URL
 OWNER = "module-s-verify@sti-th.com"
@@ -98,6 +98,17 @@ def _wait_for(app_id: str, predicate, timeout: float = 30.0, **params) -> list[d
         if predicate(entries) or time.time() > deadline:
             return entries
         time.sleep(0.5)
+
+
+def _containers_of(app_id: str) -> list[str]:
+    """Every container carrying this application's label, in any state.
+
+    Not verify_module_n's _app_containers: that lists running ones only,
+    which is how an exited container left behind by a failed deploy once
+    passed here for removed.
+    """
+    out = _docker("ps", "-a", "--filter", f"label=platform.application_id={app_id}", "--format", "{{.Names}}")
+    return out.split() if out else []
 
 
 def _find(entries: list[dict], text: str, instance: str | None = None) -> list[dict]:
@@ -367,7 +378,9 @@ def main() -> int:
     status, body, _ = _call("POST", f"/applications/{crash_id}/deploy", {"environment": "dev"})
     _check(status >= 400 or str((body or {}).get("status")).lower() == "failed",
            f"the deploy fails (HTTP {status}, status {(body or {}).get('status')})")
-    _check(not _app_containers(crash_name), "and the platform removed the container")
+    _check("exited as it started" in str((body or {}).get("failure_reason")),
+           "and says why: the container exited as it started, with its output in the logs")
+    _check(not _containers_of(crash_id), "the platform removed the container: none is left in any state, exited included")
     crash = _wait_for(crash_id, lambda es: len(es) >= 2, timeout=10)
     fatal = _find(crash, "REQUIRED_SETTING is not set")
     _check(fatal and fatal[0]["stream"] == "stderr", "yet what it printed before crashing can still be read: the reason, on stderr")
@@ -380,7 +393,7 @@ def main() -> int:
     vo._teardown(app_id, OWNER)
     status, _, _ = _call("POST", f"/applications/{crash_id}/delete", {"confirm": True})
     _check(status == 200, f"both applications are deleted (HTTP {status})")
-    leftovers = _app_containers(app_name) + _app_containers(crash_name)
+    leftovers = _containers_of(app_id) + _containers_of(crash_id)
     db_left = _docker("ps", "-a", "--filter", f"name=platform-db-{app_name}-", "--format", "{{.Names}}")
     _check(not leftovers and not db_left, "no container of either is left")
     kept = vo._platform_sql(f"SELECT count(*) FROM application_logs WHERE application_id IN ('{app_id}', '{crash_id}')")
