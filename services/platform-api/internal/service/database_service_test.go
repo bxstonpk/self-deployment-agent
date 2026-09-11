@@ -79,6 +79,9 @@ type fakeDatabaseRuntime struct {
 	removeNetworkErr error
 
 	readyWaits int
+
+	passwordsSet   []string // every password SetDatabasePassword was asked to set, in order
+	setPasswordErr error
 }
 
 func newFakeDatabaseRuntime() *fakeDatabaseRuntime {
@@ -120,6 +123,14 @@ func (f *fakeDatabaseRuntime) Stop(ctx context.Context, containerID string) erro
 func (f *fakeDatabaseRuntime) WaitDatabaseReady(ctx context.Context, containerID string, spec domain.DatabaseSpec, timeout time.Duration) error {
 	f.readyWaits++
 	return f.readyErr
+}
+
+func (f *fakeDatabaseRuntime) SetDatabasePassword(ctx context.Context, containerID string, spec domain.DatabaseSpec) error {
+	if f.setPasswordErr != nil {
+		return f.setPasswordErr
+	}
+	f.passwordsSet = append(f.passwordsSet, spec.Password)
+	return nil
 }
 
 func newDatabaseService() (*service.DatabaseService, *fakeProvisionedDatabaseRepo, *fakeDatabaseRuntime) {

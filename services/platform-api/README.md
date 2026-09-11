@@ -72,6 +72,7 @@ for how it fits the Control Plane.
 | `GET /applications/{id}/secrets` | FR-066, FR-070 | Names, versions and who last set each secret — never a value. Includes platform-managed ones (the database password). Owner-only — see **How Secret Management works** |
 | `PUT /applications/{id}/secrets/{name}` | FR-066 | Sets or replaces a secret from `{"value": "..."}`. Write-only: the response is metadata, and no endpoint ever returns a value. Takes effect at the application's next container start. Owner-only |
 | `DELETE /applications/{id}/secrets/{name}` | FR-066 | Removes an owner-set secret; a platform-managed one is refused with `409`. Owner-only |
+| `POST /applications/{id}/secrets/{name}/rotate` | FR-068 | Rotates a platform-generated secret — today, the database password: a new one is set on the database (the old one stops authenticating), stored, and running instances are restarted onto it. `409 secret_not_rotatable` for an owner-set secret. Owner-only — see **Rotating the database password** |
 | `GET /audit-log` | FR-104 | Filter by `actor_user_id`/`resource_type`/`resource_id`/`action`/`from`/`to`/`limit`; scoped to entries the caller performed or that concern an application they own |
 | `GET /audit-log/export` | FR-105 | Same filters, CSV response; the export itself is recorded as a new audit entry |
 | `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
@@ -1111,6 +1112,41 @@ database no longer contains the old password anywhere, and after a
 restart the application received exactly its database's real password —
 decrypted from the store — and authenticated with it.
 
+### Rotating the database password (FR-068)
+
+`POST /applications/{id}/secrets/DATABASE_PASSWORD/rotate` does what
+FR-068 asks, in an order chosen so the database and the secret store never
+disagree about which password is current:
+
+1. A new password is set on the database — `ALTER ROLE`, run over the
+   database container's own Unix socket, so no current password is needed.
+2. It's stored, sealed. If storing fails, step 1 is undone.
+3. Running instances are restarted onto it; a service scaled to zero gets
+   it at its next cold start. If the restart fails, the response is
+   `rotation_incomplete`: the new password is in force, and a Restart
+   finishes the job.
+
+The response and the `secret.rotate` audit entry carry the version, never
+a value. An owner-set secret is refused with `409 secret_not_rotatable` —
+the platform didn't issue it and can't invalidate it.
+
+**How it was checked, and a trap in checking it.** The first probe of
+`ALTER ROLE` against a throwaway Postgres said the *old* password still
+worked afterwards. It did — but only because the probe connected over
+127.0.0.1 inside the database's own network namespace, which the official
+image trusts outright: over loopback, any password "works". Every
+connection an application makes arrives over its private network, where
+passwords are enforced, so that is where rotation has to be verified.
+`scripts/verify_module_n.py` now does exactly that on a real deployed
+application: after rotating, a client on the application's network is
+refused with the old password (`password authentication failed`), gets in
+with the new one and finds the data untouched, and the restarted
+application holds the new password and still reaches its database.
+
+The database container's own `POSTGRES_PASSWORD` variable keeps the
+original value forever — Postgres reads it only at first initialisation —
+so it is not a record of the current password. The secret store is.
+
 ### Also fixed here: databases were reported ready before they were
 
 Found while setting up that legacy application, and a Module N defect
@@ -1139,11 +1175,17 @@ socket check would call it ready a moment too early.
   from a running container's environment. That is inherent to FR-067's
   environment-variable delivery, and Docker daemon access is
   root-equivalent on the host anyway.
-- **FR-068 (rotation) is partial.** Replacing a value bumps its version
-  and reaches the application at its next container start — a Restart
-  applies it immediately (verified) — but there is no overlap window, no
-  scheduled rotation, and nothing invalidates the old value. Rotating a
-  database password (`ALTER ROLE` plus re-injection) is not implemented.
+- **FR-068 (rotation) covers what the platform issued, and only on
+  demand.** The database password rotates for real (see **Rotating the
+  database password** above). An owner-set secret can only be replaced —
+  effective at the next start, and nothing here can invalidate a
+  credential a third party issued. There is no scheduled rotation (the
+  interval is TBD), and no overlap window: Postgres holds one password per
+  role, so between the change and the restart an instance still holding
+  the old password can't open new connections (ones already open keep
+  working). A cold start that reads the store in the instant between the
+  database change and the store update would start with the old password
+  — a narrow window, stated rather than hidden.
 - **FR-071 (approval for production secret operations) is not
   implemented** — it needs the approval workflow and RBAC that don't
   exist.

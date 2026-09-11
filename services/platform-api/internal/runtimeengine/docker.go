@@ -13,8 +13,10 @@ package runtimeengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -266,7 +268,7 @@ func (r *DockerRuntime) WaitDatabaseReady(ctx context.Context, containerID strin
 	cmd := []string{"pg_isready", "-q", "-h", "127.0.0.1", "-p", "5432", "-U", spec.Username, "-d", spec.DatabaseName}
 	var lastErr error
 	for time.Now().Before(deadline) {
-		exitCode, err := r.execExitCode(ctx, containerID, cmd)
+		exitCode, err := r.execExitCode(ctx, containerID, cmd, nil)
 		if err == nil && exitCode == 0 {
 			return nil
 		}
@@ -284,9 +286,48 @@ func (r *DockerRuntime) WaitDatabaseReady(ctx context.Context, containerID strin
 	return fmt.Errorf("database did not accept connections within %s: %w", timeout, lastErr)
 }
 
+// databaseIdentifier and databasePassword bound what SetDatabasePassword
+// will splice into SQL: the platform's own role/database names and its
+// base64url passwords (see service.generatePassword) — nothing else.
+var (
+	databaseIdentifier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+	databasePassword   = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+)
+
+// SetDatabasePassword changes the application role's password inside its
+// database container — FR-068's rotation for the credential Module N
+// generates. psql runs over the container's Unix socket, which the
+// official image trusts (as it also trusts 127.0.0.1), so no current
+// password is needed. Every connection an application makes arrives over
+// its private network instead, where the password is enforced — which is
+// also why rotation has to be verified from another container: inside the
+// database's own network namespace, any password "works".
+//
+// The new password travels in the exec's environment, not on its command
+// line, and is checked against the platform's own alphabet first because
+// it ends up inside a SQL string literal.
+func (r *DockerRuntime) SetDatabasePassword(ctx context.Context, containerID string, spec domain.DatabaseSpec) error {
+	if !databaseIdentifier.MatchString(spec.Username) || !databaseIdentifier.MatchString(spec.DatabaseName) {
+		return errors.New("refusing to rotate: unexpected database role or name")
+	}
+	if !databasePassword.MatchString(spec.Password) {
+		return errors.New("refusing to rotate: the new password is outside the platform's password alphabet")
+	}
+	script := `psql -q -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" -c "ALTER ROLE \"$DB_USER\" PASSWORD '$NEW_PASSWORD'"`
+	env := []string{"DB_USER=" + spec.Username, "DB_NAME=" + spec.DatabaseName, "NEW_PASSWORD=" + spec.Password}
+	exitCode, err := r.execExitCode(ctx, containerID, []string{"sh", "-c", script}, env)
+	if err != nil {
+		return fmt.Errorf("run ALTER ROLE: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("ALTER ROLE exited %d", exitCode)
+	}
+	return nil
+}
+
 // execExitCode runs cmd inside a container and returns its exit code.
-func (r *DockerRuntime) execExitCode(ctx context.Context, containerID string, cmd []string) (int, error) {
-	created, err := r.cli.ContainerExecCreate(ctx, containerID, types.ExecConfig{Cmd: cmd})
+func (r *DockerRuntime) execExitCode(ctx context.Context, containerID string, cmd, env []string) (int, error) {
+	created, err := r.cli.ContainerExecCreate(ctx, containerID, types.ExecConfig{Cmd: cmd, Env: env})
 	if err != nil {
 		return -1, fmt.Errorf("create exec: %w", err)
 	}

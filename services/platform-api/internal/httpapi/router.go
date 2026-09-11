@@ -83,6 +83,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{id}/secrets", cfg.Secrets.List)
 		r.Put("/{id}/secrets/{name}", cfg.Secrets.Set)
 		r.Delete("/{id}/secrets/{name}", cfg.Secrets.Delete)
+		r.Post("/{id}/secrets/{name}/rotate", cfg.Secrets.Rotate)
 	})
 
 	r.Route("/supported-stacks", func(r chi.Router) {

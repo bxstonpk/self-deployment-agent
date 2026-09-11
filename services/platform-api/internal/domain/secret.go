@@ -18,11 +18,14 @@
 //     one is a contract change, not an implementation detail. Instead,
 //     every secret registered to an application is injected into every one
 //     of its containers, as an environment variable of the same name.
-//   - FR-068 (rotation) is not implemented as specified. Replacing a value
-//     works and takes effect at the next container start (a Restart applies
-//     it at once), but there is no overlap window, no scheduled rotation,
-//     and nothing invalidates the old value — which, for a third-party API
-//     key, only the third party can do anyway.
+//   - FR-068 (rotation) is implemented for the one credential the platform
+//     can genuinely rotate — its own database password (RotationService):
+//     a new value is set on the database, the old one stops authenticating,
+//     and running instances are restarted onto the new one. An owner-set
+//     secret can only be replaced (effective at the next start); nothing
+//     here can invalidate a third-party credential at the third party.
+//     There is no scheduled rotation (the interval is TBD) and no overlap
+//     window (Postgres holds one password per role).
 //   - FR-071 (approval for production secret operations) is not
 //     implemented; it needs the approval workflow and RBAC that don't exist.
 package domain
@@ -126,4 +129,10 @@ var (
 	// ErrSecretUnreadable is FR-067's exception flow: a container whose
 	// secret cannot be decrypted does not start without it.
 	ErrSecretUnreadable = errors.New("a stored secret could not be decrypted")
+	// ErrSecretNotRotatable: only a secret the platform generated can be
+	// rotated by it. An owner-set value can only be replaced.
+	ErrSecretNotRotatable = errors.New("only secrets the platform generated can be rotated by it; to replace an owner-set secret, save a new value")
+	// ErrRotationIncomplete is FR-068's exception flow: the new value is in
+	// force, but not every running instance could be restarted onto it.
+	ErrRotationIncomplete = errors.New("the secret was rotated, but running instances could not all be restarted onto it — restart the application to finish")
 )
