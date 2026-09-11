@@ -112,6 +112,10 @@ func main() {
 	rotationService := service.NewRotationService(applicationRepo, ownerRepo, secretService, databaseService, lifecycleService, auditService)
 	reportingService := service.NewReportingService(applicationRepo, ownerRepo, departmentRepo, deploymentRepo, auditRepo)
 	logService := service.NewLogService(applicationRepo, ownerRepo, logRepo, auditService)
+	// Module R: continuously re-check every already-Running instance's
+	// health (FR-084) and restart one that starts failing it (FR-085) —
+	// on top of the checks deploy/resume/restart/cold-start already run.
+	healthService := service.NewHealthMonitorService(applicationRepo, deploymentRepo, serviceStateRepo, resources, runtime, notificationService)
 	// Module T: the proxy counts every request it forwards, and the
 	// sampler below reads each running container's CPU and memory.
 	trafficRecorder := service.NewTrafficRecorder()
@@ -142,6 +146,7 @@ func main() {
 
 	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)
 	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
+	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -204,6 +209,31 @@ func runMetricsSampler(ctx context.Context, metricsService *service.MetricsServi
 		case <-ticker.C:
 			if _, err := metricsService.Collect(ctx); err != nil {
 				log.Printf("metrics sampler: %v", err)
+			}
+		}
+	}
+}
+
+// runHealthSweeper implements FR-084's continuous polling loop:
+// periodically re-checks every already-Running instance's health and
+// remediates one that's begun failing it (FR-085). Runs until ctx is
+// cancelled.
+func runHealthSweeper(ctx context.Context, healthService *service.HealthMonitorService, interval time.Duration) {
+	log.Printf("health sweeper running every %s", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, remediated, err := healthService.Sweep(ctx)
+			if err != nil {
+				log.Printf("health sweeper: %v", err)
+				continue
+			}
+			if remediated > 0 {
+				log.Printf("health sweeper: remediated %d unhealthy instance(s)", remediated)
 			}
 		}
 	}

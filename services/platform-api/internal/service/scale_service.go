@@ -26,6 +26,12 @@ type ServiceRuntimeStateRepository interface {
 	ClearContainer(ctx context.Context, deploymentID, serviceName, expectedContainerID string) (bool, error)
 	TouchActive(ctx context.Context, deploymentID, serviceName string) error
 	ListEligibleActive(ctx context.Context) ([]domain.ServiceRuntimeState, error)
+	// ListAllActive returns every service currently running a container,
+	// across every deployment, regardless of scale-to-zero eligibility —
+	// the candidate set for Module R's continuous health sweep (FR-084),
+	// which applies to every Running instance, not only the ones
+	// ListEligibleActive is scoped to.
+	ListAllActive(ctx context.Context) ([]domain.ServiceRuntimeState, error)
 	// ListForDeployment returns every service's state regardless of
 	// eligibility — used by Suspend/Resume/Restart (lifecycle_service.go),
 	// which must act on ALL services, not just the scale-to-zero-eligible
