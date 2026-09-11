@@ -26,7 +26,12 @@ from ..platform_client import PlatformClient
 # would accept" — calling Archive on an already-'suspended' app would be a
 # needless extra round trip Delete doesn't require.
 _NEEDS_ARCHIVE_FIRST = {"running"}
-_DIRECTLY_DELETABLE = {"archived", "suspended"}
+# Archived/Suspended are FR-050's own preconditions. The rest never went
+# live (docs/05_Process_Flows.md "Draft -> Deleted"; docs/01_BRD.md "any
+# pre-Running state may terminate to Deleted directly if abandoned"). For
+# build/failed the Platform API still refuses (CONFLICT) if a previous
+# version is actually serving — this set is not the safety check; that is.
+_DIRECTLY_DELETABLE = {"archived", "suspended", "draft", "validated", "build", "failed"}
 
 
 async def delete_application(

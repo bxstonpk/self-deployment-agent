@@ -122,6 +122,8 @@ func writeLifecycleError(w http.ResponseWriter, err error) {
 	// platform key) — never a value.
 	case errors.Is(err, domain.ErrSecretUnreadable), errors.Is(err, domain.ErrSecretNotFound):
 		writeError(w, http.StatusInternalServerError, "secret_unavailable", err.Error())
+	case errors.Is(err, domain.ErrApplicationStillLive):
+		writeError(w, http.StatusConflict, "application_still_live", err.Error())
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "application not found")
 	case errors.Is(err, domain.ErrUnauthorized):

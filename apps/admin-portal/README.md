@@ -142,7 +142,7 @@ enforces (checked against source, not assumed):
 | Resume | `suspended` | `lifecycle_service.go`'s `Resume` |
 | Restart | `running` | `lifecycle_service.go`'s `Restart` |
 | Archive | `running` or `suspended` | `lifecycle_service.go`'s `Archive` |
-| Delete | `archived` or `suspended` | `lifecycle_service.go`'s `Delete` |
+| Delete | `archived` or `suspended` — or `draft`, `validated`, `build` or `failed` while nothing is running or in progress (no running or in-flight deployment in the history, no queued or running build) | `lifecycle_service.go`'s `Delete` and its `requireNothingLive` guard |
 | Save secret | anything but `deleted` | `secret_service.go`'s `Set` (a deleted application's secrets were purged with it) |
 
 This is a convenience, not a security boundary — the Platform API
@@ -591,3 +591,18 @@ files), and a password field invites the browser's password manager to
 save the value. Spell-check is off (enhanced spell-checking can send what's
 typed to a third-party service), as is autocomplete. The cost is that the
 value is visible while it's typed — listed under **Known gaps**.
+
+### Deleting an application that never went live, verified for real
+
+Delete used to be enabled only for `archived`/`suspended` applications,
+matching the Platform API — where an application that had never been
+deployed could not be deleted by anyone, since Archive needs it running
+first. Both now follow `docs/05_Process_Flows.md`'s `Draft → Deleted`:
+Delete is also offered for `draft`, `validated`, `build` and `failed`, but
+only while nothing in the deployment history is running or in progress and
+no build is queued or running — because a rebuild leaves an application in
+`build` while its previous version still serves. A Playwright pass against
+a real stack confirmed both sides: on an application mid-rebuild with its
+previous version live, Delete is disabled and its tooltip says why; on a
+draft, Delete is enabled, and confirming it really deletes the
+application. No page errors.
