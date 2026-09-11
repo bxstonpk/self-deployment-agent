@@ -99,24 +99,25 @@ func main() {
 	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime, resources)
 	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService, notificationService, resources)
 	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService, resources)
+	rotationService := service.NewRotationService(applicationRepo, ownerRepo, secretService, databaseService, lifecycleService, auditService)
 	reportingService := service.NewReportingService(applicationRepo, ownerRepo, departmentRepo, deploymentRepo, auditRepo)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
-		Authenticator: authenticator,
-		Applications:  httpapi.NewApplicationHandler(applicationService),
-		Departments:   httpapi.NewDepartmentHandler(departmentRepo),
-		Validation:    httpapi.NewValidationHandler(validationService),
-		Stacks:        httpapi.NewStackHandler(stackRepo),
-		Builds:        httpapi.NewBuildHandler(buildService),
-		Deploys:       httpapi.NewDeployHandler(deployService),
-		ScaleEvents:   httpapi.NewScaleEventsHandler(deployService, scaleService),
-		Proxy:         httpapi.NewProxyHandler(scaleService),
-		Lifecycle:     httpapi.NewLifecycleHandler(lifecycleService),
-		Audit:         httpapi.NewAuditHandler(auditService),
-		Notifications: httpapi.NewNotificationHandler(notificationService),
-		Reports:       httpapi.NewReportHandler(reportingService),
-		Secrets:       httpapi.NewSecretHandler(secretService),
+		Authenticator:      authenticator,
+		Applications:       httpapi.NewApplicationHandler(applicationService),
+		Departments:        httpapi.NewDepartmentHandler(departmentRepo),
+		Validation:         httpapi.NewValidationHandler(validationService),
+		Stacks:             httpapi.NewStackHandler(stackRepo),
+		Builds:             httpapi.NewBuildHandler(buildService),
+		Deploys:            httpapi.NewDeployHandler(deployService),
+		ScaleEvents:        httpapi.NewScaleEventsHandler(deployService, scaleService),
+		Proxy:              httpapi.NewProxyHandler(scaleService),
+		Lifecycle:          httpapi.NewLifecycleHandler(lifecycleService),
+		Audit:              httpapi.NewAuditHandler(auditService),
+		Notifications:      httpapi.NewNotificationHandler(notificationService),
+		Reports:            httpapi.NewReportHandler(reportingService),
+		Secrets:            httpapi.NewSecretHandler(secretService, rotationService),
 		PlatformEnv:        cfg.PlatformEnv,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})

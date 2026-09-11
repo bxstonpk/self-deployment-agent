@@ -48,6 +48,7 @@ type DatabaseRuntime interface {
 	RemoveNetwork(ctx context.Context, networkID string) error
 	StartDatabase(ctx context.Context, spec domain.DatabaseSpec) (string, error)
 	WaitDatabaseReady(ctx context.Context, containerID string, spec domain.DatabaseSpec, timeout time.Duration) error
+	SetDatabasePassword(ctx context.Context, containerID string, spec domain.DatabaseSpec) error
 	Stop(ctx context.Context, containerID string) error
 }
 
@@ -284,4 +285,42 @@ func (s *DatabaseService) MigrateLegacyPlaintextPasswords(ctx context.Context) (
 		moved++
 	}
 	return moved, nil
+}
+
+// RotatePassword implements FR-068 for the credential Module N generates.
+// The new password is set on the database first and stored second; if
+// storing fails, the database is put back to the old password, so the
+// database and the secret store never disagree about which one is current.
+// (If even that revert fails, the error says so: the database then holds a
+// password nothing records, and that must not be quiet.)
+//
+// Postgres keeps one password per role, so there is no overlap window:
+// connections already open keep working, but a new connection from an
+// instance still holding the old password fails until that instance is
+// restarted — which RotationService does straight afterwards.
+func (s *DatabaseService) RotatePassword(ctx context.Context, applicationID string) error {
+	db, err := s.repo.GetLiveForApplication(ctx, applicationID)
+	if err != nil {
+		return err
+	}
+	oldPassword, err := s.secrets.ManagedValue(ctx, applicationID, domain.DatabasePasswordSecret)
+	if err != nil {
+		return fmt.Errorf("read the current database password: %w", err)
+	}
+	newPassword, err := generatePassword()
+	if err != nil {
+		return err
+	}
+	spec := domain.DatabaseSpec{Username: db.Username, DatabaseName: db.DatabaseName, Password: newPassword}
+	if err := s.runtime.SetDatabasePassword(ctx, db.ContainerID, spec); err != nil {
+		return fmt.Errorf("set the new password on the database: %w", err)
+	}
+	if err := s.secrets.PutManaged(ctx, applicationID, domain.DatabasePasswordSecret, newPassword); err != nil {
+		spec.Password = oldPassword
+		if revertErr := s.runtime.SetDatabasePassword(ctx, db.ContainerID, spec); revertErr != nil {
+			return fmt.Errorf("store the rotated password: %v — and putting the database back to the previous one also failed: %w", err, revertErr)
+		}
+		return fmt.Errorf("store the rotated password (the database was put back to the previous one): %w", err)
+	}
+	return nil
 }

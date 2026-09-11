@@ -18,6 +18,9 @@ checks the things Module N actually claims:
           reports the server's response)
   FR-065  deleting the application tears the database down: container gone,
           network gone, record closed
+  FR-068  (Module O) rotating its password: from the application's own
+          network the old password stops authenticating, the new one works,
+          the data is untouched, and the restarted application has it
 
 and the part that has no requirement number but is the easiest thing to get
 wrong — that the wiring survives resume, restart, and a scale-to-zero cold
@@ -92,6 +95,10 @@ def _docker(*args: str, check: bool = True) -> str:
 
 def _inspect(target: str, fmt: str, check: bool = True) -> str:
     return _docker("inspect", "-f", fmt, target, check=check)
+
+
+def _env_of(container: str) -> dict:
+    return dict(e.split("=", 1) for e in json.loads(_inspect(container, "{{json .Config.Env}}")) if "=" in e)
 
 
 # The deployed application does the FR-063 proof itself: it reads the
@@ -419,6 +426,31 @@ def main() -> int:
     still = _psql(private_net, db_container, user, dbname, pw, "SELECT v FROM verify LIMIT 1")
     _check(still.returncode == 0 and still.stdout.strip() == "written-before-restart",
            f"the row written before those restarts is still there (got {still.stdout.strip()!r})")
+
+    # Checked from a container on the application's network, never from
+    # inside the database's own: the official image trusts loopback, so any
+    # password "works" there — which would make this check meaningless.
+    print("\n--- FR-068: rotating the database password ---")
+    old_pw = _env_of(app_container)["DATABASE_PASSWORD"]
+    rotated = _api("POST", f"/applications/{app_id}/secrets/DATABASE_PASSWORD/rotate")
+    _check(rotated.get("restarted") is True and rotated.get("secret", {}).get("version") == 2,
+           f"the owner rotates it; running instances restarted onto version {rotated.get('secret', {}).get('version')}")
+    after = _app_containers(app_name)
+    new_pw = _env_of(after[0])["DATABASE_PASSWORD"] if len(after) == 1 else None
+    _check(bool(new_pw) and new_pw != old_pw, "the restarted container was given a new password")
+    _check(bool(new_pw) and new_pw not in json.dumps(rotated) and old_pw not in json.dumps(rotated),
+           "...and the API response contained neither password")
+    stale = _psql(private_net, db_container, user, dbname, old_pw, "SELECT 1", attempts=1)
+    _check(stale.returncode != 0 and "password authentication failed" in stale.stderr,
+           "the old password no longer authenticates, from the application's network")
+    fresh = _psql(private_net, db_container, user, dbname, new_pw or "", "SELECT v FROM verify LIMIT 1", attempts=1)
+    _check(fresh.returncode == 0 and fresh.stdout.strip() == "written-before-restart",
+           "the new one does, and the data is untouched")
+    _check(_dbcheck(app_name).get("reachable") is True, "the application still reaches its database")
+    _api("PUT", f"/applications/{app_id}/secrets/OWNER_SET_KEY", {"value": "owner-set-value"})
+    refused = _api("POST", f"/applications/{app_id}/secrets/OWNER_SET_KEY/rotate", expect=(409,))
+    _check("secret_not_rotatable" in json.dumps(refused),
+           "an owner-set secret is refused: the platform can't invalidate what it didn't issue")
 
     print("\n--- FR-065: deletion tears the database down ---")
     _teardown(app_id, db_container, private_net)

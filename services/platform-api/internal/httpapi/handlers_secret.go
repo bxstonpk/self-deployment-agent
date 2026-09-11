@@ -3,6 +3,7 @@
 //	GET    /applications/{id}/secrets          names and metadata, never values
 //	PUT    /applications/{id}/secrets/{name}   sets or replaces a value; write-only
 //	DELETE /applications/{id}/secrets/{name}
+//	POST   /applications/{id}/secrets/{name}/rotate   FR-068; platform-generated secrets only
 //
 // There is deliberately no endpoint that returns a stored value. FR-070's
 // "never display a stored secret's plaintext value back to a human
@@ -22,6 +23,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"platform-api/internal/domain"
+	"platform-api/internal/service"
 )
 
 type SecretStore interface {
@@ -30,12 +32,37 @@ type SecretStore interface {
 	Delete(ctx context.Context, applicationID, requesterID, name string) error
 }
 
-type SecretHandler struct {
-	svc SecretStore
+// SecretRotator is FR-068 — see service/rotation_service.go.
+type SecretRotator interface {
+	Rotate(ctx context.Context, applicationID, requesterID, name string) (service.RotationResult, error)
 }
 
-func NewSecretHandler(svc SecretStore) *SecretHandler {
-	return &SecretHandler{svc: svc}
+type SecretHandler struct {
+	svc     SecretStore
+	rotator SecretRotator
+}
+
+func NewSecretHandler(svc SecretStore, rotator SecretRotator) *SecretHandler {
+	return &SecretHandler{svc: svc, rotator: rotator}
+}
+
+// Rotate handles POST /applications/{id}/secrets/{name}/rotate. Like every
+// other endpoint here it returns metadata only: the new value goes to the
+// database and the running instances, never to the caller.
+func (h *SecretHandler) Rotate(w http.ResponseWriter, r *http.Request) {
+	caller, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing authenticated caller")
+		return
+	}
+	result, err := h.rotator.Rotate(r.Context(), chi.URLParam(r, "id"), caller.ID, chi.URLParam(r, "name"))
+	if err != nil {
+		writeSecretError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"secret": toSecretResponse(result.Secret), "restarted": result.Restarted, "note": result.Note,
+	})
 }
 
 // maxSecretRequestBytes leaves room for JSON escaping around the largest
@@ -136,6 +163,12 @@ func writeSecretError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "secret_managed_by_platform", err.Error())
 	case errors.Is(err, domain.ErrInvalidLifecycleTransition):
 		writeError(w, http.StatusConflict, "invalid_lifecycle_transition", err.Error())
+	case errors.Is(err, domain.ErrSecretNotRotatable):
+		writeError(w, http.StatusConflict, "secret_not_rotatable", err.Error())
+	case errors.Is(err, domain.ErrRotationIncomplete):
+		writeError(w, http.StatusInternalServerError, "rotation_incomplete", err.Error())
+	case errors.Is(err, domain.ErrDatabaseNotProvisioned):
+		writeError(w, http.StatusNotFound, "database_not_provisioned", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "unexpected error")
 	}

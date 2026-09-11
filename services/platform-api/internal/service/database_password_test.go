@@ -144,3 +144,71 @@ func TestMigrateLegacyPlaintextPasswords_StoreFailureKeepsThePlaintext(t *testin
 		t.Fatalf("a plaintext password was cleared without being stored first: %v", repo.cleared)
 	}
 }
+
+// FR-068 for the database credential: the database gets a new password,
+// the store gets the same one, and it isn't the old one.
+func TestRotatePassword_SetsItOnTheDatabaseThenStoresIt(t *testing.T) {
+	svc, _, runtime, secrets := newDatabaseServiceWithSecrets()
+	ctx := context.Background()
+	if _, err := svc.EnsureProvisioned(ctx, testApp(), "postgres"); err != nil {
+		t.Fatal(err)
+	}
+	old := secrets.password("app-1")
+
+	if err := svc.RotatePassword(ctx, "app-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	stored := secrets.password("app-1")
+	if stored == old || len(stored) < 20 {
+		t.Fatalf("expected a fresh password in the store, got %q (old %q)", stored, old)
+	}
+	if len(runtime.passwordsSet) != 1 || runtime.passwordsSet[0] != stored {
+		t.Fatalf("the database was not given the password the store holds: %v", runtime.passwordsSet)
+	}
+}
+
+// If the store can't take the new password, the database must not keep
+// it: the two would disagree, and every later start would fail to log in.
+func TestRotatePassword_StoreFailurePutsTheDatabaseBack(t *testing.T) {
+	svc, _, runtime, secrets := newDatabaseServiceWithSecrets()
+	ctx := context.Background()
+	if _, err := svc.EnsureProvisioned(ctx, testApp(), "postgres"); err != nil {
+		t.Fatal(err)
+	}
+	old := secrets.password("app-1")
+	secrets.putErr = errors.New("secret store unavailable")
+
+	if err := svc.RotatePassword(ctx, "app-1"); err == nil {
+		t.Fatal("expected the store failure to surface")
+	}
+	if len(runtime.passwordsSet) != 2 || runtime.passwordsSet[1] != old {
+		t.Fatalf("expected the new password set, then the old one restored: %v", runtime.passwordsSet)
+	}
+	if secrets.password("app-1") != old {
+		t.Fatal("the stored password changed even though the rotation failed")
+	}
+}
+
+func TestRotatePassword_DatabaseFailureLeavesTheStoreAlone(t *testing.T) {
+	svc, _, runtime, secrets := newDatabaseServiceWithSecrets()
+	ctx := context.Background()
+	if _, err := svc.EnsureProvisioned(ctx, testApp(), "postgres"); err != nil {
+		t.Fatal(err)
+	}
+	old := secrets.password("app-1")
+	runtime.setPasswordErr = errors.New("ALTER ROLE exited 1")
+
+	if err := svc.RotatePassword(ctx, "app-1"); err == nil {
+		t.Fatal("expected the database failure to surface")
+	}
+	if secrets.password("app-1") != old {
+		t.Fatal("the store took a password the database never accepted")
+	}
+}
+
+func TestRotatePassword_WithoutADatabase(t *testing.T) {
+	svc, _, _, _ := newDatabaseServiceWithSecrets()
+	if err := svc.RotatePassword(context.Background(), "app-without-db"); !errors.Is(err, domain.ErrDatabaseNotProvisioned) {
+		t.Fatalf("expected ErrDatabaseNotProvisioned, got %v", err)
+	}
+}

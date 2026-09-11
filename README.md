@@ -105,7 +105,9 @@ README for exactly what was tested and how):
   encrypted, injects it into every container the application starts as an
   environment variable, and never returns the value again, from any
   endpoint or the audit log. Module N's database passwords moved into it,
-  and existing plaintext ones are sealed at startup. Verified the way an
+  existing plaintext ones are sealed at startup, and an owner can rotate
+  one: the old password stops authenticating and running instances are
+  restarted onto the new one. Verified the way an
   attacker would look (see `services/platform-api/scripts/verify_module_o.py`):
   a full `pg_dump` of the platform database, every layer of the built
   image and the platform's own logs contain the value nowhere, while the
@@ -229,8 +231,8 @@ These block real production use, not just missing polish:
   taking the key off the host is what a real backend chosen under
   `DEC-006` (still Open) would do. See `services/platform-api/README.md`'s
   "How Secret Management works" for this and Module O's other gaps
-  (rotation is partial; production-secret approval and injection auditing
-  are missing).
+  (rotation covers only what the platform itself issues, on demand;
+  production-secret approval and injection auditing are missing).
 - **No Domain or Network management** (Modules P/Q). Module Q's absence
   means `FR-062`'s *detection* half is missing: a cross-application
   database connection attempt is prevented, but not detected or logged as
