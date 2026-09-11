@@ -66,6 +66,7 @@ def _source_archive_base64(main_go_body: str) -> str:
 
 _V1_SOURCE = (
     'package main\n\nimport (\n\t"fmt"\n\t"net/http"\n)\n\nfunc main() {\n'
+    '\tfmt.Println("mcptest v1 listening on :8080")\n'
     '\thttp.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {\n'
     '\t\tfmt.Fprintln(w, "hello from mcptest v1")\n\t})\n'
     '\thttp.ListenAndServe(":8080", nil)\n}\n'
@@ -334,10 +335,12 @@ async def main() -> None:
             _check(bool(restarted["data"]["restarted_at"]), "restart_application reports a real restarted_at (was always null before this fix)")
 
             logs = _print_result(
-                "get_application_logs (expected honest not-implemented error)",
+                "get_application_logs (Module S)",
                 await session.call_tool("get_application_logs", {"application_id": app_id, "environment": "dev"}),
             )
-            _check(logs["status"] == "error" and logs["error"]["code"] == "INTERNAL_ERROR" and "Module S" in logs["error"]["message"], "logs tool honestly reports Module S doesn't exist")
+            logged = [e["message"] for e in (logs.get("data") or {}).get("entries", [])]
+            _check(logs["status"] == "success" and any("mcptest v1 listening" in m for m in logged),
+                   f"get_application_logs returns what the running application printed ({len(logged)} line(s))")
 
             metrics = _print_result(
                 "get_application_metrics (expected honest not-implemented error)",

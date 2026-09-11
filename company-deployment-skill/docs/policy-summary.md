@@ -62,9 +62,12 @@ oversight beyond that.
 - **Audit logging.** Tool calls are logged by the MCP server itself
   (structured output, not a durable/queryable store) — there is no
   platform-wide audit log an Auditor could query yet.
-- **Logging and metrics.** `get_application_logs` and
-  `get_application_metrics` always return an error explaining this
-  outright — see `troubleshooting.md`.
+- **Logging and metrics.** `get_application_logs` returns an
+  application's own output to its owners only, with the secret values
+  the platform injected redacted, and every read recorded in the
+  platform's audit log. `get_application_metrics` always returns an
+  error explaining that metrics don't exist yet — see
+  `troubleshooting.md`.
 
 ## Idempotency
 

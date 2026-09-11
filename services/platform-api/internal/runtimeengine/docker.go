@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -32,10 +33,22 @@ import (
 
 type DockerRuntime struct {
 	cli *client.Client
+
+	// Module S collection (logs.go); nil until EnableLogCollection.
+	logs      LogSink
+	followMu  sync.Mutex
+	followers map[string]*follower
 }
 
 func NewDockerRuntime(cli *client.Client) *DockerRuntime {
-	return &DockerRuntime{cli: cli}
+	return &DockerRuntime{cli: cli, followers: map[string]*follower{}}
+}
+
+// EnableLogCollection turns on Module S: from here on, every application
+// container this runtime starts is followed from its first line, and Stop
+// waits for a container's last lines before removing it.
+func (r *DockerRuntime) EnableLogCollection(sink LogSink) {
+	r.logs = sink
 }
 
 // StartContainer implements the Deployment pipeline step: starts one
@@ -53,6 +66,9 @@ func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.Containe
 		Image:        spec.ImageRef,
 		Env:          spec.Env,
 		ExposedPorts: nat.PortSet{portKey: struct{}{}},
+	}
+	if spec.Log.Collect() {
+		cfg.Labels = containerLabels(spec.Log, spec.Env)
 	}
 	hostCfg := &container.HostConfig{
 		PortBindings: nat.PortMap{
@@ -74,6 +90,11 @@ func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.Containe
 	}
 	if err := r.cli.ContainerStart(ctx, created.ID, types.ContainerStartOptions{}); err != nil {
 		return domain.RunningContainer{}, fmt.Errorf("start container: %w", err)
+	}
+	// Module S: followed from its very first line, before the health check
+	// — so a container that crashes on start still leaves its output.
+	if r.logs != nil && spec.Log.Collect() {
+		r.follow(created.ID, spec.Log, redactionsFor(spec.Env, secretEnvKeys(spec.Env)), time.Time{})
 	}
 
 	inspected, err := r.cli.ContainerInspect(ctx, created.ID)
@@ -138,6 +159,10 @@ func (r *DockerRuntime) Stop(ctx context.Context, containerID string) error {
 	if err := r.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout}); err != nil {
 		return fmt.Errorf("stop container: %w", err)
 	}
+	// Module S: the log stream ends when the container does. Wait for its
+	// last lines to be stored before the container — and with it Docker's
+	// own copy of its output — is gone.
+	r.waitForLogs(containerID)
 	if err := r.cli.ContainerRemove(ctx, containerID, types.ContainerRemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("remove container: %w", err)
 	}

@@ -32,7 +32,7 @@ something this server works around by dropping one):
 | `deploy_application` | 13.6 | `POST .../build` (if `source_archive_base64` given), `POST .../deploy` | Builds first when given source — see **How deploy_application closes the build gap** |
 | `get_application_status` | 13.7 | `GET /applications/{id}`, `GET .../deployments/latest`, `GET .../secrets` | Includes the application's **secret names**, never values — 13.7's "secret references"; see **Why no MCP tool accepts a secret value** |
 | `get_deployment_status` | 13.8 | `GET /deployments/{id}` | New Platform API endpoint added in this PR — see below |
-| `get_application_logs` | 13.9 | *(none)* | Always a clear `INTERNAL_ERROR` — Module S doesn't exist |
+| `get_application_logs` | 13.9 | `GET .../logs` | What the application's containers printed, newest first, with the secrets the platform injected already redacted (Module S). `time_range` (`15m`, `1h`, `7d`…) becomes `since`; `next_cursor` pages back. `level` is always `null` — levels aren't parsed — and a `severity` filter is reported in `note` as not applied rather than silently ignored. `NOT_FOUND` for an application the caller doesn't own |
 | `get_application_metrics` | 13.10 | *(none)* | Always a clear `INTERNAL_ERROR` — Module T doesn't exist |
 | `rollback_application` | 13.11 | `GET .../deployments` (for `target_version="previous"`), `POST .../rollback` | |
 | `restart_application` | 13.12 | `POST .../restart` | |
@@ -111,6 +111,18 @@ directly shows up in `get_application_status` by name while its value
 appears nowhere in the MCP response; a second MCP session, signed in as
 an employee who isn't an owner, gets `secrets: null` with the note; and
 once the application is deleted, its status lists no secrets at all.
+
+#### `get_application_logs` and the no-secrets-in-the-transcript rule
+
+Logs are the one place a secret value could still reach an agent's
+transcript: an application that prints its own `API_KEY` or
+`DATABASE_URL`. Module S closes that where lines are collected, not
+here — every value the platform injected into a container is replaced
+with `[REDACTED:NAME]` before the line is stored, so neither the Platform
+API nor this tool ever has the value to return
+(`services/platform-api/scripts/verify_module_s.py` checks it against a
+real container that prints its secrets on purpose). Anything else an
+application prints comes back as written.
 
 ### Two small Platform API additions this PR needed
 
@@ -436,9 +448,11 @@ MCP stdio protocol (not calling Python functions directly):
    `deploy_application` closes the build gap**).
 6. `restart_application` — confirmed `COMPLETED` with a real
    `restarted_at` (same previously-`null` bug, same fix).
-7. `get_application_logs`/`get_application_metrics` — confirmed both
-   return the honest Module-S/Module-T-doesn't-exist `INTERNAL_ERROR`,
-   not a crash or a fabricated empty result.
+7. `get_application_logs` — confirmed it returns the line the deployed
+   application actually printed on startup, collected from its container
+   by Module S. `get_application_metrics` — confirmed the honest
+   Module-T-doesn't-exist `INTERNAL_ERROR`, not a crash or a fabricated
+   empty result.
 8. `deploy_application` again, different source, **same already-`running`
    application** — a genuine rebuild-and-redeploy of v2, confirmed the
    live URL's actual HTTP response changed to v2's text. This is the
@@ -482,8 +496,8 @@ confirmed both of `grant_application_access`'s rejections for real — an
 and a genuinely unknown employee refused by the Platform API itself.
 
 Every one of the 21 tools was exercised for real in this run — including
-both the two that will never succeed (`get_application_logs`,
-`get_application_metrics`) — not just the ones that were easy to make
+the one that can't succeed until Module T exists
+(`get_application_metrics`) — not just the ones that were easy to make
 pass. The first full run of this exact script (back when it covered 13)
 is also what surfaced the context-cancellation bug described above: it
 failed partway through step 8 with a stuck build, which is what led to

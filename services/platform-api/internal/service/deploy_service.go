@@ -413,6 +413,7 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
 			Name: containerName, ImageRef: imageRef, ContainerPort: containerPort,
 			Env: wiring.Env, NetworkID: wiring.NetworkID,
+			Log: domain.LogSource{ApplicationID: app.ID, DeploymentID: deployment.ID, Service: serviceName},
 		})
 		if err != nil {
 			return s.markDeploymentFailedFrom(ctx, app.ID, transientAppStatus, wasAlreadyRunning, deployment,

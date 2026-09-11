@@ -199,6 +199,7 @@ func (s *ScaleService) EnsureRunning(ctx context.Context, deploymentID, serviceN
 		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
 			Name: containerName, ImageRef: state.ImageRef, ContainerPort: state.ContainerPort,
 			Env: wiring.Env, NetworkID: wiring.NetworkID,
+			Log: domain.LogSource{ApplicationID: dep.ApplicationID, DeploymentID: deploymentID, Service: serviceName},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("cold start service %s: %w", serviceName, err)

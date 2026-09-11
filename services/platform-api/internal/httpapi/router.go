@@ -23,6 +23,7 @@ type RouterConfig struct {
 	Notifications *NotificationHandler
 	Reports       *ReportHandler
 	Secrets       *SecretHandler
+	Logs          *LogHandler
 	// PlatformEnv gates DevOnlyGuard. The only Authenticator implementation
 	// today is DevHeaderAuthenticator, so this is always enforced until a
 	// real one lands per DEC-001 (docs/17_Decision_Log.md).
@@ -84,6 +85,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Put("/{id}/secrets/{name}", cfg.Secrets.Set)
 		r.Delete("/{id}/secrets/{name}", cfg.Secrets.Delete)
 		r.Post("/{id}/secrets/{name}/rotate", cfg.Secrets.Rotate)
+		r.Get("/{id}/logs", cfg.Logs.Query)
 	})
 
 	r.Route("/supported-stacks", func(r chi.Router) {

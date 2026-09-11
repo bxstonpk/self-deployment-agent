@@ -197,6 +197,7 @@ func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterI
 		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
 			Name: containerName, ImageRef: st.ImageRef, ContainerPort: st.ContainerPort,
 			Env: wiring.Env, NetworkID: wiring.NetworkID,
+			Log: domain.LogSource{ApplicationID: applicationID, DeploymentID: deployment.ID, Service: st.ServiceName},
 		})
 		if err != nil {
 			return domain.Deployment{}, fmt.Errorf("resume: failed to start service %s: %w", st.ServiceName, err)
@@ -284,6 +285,7 @@ func (s *LifecycleService) Restart(ctx context.Context, applicationID, requester
 		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
 			Name: containerName, ImageRef: st.ImageRef, ContainerPort: st.ContainerPort,
 			Env: wiring.Env, NetworkID: wiring.NetworkID,
+			Log: domain.LogSource{ApplicationID: applicationID, DeploymentID: deployment.ID, Service: st.ServiceName},
 		})
 		if err != nil {
 			return domain.Deployment{}, fmt.Errorf("restart: failed to start new instance of %s: %w", st.ServiceName, err)

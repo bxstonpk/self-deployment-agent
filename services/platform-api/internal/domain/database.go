@@ -46,6 +46,9 @@ type ContainerSpec struct {
 	// an application with no database, which then behaves exactly as it
 	// did before Module N.
 	NetworkID string
+	// Log says whose output this container produces; Module S tags every
+	// line it collects with it. Zero for a container nobody asked to log.
+	Log LogSource
 }
 
 // DatabaseSpec is what the Runtime Platform needs to start one

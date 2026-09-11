@@ -4,8 +4,9 @@ Go implementation of the Business API, built one Application Lifecycle state
 at a time. Currently covers **Draft**, **Validated**, **Build**,
 **Deploying**, **Scale-to-Zero** (the ongoing behavior of a `Running`
 application), **Suspend/Resume/Restart**, **Rollback**, **Archive/Delete**
-— every Application Lifecycle state reachable without Modules N/O/P
-(Database/Secret/Domain Management), which don't exist yet — plus
+— every Application Lifecycle state reachable without Module P (Domain
+Management), which doesn't exist yet — together with **Modules N and O**
+(Database and Secret Management) and **Module S (Logging)**, plus
 **Module W (Audit Log)**, an append-only, hash-chained record of every
 state-changing action across all of the above; **Module X
 (Notification)**, an in-app notification inbox for deployment status and
@@ -32,7 +33,8 @@ Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
 `FR-105`, `FR-106` (Module W — Audit Log — see below); `FR-107`,
 `FR-108` (Module X — Notification — see below); `FR-016`, `FR-017`
 (Module E — Co-Owner/Contributor Management and Transfer Ownership — see
-below); and `FR-127`, `FR-128` (Module AB — Reporting — see below). See
+below); `FR-127`, `FR-128` (Module AB — Reporting — see below); and
+`FR-086`, `FR-087`, `FR-089` (Module S — Logging — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -73,6 +75,7 @@ for how it fits the Control Plane.
 | `PUT /applications/{id}/secrets/{name}` | FR-066 | Sets or replaces a secret from `{"value": "..."}`. Write-only: the response is metadata, and no endpoint ever returns a value. Takes effect at the application's next container start. Owner-only |
 | `DELETE /applications/{id}/secrets/{name}` | FR-066 | Removes an owner-set secret; a platform-managed one is refused with `409`. Owner-only |
 | `POST /applications/{id}/secrets/{name}/rotate` | FR-068 | Rotates a platform-generated secret — today, the database password: a new one is set on the database (the old one stops authenticating), stored, and running instances are restarted onto it. `409 secret_not_rotatable` for an owner-set secret. Owner-only — see **Rotating the database password** |
+| `GET /applications/{id}/logs` | FR-086, FR-087, FR-089 | What the application's containers printed, newest first, with every secret the platform injected redacted. Filter by `service`/`environment`/`contains`/`since`/`until`/`limit`; a full page carries a `next_cursor`. Owner-only, and a non-owner gets the same `404` as a nonexistent application; every read is audited — see **How Logging works** |
 | `GET /audit-log` | FR-104 | Filter by `actor_user_id`/`resource_type`/`resource_id`/`action`/`from`/`to`/`limit`; scoped to entries the caller performed or that concern an application they own |
 | `GET /audit-log/export` | FR-105 | Same filters, CSV response; the export itself is recorded as a new audit entry |
 | `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
@@ -1256,6 +1259,129 @@ another application's row and confirms that application's restart fails
 trail — rather than receiving the value; and restarts platform-api with a
 different key to confirm applications fail closed, then recover when the
 key is restored. `--legacy-app` adds the upgrade-path checks above.
+
+## How Logging works (Module S, FR-086/087/089)
+
+Every container the platform starts for an application is followed from
+its first line. Each line it writes to stdout or stderr is stored in the
+platform's own Postgres (`application_logs`), tagged with its
+application, deployment, service, stream and container, and an owner
+reads them back through one endpoint:
+
+```
+GET /applications/{id}/logs?service=&environment=&contains=&since=&until=&limit=&cursor=
+→ {"entries": [{"timestamp", "service", "stream", "message", "deployment_id", "instance"}], "next_cursor": ...}
+```
+
+Newest first. `contains` is a case-insensitive literal match (`%` and `_`
+are characters, not wildcards); `since` and `until` are RFC 3339,
+inclusive and exclusive; `limit` defaults to 200, capped at 1000. A full
+page carries a `next_cursor` to pass back as `cursor` for the next, older
+page. The cursor is the last line's timestamp *and* id: lines written in
+the same microsecond share a timestamp, and a timestamp-only cursor would
+skip some of them at a page boundary.
+
+### Collected as it's written, so removed containers keep their history
+
+`internal/runtimeengine/logs.go` starts following a container's output
+right after starting it, before the health check, so a container that
+crashes on start still leaves its output behind. Lines are written in
+small batches every half second. `Stop` waits (up to 10s) for a
+container's last lines to be stored before removing it, because removing
+a container discards Docker's copy of its output. That is what keeps the
+history of every container the platform replaces: a failed deploy's, a
+restart's, a scale-to-zero's.
+
+Each container also carries its tags as Docker labels, so when
+platform-api starts it resumes collection for every application container
+still there, from the last line stored for each: lines written while
+platform-api was down are collected, and none is stored twice. If the
+store is unreachable, lines are held in memory and retried (FR-086's
+exception flow), up to 20,000 per container.
+
+All four start paths (deploy, resume, restart, cold start) tag the
+container, and `database_wiring_test.go` checks every one: the same four
+paths Module N's wiring has to reach, and the same way to miss one.
+
+### Secrets are redacted before they're stored
+
+Every value the platform injected into a container (the owner's secrets,
+`DATABASE_URL`, `DATABASE_PASSWORD`) is replaced with `[REDACTED:NAME]`
+in each line before it's stored, longest value first, so a connection
+string goes as a whole rather than around the password inside it.
+Connection details that aren't secret (`DATABASE_HOST`/`PORT`/`NAME`/
+`USER`) and values shorter than six characters are left alone, since
+replacing every `5432` would only garble the logs. Only injected values
+are redacted. Anything else an application prints, personal data
+included, is stored as written: the platform has no way to know what
+else is sensitive.
+
+### Access (FR-087/FR-089)
+
+Owners only: anyone with an active ownership row (primary owner,
+co-owner or contributor), the same check as every other per-application
+endpoint. Anyone else gets exactly the `404` a nonexistent application
+gets, same status and same body, so a refusal doesn't confirm the
+application exists. Every successful read is recorded as
+`application.read_logs`, with the filters used but never the `contains`
+text, which could itself be sensitive. A refused read is deliberately
+*not* recorded: the audit log shows people their own actions, so an
+entry for the refusal would tell them what the 404 was careful not to.
+
+### Known gaps
+
+- **FR-088 (retention and purge) is not implemented.** The retention
+  period is TBD in the requirement itself, so nothing is purged: lines
+  accumulate, including a deleted application's (Delete is a status
+  change, and the rows stay with it).
+- **Log levels aren't parsed.** Each line carries its stream (stdout or
+  stderr) instead, so FR-087's severity filter has nothing to filter on;
+  the MCP tool says so when asked for one.
+- **Docker keeps its own unredacted copy** of a container's output (the
+  daemon's log file on the host, readable with `docker logs`) until the
+  platform removes the container. As with injected environment variables
+  (see Module O's gaps), anyone with Docker daemon access is
+  root-equivalent on the host anyway.
+- **Redaction matches the exact injected value.** A secret shorter than
+  six characters, or one an application transforms before printing it
+  (encoded, split, truncated), is stored as printed.
+- **No oversight access.** FR-089's Platform/Security Administrator and
+  Auditor access needs the RBAC that doesn't exist, so there is no
+  cross-application log query at all.
+- **Collection runs inside platform-api**, not as a separate agent. Lines
+  written while it's down are collected when it comes back, but only from
+  containers still there. A line longer than 64 KiB is stored in pieces,
+  and beyond 20,000 lines held for one container while the store is
+  unreachable, the oldest are dropped (and that is logged).
+- **The Admin Portal has no log view yet.** The API and the MCP server's
+  `get_application_logs` are the two ways to read logs today.
+
+### Verifying it
+
+`scripts/verify_module_s.py` runs against a live stack, no mocks:
+
+```bash
+docker compose up -d --build   # from the repo root
+python services/platform-api/scripts/verify_module_s.py
+```
+
+It deploys an application with a database and an owner-set `API_KEY`
+that prints all three secrets on purpose, a line a second, and a last
+line when it's stopped. It confirms each secret is stored as
+`[REDACTED:NAME]` and appears nowhere in a full `pg_dump` of the platform
+database, in platform-api's own logs, or in any log response the run
+reads. It exercises every filter (including that `%` and `_` are
+literal), pages through with `next_cursor` three lines at a time and
+compares the result with a single query, and confirms a non-owner gets a
+404 byte-identical to a random id's, with no audit entry, while every
+owner read is audited. It restarts the application and finds the replaced
+container's shutdown line, printed as it was being stopped, stored before
+the container was removed. It stops platform-api for six seconds and
+confirms, once it's back, that the running container's once-a-second
+output has no gap and no repeat, the lines written during the outage
+included. And it deploys an application that crashes on start, confirming
+the deploy fails, the container is removed, and the reason it printed on
+stderr can still be read.
 
 ## What's deliberately NOT here yet
 

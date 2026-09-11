@@ -120,11 +120,27 @@ README for exactly what was tested and how):
   which ones to set before a deploy) — never a value, and no tool accepts
   one: the security requirements forbid a secret value ever passing
   through the agent or its transcript.
+- Logging (Module S, `FR-086`/`087`/`089`) — every line an application's
+  containers print is collected as it's written and stored centrally,
+  tagged with its deployment, service, stream and container, with every
+  secret value the platform injected redacted before it's stored. Owners
+  read their application's logs, filtered and paged, through the
+  Platform API or the MCP server's `get_application_logs`; anyone else
+  gets the same 404 a nonexistent application gets, and every read is
+  audited. Verified against real containers (see
+  `services/platform-api/scripts/verify_module_s.py`): an application
+  that prints its own secrets on purpose has them redacted, and they
+  appear nowhere in a full `pg_dump` of the platform database; a crash on
+  the first deploy leaves its reason readable after the platform has
+  removed the container; a replaced container's last line, printed as it
+  was being stopped, is kept; and after platform-api itself is stopped
+  and started again, every line is there exactly once, including the
+  ones written while it was down.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this
 application," full stop — no IT/Platform/Security Administrator roles),
-Domain/Network management, Logging, Monitoring, Resource quotas.
+Domain/Network management, Monitoring, Resource quotas.
 See "Known gaps" below and each
 component's own README for the honest, itemized list — nothing here claims
 these exist when they don't. Note in particular that Module O above ships
@@ -241,9 +257,12 @@ These block real production use, not just missing polish:
   policy the requirement itself marks TBD. See
   `services/platform-api/README.md`'s "How Database Management works" for
   the full scope.
-- **No Logging or Monitoring** (Modules S/T) — the MCP server's
-  log/metric tools return an honest "not implemented" error rather than
-  fabricating data. (Modules W, X and AB — Audit Log, Notification and
+- **No Monitoring** (Module T) — the MCP server's metrics tool returns an
+  honest "not implemented" error rather than fabricating data. Logging
+  (Module S) exists without retention: `FR-088`'s period is TBD, so
+  nothing is purged yet; log levels aren't parsed; and the Admin Portal
+  has no log view — see `services/platform-api/README.md`'s "How Logging
+  works". (Modules W, X and AB — Audit Log, Notification and
   Reporting — are implemented; see `services/platform-api/README.md`'s
   "How Audit Logging works", "How Notifications work" and "How Reporting
   works" sections for what each does and doesn't cover. Notably Module X
