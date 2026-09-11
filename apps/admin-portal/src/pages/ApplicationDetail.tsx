@@ -9,6 +9,7 @@ import {
   deploymentHistory,
   getApplication,
   getLogs,
+  getMetrics,
   getPendingOwnershipTransfer,
   grantOwner,
   initiateOwnershipTransfer,
@@ -38,6 +39,7 @@ import type {
   Deployment,
   DeploymentStatus,
   LogEntry,
+  MetricsSnapshot,
   OwnershipRole,
   OwnershipTransfer,
   ScaleEvent,
@@ -54,6 +56,58 @@ const IN_FLIGHT_DEPLOYMENT: DeploymentStatus[] = ["scanning", "pending_approval"
 // One screenful of log lines at a time; older ones come from the cursor the
 // platform hands back, never from a client-side offset.
 const LOG_PAGE = 50;
+
+// The windows the Metrics section offers, in minutes. The platform
+// defaults to the last hour and caps any window at seven days.
+const METRICS_RANGES = { "15m": 15, "1h": 60, "24h": 24 * 60 } as const;
+type MetricsRange = keyof typeof METRICS_RANGES;
+
+function formatBytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
+}
+
+// Oldest on the left. Drawn straight from the readings, with nothing
+// interpolated across a gap where the platform took none.
+function Sparkline({ values, label }: { values: number[]; label: string }) {
+  if (values.length < 2) return null;
+  const width = 240;
+  const height = 40;
+  const ceiling = Math.max(...values, 1);
+  const points = values
+    .map((v, i) => `${(i / (values.length - 1)) * width},${height - (v / ceiling) * height}`)
+    .join(" ");
+  return (
+    <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={label}>
+      <polyline points={points} />
+    </svg>
+  );
+}
+
+// Requests per minute, with the failed ones drawn over them in the danger
+// colour — and stated in the caption, so the colour isn't carrying it alone.
+function Bars({ series, label }: { series: { total: number; errors: number }[]; label: string }) {
+  if (series.length === 0) return null;
+  const width = 240;
+  const height = 40;
+  const ceiling = Math.max(...series.map((s) => s.total), 1);
+  // Capped, so one minute of traffic draws one bar rather than a
+  // full-width block that would read as a trend it isn't.
+  const barWidth = Math.min(width / series.length, 16);
+  return (
+    <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={label}>
+      {series.map((s, i) => (
+        <g key={i}>
+          <rect x={i * barWidth} y={height - (s.total / ceiling) * height} width={Math.max(barWidth - 1, 1)} height={(s.total / ceiling) * height} />
+          {s.errors > 0 && (
+            <rect className="errors" x={i * barWidth} y={height - (s.errors / ceiling) * height} width={Math.max(barWidth - 1, 1)} height={(s.errors / ceiling) * height} />
+          )}
+        </g>
+      ))}
+    </svg>
+  );
+}
 
 export function ApplicationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -88,6 +142,10 @@ export function ApplicationDetail() {
   const [logService, setLogService] = useState("");
   // Which of "no lines at all" and "none match what you asked for" to say.
   const [logFilterApplied, setLogFilterApplied] = useState(false);
+  const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [metricsBusy, setMetricsBusy] = useState(false);
+  const [metricsRange, setMetricsRange] = useState<MetricsRange>("1h");
 
   const refresh = useCallback(async () => {
     if (!identity || !id) return;
@@ -230,6 +288,35 @@ export function ApplicationDetail() {
       setLogsBusy(false);
     }
   }
+
+  // Same shape as the logs above, and the same reading of a 404: the
+  // application is already on screen, so it can only mean "not yours".
+  const loadMetrics = useCallback(
+    async (range: MetricsRange) => {
+      if (!identity || !id) return;
+      setMetricsBusy(true);
+      try {
+        const from = new Date(Date.now() - METRICS_RANGES[range] * 60_000).toISOString();
+        setMetrics(await getMetrics(identity, id, { from }));
+        setMetricsError(null);
+      } catch (err) {
+        setMetrics(null);
+        if (err instanceof ApiError && err.status === 404) {
+          setMetricsError("Only this application's owners can read its metrics.");
+        } else {
+          setMetricsError(err instanceof ApiError ? err.message : String(err));
+        }
+      } finally {
+        setMetricsBusy(false);
+      }
+    },
+    [identity, id],
+  );
+
+  useEffect(() => {
+    if (!hasRun) return;
+    loadMetrics(metricsRange);
+  }, [hasRun, loadMetrics, metricsRange]);
 
   async function runAction<T>(name: string, action: () => Promise<T>, successText: string) {
     setBusy(name);
@@ -789,6 +876,115 @@ export function ApplicationDetail() {
               ))}
             </tbody>
           </table>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Metrics</h2>
+        <p className="hint">
+          What the platform measured: CPU and memory read from this application's containers, and requests, errors and
+          latency counted at the platform's own address for it — nothing is asked of the application itself. An error is
+          a 5xx or no answer at all; a 404 is a request. Latency is a mean and a max, never a percentile. Only this
+          application's owners can read them.
+        </p>
+        {!hasRun && <p className="hint">Nothing has run yet. Measurements start once a deploy starts a container.</p>}
+        {hasRun && (
+          <>
+            <div className="toolbar">
+              {(Object.keys(METRICS_RANGES) as MetricsRange[]).map((range) => (
+                <button
+                  key={range}
+                  type="button"
+                  className={range === metricsRange ? "button-primary" : undefined}
+                  disabled={metricsBusy}
+                  onClick={() => setMetricsRange(range)}
+                >
+                  Last {range}
+                </button>
+              ))}
+              <button type="button" disabled={metricsBusy} onClick={() => loadMetrics(metricsRange)}>
+                {metricsBusy ? "Loading…" : "Refresh"}
+              </button>
+            </div>
+            {metricsError && <p className="error-text">{metricsError}</p>}
+            {metrics && !metrics.collection.collecting && (
+              <p className="error-text">
+                {metrics.collection.note || "The platform's own sampling is behind, so this may be incomplete."}
+              </p>
+            )}
+            {metrics && metrics.collection.collecting && metrics.collection.note && (
+              <p className="hint">{metrics.collection.note}</p>
+            )}
+            {metrics && (
+              <>
+                <dl className="metric-tiles">
+                  <div>
+                    <dt>Requests</dt>
+                    <dd>{metrics.summary.requests}</dd>
+                  </div>
+                  <div>
+                    <dt>Errors</dt>
+                    <dd>
+                      {metrics.summary.errors}{" "}
+                      <span className="metric-sub">{Math.round(metrics.summary.error_rate * 100)}%</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Latency</dt>
+                    <dd>
+                      {metrics.summary.latency_ms_mean} ms{" "}
+                      <span className="metric-sub">max {metrics.summary.latency_ms_max} ms</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>CPU now</dt>
+                    <dd>{metrics.summary.cpu_percent_latest}%</dd>
+                  </div>
+                  <div>
+                    <dt>Memory now</dt>
+                    <dd>{formatBytes(metrics.summary.memory_bytes_latest)}</dd>
+                  </div>
+                </dl>
+                {metrics.resource.length === 0 && metrics.traffic.length === 0 && (
+                  <p className="hint">No measurements in this window.</p>
+                )}
+                {metrics.resource.length > 1 && (
+                  <figure className="metric-chart">
+                    <figcaption>CPU %, oldest first</figcaption>
+                    <Sparkline
+                      label={`CPU percent over the last ${metricsRange}`}
+                      values={[...metrics.resource].reverse().map((point) => point.cpu_percent)}
+                    />
+                  </figure>
+                )}
+                {metrics.traffic.length > 0 && (
+                  <figure className="metric-chart">
+                    <figcaption>
+                      Requests per minute, failures in red ({metrics.summary.errors} of {metrics.summary.requests}{" "}
+                      failed)
+                    </figcaption>
+                    <Bars
+                      label={`Requests per minute over the last ${metricsRange}`}
+                      series={[...metrics.traffic].reverse().map((b) => ({ total: b.requests, errors: b.errors }))}
+                    />
+                  </figure>
+                )}
+                <p className="hint">
+                  {metrics.instances.length > 0
+                    ? metrics.instances
+                        .map((i) =>
+                          i.scaled_to_zero
+                            ? `${i.service}: scaled to zero`
+                            : `${i.service}: ${i.instances} instance${i.instances === 1 ? "" : "s"}`,
+                        )
+                        .join(", ")
+                    : "Nothing running."}
+                  {metrics.last_scale_event &&
+                    ` · last scale event: ${metrics.last_scale_event.service} ${metrics.last_scale_event.direction} (${metrics.last_scale_event.reason}) at ${new Date(metrics.last_scale_event.occurred_at).toLocaleString()}`}
+                </p>
+              </>
+            )}
+          </>
         )}
       </section>
 

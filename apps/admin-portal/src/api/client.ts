@@ -14,6 +14,8 @@ import {
   type InventoryRow,
   type LogPage,
   type LogQueryParams,
+  type MetricsQueryParams,
+  type MetricsSnapshot,
   type Notification,
   type OwnershipRole,
   type OwnershipTransfer,
@@ -282,6 +284,20 @@ export function getLogs(identity: Identity, id: string, params: LogQueryParams =
   if (params.cursor) q.set("cursor", params.cursor);
   const s = q.toString();
   return request(identity, "GET", `/applications/${id}/logs${s ? `?${s}` : ""}`);
+}
+
+// --- Metrics (Module T) ---------------------------------------------------
+//
+// Owner-only server-side, with the same 404 for everyone else as logs
+// (FR-091's business rule is that metrics access follows FR-089 exactly).
+export function getMetrics(identity: Identity, id: string, params: MetricsQueryParams = {}): Promise<MetricsSnapshot> {
+  const q = new URLSearchParams();
+  if (params.service) q.set("service", params.service);
+  if (params.environment) q.set("environment", params.environment);
+  if (params.from) q.set("from", params.from);
+  if (params.to) q.set("to", params.to);
+  const s = q.toString();
+  return request(identity, "GET", `/applications/${id}/metrics${s ? `?${s}` : ""}`);
 }
 
 // --- Audit Log (Module W) -------------------------------------------------

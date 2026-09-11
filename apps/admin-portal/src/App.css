@@ -403,3 +403,70 @@ form textarea {
     gap: 2px;
   }
 }
+
+/* Module T metrics: plain numbers with the series behind them. No axes, no
+   gridlines — the shape is worth showing, but the precision to read a value
+   off a chart isn't there, and the tiles carry the numbers that matter. */
+.metric-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.metric-tiles div {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.metric-tiles dt {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.metric-tiles dd {
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+
+.metric-sub {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.metric-chart {
+  margin: 0 0 12px;
+}
+
+.metric-chart figcaption {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.sparkline {
+  width: 100%;
+  height: 48px;
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.sparkline polyline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.sparkline rect {
+  fill: var(--accent);
+}
+
+.sparkline rect.errors {
+  fill: var(--danger);
+}

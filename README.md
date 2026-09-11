@@ -65,9 +65,11 @@ README for exactly what was tested and how):
   flow (nominate, notify, accept), a Reports page (a KPI row of
   deployment outcomes over a selectable range, plus the application
   inventory), a Secrets section where an owner sets write-only values
-  the page can never show again, and a Logs section showing what an
+  the page can never show again, a Logs section showing what an
   application's containers printed, secrets already redacted and
-  owners-only — verified with up to three genuinely
+  owners-only, and a Metrics section with the platform's own measurements
+  (requests, errors, latency, CPU and memory, with sparklines) — verified
+  with up to three genuinely
   independent signed-in identities at once (separate browser contexts),
   confirming a newly-granted co-owner gets real day-to-day access, a
   revoked one is genuinely locked out on their very next request, and a

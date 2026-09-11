@@ -125,6 +125,66 @@ export interface LogQueryParams {
   cursor?: string;
 }
 
+// What the platform measured about an application (Module T, FR-090/091):
+// CPU and memory read from its containers, and requests, errors and latency
+// counted at the platform's own address for it. Nothing here is asked of the
+// application itself.
+export interface ResourcePoint {
+  timestamp: string;
+  service: string;
+  instance: string;
+  cpu_percent: number;
+  memory_bytes: number;
+  memory_limit_bytes: number;
+}
+
+export interface TrafficPoint {
+  minute: string;
+  service: string;
+  environment: string;
+  requests: number;
+  errors: number;
+  error_rate: number;
+  latency_ms_mean: number;
+  latency_ms_max: number;
+}
+
+export interface MetricsSummary {
+  requests: number;
+  errors: number;
+  error_rate: number;
+  latency_ms_mean: number;
+  latency_ms_max: number;
+  cpu_percent_latest: number;
+  memory_bytes_latest: number;
+}
+
+export interface ServiceInstances {
+  service: string;
+  instances: number;
+  scaled_to_zero: boolean;
+}
+
+export interface MetricsSnapshot {
+  from: string;
+  to: string;
+  // Whether the platform's own sampling is keeping up, so an empty window
+  // is never mistaken for a quiet application.
+  collection: { collecting: boolean; last_sample_at: string | null; note: string };
+  instances: ServiceInstances[];
+  last_scale_event: { service: string; direction: string; reason: string; occurred_at: string } | null;
+  resource: ResourcePoint[];
+  traffic: TrafficPoint[];
+  summary: MetricsSummary;
+}
+
+export interface MetricsQueryParams {
+  service?: string;
+  environment?: string;
+  from?: string;
+  to?: string;
+}
+
 export interface RunningContainer {
   container_id: string;
   host_port: number;

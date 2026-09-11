@@ -1545,8 +1545,9 @@ cross-application administrator view would be audited — it doesn't exist.
 - **Sampling is a platform-wide interval** (`METRICS_SAMPLE_INTERVAL_SECONDS`,
   default 15s), not per application or tier, and it is an engineering
   default rather than a ratified policy value.
-- **The Admin Portal doesn't chart any of this yet.** The API and the MCP
-  server's `get_application_metrics` are the two ways to read it today.
+- **No dashboard.** The Admin Portal's Metrics section summarises this
+  for one application (numbers plus two sparklines); there is no
+  cross-application or per-service view, and nothing auto-refreshes.
 
 ### Verifying it
 
