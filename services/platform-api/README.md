@@ -68,7 +68,10 @@ for how it fits the Control Plane.
 | `POST /applications/{id}/resume` | FR-048 | `suspended` → `running`: restarts non-eligible services immediately; eligible ones stay at zero and cold-start on demand as usual. Owner-only |
 | `POST /applications/{id}/restart` | FR-048 | Recycles currently-running instances in place — same version, fresh containers, no redeploy. Owner-only |
 | `POST /applications/{id}/archive` | FR-049 | `running`/`suspended` → `archived`: releases compute more permanently than Suspend, retains config/history. Owner-only |
-| `POST /applications/{id}/delete` | FR-050, FR-065 | `archived`/`suspended` → `deleted` (terminal); requires `{"confirm": true}`. Deprovisions the application's database, if it has one, before the status moves. Owner-only |
+| `POST /applications/{id}/delete` | FR-050, FR-065 | `archived`/`suspended` → `deleted` (terminal); requires `{"confirm": true}`. Deprovisions the application's database, if it has one, and deletes its secrets, before the status moves. Owner-only |
+| `GET /applications/{id}/secrets` | FR-066, FR-070 | Names, versions and who last set each secret — never a value. Includes platform-managed ones (the database password). Owner-only — see **How Secret Management works** |
+| `PUT /applications/{id}/secrets/{name}` | FR-066 | Sets or replaces a secret from `{"value": "..."}`. Write-only: the response is metadata, and no endpoint ever returns a value. Takes effect at the application's next container start. Owner-only |
+| `DELETE /applications/{id}/secrets/{name}` | FR-066 | Removes an owner-set secret; a platform-managed one is refused with `409`. Owner-only |
 | `GET /audit-log` | FR-104 | Filter by `actor_user_id`/`resource_type`/`resource_id`/`action`/`from`/`to`/`limit`; scoped to entries the caller performed or that concern an application they own |
 | `GET /audit-log/export` | FR-105 | Same filters, CSV response; the export itself is recorded as a new audit entry |
 | `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
@@ -462,12 +465,14 @@ to refuse an archived application either.
 **Known gaps, documented not hidden — this is the module where "not built
 yet" is most visible, because FR-050 in particular is *mostly* about
 deprovisioning resources that don't exist yet:**
-- Secret revocation (Module O) and domain release (Module P) are still
-  no-ops on both Archive and Delete — neither module is built. Database
-  deprovisioning is no longer in that list: Delete really does tear down
-  the application's database (see **How Database Management works**
-  below). What Delete DOES do for real: guarantees no container is left
-  running for the application, and no database instance either.
+- Domain release (Module P) is still a no-op on both Archive and Delete —
+  that module isn't built. Databases and secrets are no longer in that
+  list: Delete really does tear down the application's database (see
+  **How Database Management works**) and purge its secrets (see **How
+  Secret Management works**). Archive does neither, by design — it
+  retains configuration (FR-049). What Delete DOES do for real:
+  guarantees no container, database instance or stored secret is left
+  for the application.
 - FR-050's production-deletion approval gate ("mirrors FR-014") isn't
   enforced — needs the de-registration approval workflow (Module C), the
   same category of gap as the production-deploy approval gate's
@@ -996,16 +1001,15 @@ Both halves are then proved from outside the code, by connecting:
   and completes a Postgres `SSLRequest` handshake, so what answered really
   is Postgres, reached with the environment the platform injected.
 
-### Known gaps — the first one is serious
+### Known gaps
 
-- **`FR-063`'s at-rest half is NOT satisfied. The generated password is
-  stored in plaintext in the platform's own database.** `FR-063` names
-  Module O (Secret Management) as the mechanism, and Module O does not
-  exist. The half that protects the employee/agent *is* real — the
-  password never appears in `deployment.yaml`, source control or build
-  logs — but anyone with read access to the platform database can read
-  every application's database password. This is the single biggest
-  reason Module O should land before this is used for anything real.
+- **The plaintext database password — closed by Module O.** This list
+  originally led with the fact that the generated password was stored in
+  plaintext in `provisioned_databases`, readable by anyone with read
+  access to the platform database. It now lives in the secret store as a
+  sealed, platform-managed `DATABASE_PASSWORD`, and rows from before that
+  are moved there at startup — see **How Secret Management works** below,
+  including the part that is still not solved: the key itself.
 - **`FR-064` (Backup Scheduling) is not implemented.** It needs a
   scheduler this platform doesn't have and a frequency/retention policy
   the requirement itself marks TBD. Inventing one would be inventing a
@@ -1043,6 +1047,144 @@ a real scale-to-zero first. Both phases delete their application at the
 end and confirm the container, the network *and* the platform's own record
 are gone. It needs a low `SCALE_TO_ZERO_IDLE_SECONDS` (e.g. `20`) for the
 cold-start phase, and says so rather than hanging if it isn't.
+
+## How Secret Management works (Module O, FR-066/067/069/070)
+
+An application owner registers a secret by name; the platform encrypts
+it, stores only the ciphertext, and injects it into every container the
+application starts, as an environment variable of the same name. Nothing
+ever returns the value again — not the API, not the listing, not the
+audit log.
+
+```
+PUT    /applications/{id}/secrets/API_KEY   {"value": "..."}   → metadata, never the value
+GET    /applications/{id}/secrets                               → names, versions, who set them
+DELETE /applications/{id}/secrets/API_KEY
+```
+
+### What protects a value, layer by layer
+
+- **At rest (FR-066):** AES-256-GCM (`internal/secretbox`), keyed by
+  `PLATFORM_SECRET_KEY` — which lives in platform-api's environment, never
+  in the database it protects. `application_secrets` has no plaintext
+  column at all.
+- **Bound to its application (FR-069):** each ciphertext is sealed with
+  its application id and name as associated data. Copy a ciphertext into
+  another application's row — the attack that needs only database write
+  access, no API — and it does not decrypt there: that application fails
+  to start instead of receiving the value. The owner check on the API is
+  the first layer; this is the one that still holds when the API isn't
+  the way in.
+- **Write-only (FR-070):** no endpoint returns a value. That is enforced
+  by the endpoint not existing, not by a permission check that could be
+  misconfigured later. Set and delete are audited with the secret's name
+  and version, never its value.
+- **Delivered at start, and only then (FR-067):** values are decrypted in
+  `ApplicationResources.WiringFor` — the same single call deploy, resume,
+  restart and cold start already make for Module N, so Module O added no
+  new call site to get wrong — and handed straight to the container.
+  They are never written into a built image.
+- **Fails closed:** a secret that can't be decrypted — a changed platform
+  key, a tampered or misplaced row — fails the start with
+  `secret_unavailable`, naming the secret and the cause (never a value).
+  Resume and Restart resolve the wiring *before* stopping anything, so
+  the failure leaves the running container untouched instead of taking
+  the application down.
+
+### Module N's database password moved here
+
+The password Module N generates is now a platform-managed secret,
+`DATABASE_PASSWORD`: sealed into the store *before* the database starts,
+read back only at container start to build `DATABASE_URL`, and visible to
+owners by name only. It can't be changed or deleted through the API
+(`409`), and `DATABASE_*`/`PLATFORM_*` names are reserved, so an owner's
+secret can't shadow anything the platform injects.
+
+Databases provisioned before Module O had their password in plaintext in
+`provisioned_databases.password`. Migration `0012` clears it for
+deprovisioned rows (no key needed); live ones are sealed into the store
+at startup by `MigrateLegacyPlaintextPasswords`, which needs the key and
+so can't be SQL. Verified against a real application deployed with a
+database on the pre-Module-O build: startup logged `moved 2 legacy
+plaintext database password(s)`, a full `pg_dump` of the platform
+database no longer contains the old password anywhere, and after a
+restart the application received exactly its database's real password —
+decrypted from the store — and authenticated with it.
+
+### Also fixed here: databases were reported ready before they were
+
+Found while setting up that legacy application, and a Module N defect
+rather than a Module O one. `StartDatabase` returned as soon as the
+database container started, but Postgres's official image runs `initdb`
+and restarts itself once before it accepts connections. The platform
+reported the deployment `running` while the application's first
+connection attempt was still being refused — so an application that
+connects at startup, and exits if it can't, would fail its first deploy
+and succeed on the retry. `EnsureProvisioned` now waits for `pg_isready`
+before recording the database as provisioned, and stops the container if
+it never gets there. Over TCP (`-h 127.0.0.1`) deliberately: during
+`initdb` the temporary server listens on its Unix socket only, and a
+socket check would call it ready a moment too early.
+
+### Known gaps
+
+- **The key is not managed.** One static key from an environment
+  variable: no rotation, no re-encryption tool, and anyone who can read
+  platform-api's environment (`docker inspect` on its container) can read
+  it. Changing it makes every stored secret unreadable — which fails
+  closed, as above, but is still an outage for every application with a
+  secret. Choosing a real backend is `DEC-006`, still Open;
+  `internal/secretbox` is the seam it would replace.
+- **Anyone with access to the Docker daemon can read injected values**
+  from a running container's environment. That is inherent to FR-067's
+  environment-variable delivery, and Docker daemon access is
+  root-equivalent on the host anyway.
+- **FR-068 (rotation) is partial.** Replacing a value bumps its version
+  and reaches the application at its next container start — a Restart
+  applies it immediately (verified) — but there is no overlap window, no
+  scheduled rotation, and nothing invalidates the old value. Rotating a
+  database password (`ALTER ROLE` plus re-injection) is not implemented.
+- **FR-071 (approval for production secret operations) is not
+  implemented** — it needs the approval workflow and RBAC that don't
+  exist.
+- **Injection is not audited.** `audit_log.actor_user_id` is required and
+  a scale-to-zero cold start has no human actor, so FR-070's "injection"
+  is not recorded; nor is a platform-generated database password's
+  creation (the deploy that caused it is). Set and delete are.
+- **No reference-by-name in `deployment.yaml`.** FR-023's contract is six
+  top-level keys and none of them is `secrets`, so every secret an
+  application has is injected into every one of its services, rather than
+  each service declaring the ones it uses. Adding a key is a contract
+  change, not an implementation detail.
+- **SEC-SECRET-8 (force-rotation on detected leakage) and FR-066's
+  exception flow (scanning source for committed credentials) are not
+  implemented.**
+- **No Admin Portal view yet**, and deliberately no MCP tool that accepts
+  a value (see `services/mcp-server/README.md`) — today an owner sets a
+  secret through the Platform API directly.
+
+### Verifying it
+
+`scripts/verify_module_o.py` runs against a live stack, no mocks, and
+checks what an attacker or an accident would actually see rather than
+what the code claims:
+
+```bash
+docker compose up -d --build   # from the repo root, with PLATFORM_SECRET_KEY in .env
+python services/platform-api/scripts/verify_module_o.py [--legacy-app NAME]
+```
+
+It sets a secret, deploys, and confirms the running application received
+exactly that value (the test application reports only a hash of it),
+while a full `pg_dump` of the platform database, every layer of the built
+image (`docker save`), the API's responses, the audit CSV export and
+platform-api's own logs contain it nowhere. It confirms another employee
+gets `403` on list, set and delete; plants a ciphertext directly into
+another application's row and confirms that application's restart fails
+— before stopping its running container, with the reason in the audit
+trail — rather than receiving the value; and restarts platform-api with a
+different key to confirm applications fail closed, then recover when the
+key is restored. `--legacy-app` adds the upgrade-path checks above.
 
 ## What's deliberately NOT here yet
 
@@ -1095,9 +1237,9 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   not built yet.
 - Security Administrator force-suspend, bypassing owner-initiated Suspend
   — see **How Suspend/Resume/Restart works**'s known gap.
-- Real deprovisioning on Archive/Delete for secrets and domains (Modules
-  O/P) — see **How Archive/Delete work**. Databases (Module N) *are*
-  deprovisioned for real. Every Application
+- Real deprovisioning on Archive/Delete for domains (Module P) — see
+  **How Archive/Delete work**. Databases (Module N) and secrets (Module O)
+  *are* removed for real. Every Application
   Lifecycle state reachable without those modules existing (`Draft` →
   `Validated` → `Build` → `Deploying`/`Running`, `Suspended`, `Rolled Back`
   as a transient step back to `Running`, `Archived`, `Deleted`) is now
@@ -1131,6 +1273,7 @@ From the repo root, first time only:
 
 ```
 cp .env.example .env   # then edit POSTGRES_PASSWORD if you want a non-default value
+openssl rand -base64 32   # required: paste the output into .env as PLATFORM_SECRET_KEY
 ```
 
 `.env` is git-ignored — `docker-compose.yml` reads all credentials from it
@@ -1321,3 +1464,10 @@ result of testing against the real thing instead of only fakes:
   doc comment, passed every unit test, and was not real. After the fix the
   same script proves it by connecting from off the network by raw IP and
   timing out.
+- **Secret Management (Module O)**: automated as
+  `scripts/verify_module_o.py` — see **How Secret Management works**
+  above. Setting up its upgrade-path test is what found the Module N
+  readiness defect documented there: a freshly deployed application's
+  first connection to its own database was refused, because the platform
+  reported the deployment running before Postgres had finished
+  initialising.

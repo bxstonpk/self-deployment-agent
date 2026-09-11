@@ -28,14 +28,14 @@ type LifecycleService struct {
 	states      ServiceRuntimeStateRepository
 	runtime     RuntimeEngine
 	audit       AuditRecorder
-	databases   DatabaseDeprovisioner
+	resources   LifecycleResources
 }
 
-// DatabaseDeprovisioner is Module N's seam for the lifecycle paths: every
-// container this service starts (Resume, Restart) needs the application's
-// database wiring, and Delete has to take the database down with the
-// application (FR-065).
-type DatabaseDeprovisioner interface {
+// LifecycleResources is the Modules N and O seam for the lifecycle paths
+// (ApplicationResources): every container this service starts (Resume,
+// Restart) needs the application's database wiring and secrets, and Delete
+// has to take both down with the application (FR-050, FR-065).
+type LifecycleResources interface {
 	WiringFor(ctx context.Context, applicationID string) (RuntimeWiring, error)
 	Deprovision(ctx context.Context, applicationID string) error
 }
@@ -43,11 +43,11 @@ type DatabaseDeprovisioner interface {
 func NewLifecycleService(
 	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository,
 	deployments DeploymentRepository, states ServiceRuntimeStateRepository, runtime RuntimeEngine, audit AuditRecorder,
-	databases DatabaseDeprovisioner,
+	resources LifecycleResources,
 ) *LifecycleService {
 	return &LifecycleService{
 		apps: apps, owners: owners, deployments: deployments, states: states,
-		runtime: runtime, audit: audit, databases: databases,
+		runtime: runtime, audit: audit, resources: resources,
 	}
 }
 
@@ -177,9 +177,9 @@ func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterI
 	// FR-062/FR-063: a resumed application must come back attached to its
 	// own database, exactly as it was when suspended. Fetched once per
 	// resume rather than per service.
-	wiring, err := s.databases.WiringFor(ctx, applicationID)
+	wiring, err := s.resources.WiringFor(ctx, applicationID)
 	if err != nil {
-		return domain.Deployment{}, fmt.Errorf("resume: failed to resolve database connection details: %w", err)
+		return domain.Deployment{}, fmt.Errorf("resume: failed to resolve the application's database and secrets: %w", err)
 	}
 	containers := make(map[string]domain.RunningContainer)
 	for _, st := range states {
@@ -260,9 +260,9 @@ func (s *LifecycleService) Restart(ctx context.Context, applicationID, requester
 	containers := make(map[string]domain.RunningContainer)
 	// Same reasoning as Resume: a restarted container is a NEW container,
 	// so it needs the database wiring handed to it again.
-	wiring, err := s.databases.WiringFor(ctx, applicationID)
+	wiring, err := s.resources.WiringFor(ctx, applicationID)
 	if err != nil {
-		return domain.Deployment{}, fmt.Errorf("restart: failed to resolve database connection details: %w", err)
+		return domain.Deployment{}, fmt.Errorf("restart: failed to resolve the application's database and secrets: %w", err)
 	}
 	for _, st := range states {
 		if st.ContainerID == nil {
@@ -424,7 +424,7 @@ func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterI
 	// [deprovisioning is] confirmed", so a failure here leaves the
 	// application in its prior state to be retried rather than marking it
 	// Deleted with a database still running.
-	if err := s.databases.Deprovision(ctx, applicationID); err != nil {
+	if err := s.resources.Deprovision(ctx, applicationID); err != nil {
 		return domain.Application{}, fmt.Errorf("delete: failed to deprovision the application's database: %w", err)
 	}
 

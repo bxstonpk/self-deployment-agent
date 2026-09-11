@@ -7,18 +7,15 @@
 //
 // Scope adaptations, stated plainly rather than left to be discovered:
 //
-//   - **FR-063 names Module O (Secret Management) as the delivery
-//     mechanism, and Module O does not exist.** Credentials are generated
-//     here and injected into the application's runtime as an environment
-//     variable, which satisfies the half of FR-063 that protects the
-//     employee/agent ("never appear in deployment.yaml, source control, or
-//     build logs" — they don't). What is NOT satisfied is at-rest
-//     protection: the generated password is stored in the platform's own
-//     database in plaintext, because there is no secret store to put it in.
-//     That is a real security limitation, not a technicality — anyone with
-//     read access to the platform database can read every application's
-//     database password. It is the single largest reason Module O should
-//     come before this is used for anything real.
+//   - **FR-063's credentials live in Module O (Secret Management).** The
+//     generated password is sealed into the secret store as a
+//     platform-managed secret (DatabasePasswordSecret) before the database
+//     is even started, and decrypted only when a container starts with it.
+//     Before Module O existed it was stored in this table in plaintext;
+//     DatabaseService.MigrateLegacyPlaintextPasswords moves any such row
+//     into the store at startup. What is still NOT solved is the key
+//     itself — see internal/secretbox on why an environment variable is
+//     not a KMS.
 //   - **FR-064 (Backup Scheduling) is not implemented.** It needs a
 //     scheduler this platform doesn't have and a frequency/retention policy
 //     the requirement itself marks TBD; inventing one would be inventing a
@@ -85,10 +82,17 @@ type ProvisionedDatabase struct {
 	Port            int
 	DatabaseName    string
 	Username        string
-	Password        string
 	Status          DatabaseStatus
 	ProvisionedAt   time.Time
 	DeprovisionedAt *time.Time
+}
+
+// LegacyDatabasePassword is a password Module N stored in plaintext before
+// Module O existed — read only so it can be moved into the secret store.
+type LegacyDatabasePassword struct {
+	DatabaseID    string
+	ApplicationID string
+	Password      string
 }
 
 var (

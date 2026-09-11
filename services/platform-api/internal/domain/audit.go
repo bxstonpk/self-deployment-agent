@@ -27,7 +27,10 @@ const (
 // AuditAction enumerates the significant, state-changing actions this
 // implementation actually instruments. Deliberately not exhaustive of every
 // FR-103 example ("authentication, ... secret operations, ...") — there is
-// no login flow or Secret Management module (O) to audit yet. See each
+// no login flow to audit yet, and Module O's secret operations are audited
+// where a human performs them (set, delete) but not where the platform does
+// (injection at container start, which a scale-to-zero cold start performs
+// with no human actor to attribute it to — see secret_service.go). See each
 // instrumented service method's doc comment for the exact scope boundary.
 type AuditAction string
 
@@ -48,6 +51,8 @@ const (
 	AuditActionRevokeOwner         AuditAction = "application.revoke_owner"
 	AuditActionInitiateTransfer    AuditAction = "application.initiate_transfer"
 	AuditActionAcceptTransfer      AuditAction = "application.accept_transfer"
+	AuditActionSetSecret           AuditAction = "secret.set"
+	AuditActionDeleteSecret        AuditAction = "secret.delete"
 )
 
 // AuditEntry is one append-only row. PrevHash/EntryHash implement FR-106:
@@ -64,7 +69,7 @@ type AuditEntry struct {
 	ResourceType string // "application", "deployment", "build", "audit_log"
 	ResourceID   string
 	Outcome      AuditOutcome
-	Detail       string // never a secret value (FR-105) — there are no secrets to reference yet anyway
+	Detail       string // never a secret value (FR-070, FR-105) — secret entries name the secret, never its value
 	PrevHash     string
 	EntryHash    string
 }

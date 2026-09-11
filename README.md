@@ -8,7 +8,7 @@ case and requirements: [`docs/01_BRD.md`](docs/01_BRD.md).
 This README orients a new contributor/maintainer picking up the project:
 what exists, what doesn't, how the pieces fit together, and where to start.
 
-## Status: early-stage, ~35% of the full documented scope
+## Status: early-stage, ~35–40% of the full documented scope
 
 **What's real and tested** (every claim below has been verified against a
 live, running system — Docker builds, real HTTP calls, a real headless
@@ -84,9 +84,9 @@ README for exactly what was tested and how):
   `database: type: postgres` in `deployment.yaml` provisions a real,
   dedicated Postgres container on the application's own private network,
   with a platform-generated password injected into the application's
-  runtime — never into `deployment.yaml`, source control or build logs,
-  though see the plaintext-storage gap below before relying on that;
-  deleting the application tears it down. Verified by connecting rather
+  runtime and kept sealed in Module O's secret store (below) — never in
+  `deployment.yaml`, source control or build logs; deleting the
+  application tears it down. Verified by connecting rather
   than by reading configuration (see
   `services/platform-api/scripts/verify_module_n.py`): a client on the
   private network reads and writes real data, the identical connection
@@ -98,15 +98,31 @@ README for exactly what was tested and how):
   place: the database container was on Docker's default bridge as well as
   its private network, reachable by every other application, and it
   passed every unit test while it was.
+- Secret Management (Module O, `FR-066`/`067`/`069`/`070`) — an owner
+  registers a secret by name; the platform stores it AES-256-GCM
+  encrypted, injects it into every container the application starts as an
+  environment variable, and never returns the value again, from any
+  endpoint or the audit log. Module N's database passwords moved into it,
+  and existing plaintext ones are sealed at startup. Verified the way an
+  attacker would look (see `services/platform-api/scripts/verify_module_o.py`):
+  a full `pg_dump` of the platform database, every layer of the built
+  image and the platform's own logs contain the value nowhere, while the
+  running application received exactly it; a ciphertext copied straight
+  into another application's database row gets that application a failed
+  start, not the secret; and restarting the platform with a different key
+  makes applications fail closed — without stopping the ones already
+  running — until the key is restored. Deliberately not exposed over MCP:
+  the security requirements forbid a secret value ever passing through the
+  agent or its transcript.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this
 application," full stop — no IT/Platform/Security Administrator roles),
-Secret/Domain/Network management, Logging, Monitoring, Resource quotas.
+Domain/Network management, Logging, Monitoring, Resource quotas.
 See "Known gaps" below and each
 component's own README for the honest, itemized list — nothing here claims
-these exist when they don't. Note in particular that Module N above ships
-with a real security limitation of its own, listed there — a module being
+these exist when they don't. Note in particular that Module O above ships
+with a real limitation of its own, listed there — a module being
 implemented is not the same as it being safe to rely on.
 
 ## Repository map
@@ -153,7 +169,10 @@ Requires Docker, Go 1.25+, Python 3.11+, and Node 20+.
    cp .env.example .env
    docker compose up --build
    ```
-   See [`services/platform-api/README.md`](services/platform-api/README.md).
+   `.env.example` leaves `PLATFORM_SECRET_KEY` empty on purpose: generate
+   one (`openssl rand -base64 32`) and set it in `.env`, or compose
+   refuses to start the platform rather than let it store secrets it can't
+   encrypt. See [`services/platform-api/README.md`](services/platform-api/README.md).
 
    Deployed applications run as containers on the same Docker daemon,
    outside this compose project — `platform-run-*` for application
@@ -197,23 +216,25 @@ These block real production use, not just missing polish:
 - **`deploy_application`/the admin portal's Deploy runs synchronously**,
   not as a real queued/async job — fine at today's scale, a real gap
   before this could serve many concurrent deployments.
-- **Provisioned database passwords are stored in plaintext** in the
-  platform's own database. Module N (Database Management) is implemented,
-  but `FR-063` names Module O (Secret Management) as where those
-  credentials are supposed to live, and Module O doesn't exist. The half
-  of `FR-063` that protects the employee/agent is real — the password
-  never appears in `deployment.yaml`, source control or build logs — but
-  anyone with read access to the platform database can read every
-  application's database password. **This is the single biggest reason
-  Module O should come before Module N is relied on for anything real.**
-- **No Secret, Domain, or Network management** (Modules O/P/Q). Beyond the
-  credential-storage consequence above, Module Q's absence also means
-  `FR-062`'s *detection* half is missing: a cross-application connection
-  attempt is prevented, but not detected or logged as a policy violation.
-  `FR-064` (database backups) is not implemented either — it needs a
-  scheduler this platform doesn't have and a retention policy the
-  requirement itself marks TBD. See `services/platform-api/README.md`'s
-  "How Database Management works" for the full scope.
+- **The secret store's key is not managed.** Module O encrypts every
+  secret — and every generated database password — with one static key
+  from `PLATFORM_SECRET_KEY`. There is no key rotation or re-encryption
+  tool, and anyone who can read platform-api's environment can read the
+  key and, with it, every secret. The platform database alone no longer
+  yields anything, which is what the requirements ask of the store;
+  taking the key off the host is what a real backend chosen under
+  `DEC-006` (still Open) would do. See `services/platform-api/README.md`'s
+  "How Secret Management works" for this and Module O's other gaps
+  (rotation is partial; production-secret approval and injection auditing
+  are missing).
+- **No Domain or Network management** (Modules P/Q). Module Q's absence
+  means `FR-062`'s *detection* half is missing: a cross-application
+  database connection attempt is prevented, but not detected or logged as
+  a policy violation. `FR-064` (database backups) is not implemented
+  either — it needs a scheduler this platform doesn't have and a retention
+  policy the requirement itself marks TBD. See
+  `services/platform-api/README.md`'s "How Database Management works" for
+  the full scope.
 - **No Logging or Monitoring** (Modules S/T) — the MCP server's
   log/metric tools return an honest "not implemented" error rather than
   fabricating data. (Modules W, X and AB — Audit Log, Notification and

@@ -65,18 +65,19 @@ type DeploymentApprovalRepository interface {
 // determined and recorded, and a superseded deployment needs that state
 // torn down so neither the idle sweeper nor the cold-start proxy consider
 // it anymore.
-// DatabaseProvisioner is the seam into Module N: an application that
-// declares a database gets one provisioned before its containers start
-// (FR-061), and every container it starts is handed that database's
-// connection environment and private network (FR-062/FR-063).
-type DatabaseProvisioner interface {
-	EnsureProvisioned(ctx context.Context, app domain.Application, declaredType string) (domain.ProvisionedDatabase, error)
-	WiringFor(ctx context.Context, applicationID string) (RuntimeWiring, error)
-}
-
 type ScaleInitializer interface {
 	InitializeForDeployment(ctx context.Context, deploymentID string, deploymentYAML string, imageRefs map[string]string, containers map[string]domain.RunningContainer) error
 	CleanupForDeployment(ctx context.Context, deploymentID string) error
+}
+
+// ResourceProvisioner is the seam into Modules N and O
+// (ApplicationResources): an application that declares a database gets one
+// provisioned before its containers start (FR-061), and every container it
+// starts is handed that database's connection environment and private
+// network (FR-062/FR-063) plus the application's secrets (FR-067).
+type ResourceProvisioner interface {
+	EnsureProvisioned(ctx context.Context, app domain.Application, declaredType string) (domain.ProvisionedDatabase, error)
+	WiringFor(ctx context.Context, applicationID string) (RuntimeWiring, error)
 }
 
 type DeploymentService struct {
@@ -90,19 +91,19 @@ type DeploymentService struct {
 	scale         ScaleInitializer
 	audit         AuditRecorder
 	notifications NotificationRecorder
-	databases     DatabaseProvisioner
+	resources     ResourceProvisioner
 }
 
 func NewDeploymentService(
 	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository,
 	deployments DeploymentRepository, approvals DeploymentApprovalRepository,
 	scanner ImageScanner, runtime RuntimeEngine, scale ScaleInitializer, audit AuditRecorder, notifications NotificationRecorder,
-	databases DatabaseProvisioner,
+	resources ResourceProvisioner,
 ) *DeploymentService {
 	return &DeploymentService{
 		apps: apps, owners: owners, builds: builds, deployments: deployments,
 		approvals: approvals, scanner: scanner, runtime: runtime, scale: scale, audit: audit,
-		notifications: notifications, databases: databases,
+		notifications: notifications, resources: resources,
 	}
 }
 
@@ -390,15 +391,15 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 	// come up without the database it declared, per FR-063's exception flow
 	// ("credential injection fails -> start is blocked").
 	if declared := strings.TrimSpace(parsed.Database.Type); declared != "" {
-		if _, err := s.databases.EnsureProvisioned(ctx, app, declared); err != nil {
+		if _, err := s.resources.EnsureProvisioned(ctx, app, declared); err != nil {
 			return s.markDeploymentFailedFrom(ctx, app.ID, transientAppStatus, wasAlreadyRunning, deployment,
 				fmt.Sprintf("failed to provision the declared %s database: %v", declared, err))
 		}
 	}
-	wiring, err := s.databases.WiringFor(ctx, app.ID)
+	wiring, err := s.resources.WiringFor(ctx, app.ID)
 	if err != nil {
 		return s.markDeploymentFailedFrom(ctx, app.ID, transientAppStatus, wasAlreadyRunning, deployment,
-			fmt.Sprintf("failed to resolve database connection details: %v", err))
+			fmt.Sprintf("failed to resolve the application's database and secrets: %v", err))
 	}
 
 	containers := make(map[string]domain.RunningContainer, len(build.ImageRefs))

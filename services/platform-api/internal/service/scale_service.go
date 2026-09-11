@@ -51,10 +51,11 @@ type RunningDeploymentLookup interface {
 	GetByID(ctx context.Context, deploymentID string) (domain.Deployment, error)
 }
 
-// DatabaseWirer is the read-only half of Module N's seam: everything that
-// starts a container needs the application's database environment and
-// private network, but only the deploy path ever provisions one.
-type DatabaseWirer interface {
+// RuntimeWirer is the read-only half of the Modules N and O seam
+// (ApplicationResources): everything that starts a container needs the
+// application's database environment, private network and secrets, but
+// only the deploy path ever provisions anything.
+type RuntimeWirer interface {
 	WiringFor(ctx context.Context, applicationID string) (RuntimeWiring, error)
 }
 
@@ -64,7 +65,7 @@ type ScaleService struct {
 	states      ServiceRuntimeStateRepository
 	events      ScaleEventRepository
 	stacks      StackRepository
-	databases   DatabaseWirer
+	resources   RuntimeWirer
 	runtime     RuntimeEngine
 
 	// coldStart coalesces concurrent EnsureRunning calls for the same
@@ -86,11 +87,11 @@ type ScaleService struct {
 func NewScaleService(
 	apps ApplicationByNameRepository, deployments RunningDeploymentLookup,
 	states ServiceRuntimeStateRepository, events ScaleEventRepository,
-	stacks StackRepository, runtime RuntimeEngine, databases DatabaseWirer,
+	stacks StackRepository, runtime RuntimeEngine, resources RuntimeWirer,
 ) *ScaleService {
 	return &ScaleService{
 		apps: apps, deployments: deployments, states: states, events: events,
-		stacks: stacks, runtime: runtime, databases: databases,
+		stacks: stacks, runtime: runtime, resources: resources,
 	}
 }
 
@@ -191,9 +192,9 @@ func (s *ScaleService) EnsureRunning(ctx context.Context, deploymentID, serviceN
 		if err != nil {
 			return nil, fmt.Errorf("cold start: failed to resolve the deployment's application: %w", err)
 		}
-		wiring, err := s.databases.WiringFor(ctx, dep.ApplicationID)
+		wiring, err := s.resources.WiringFor(ctx, dep.ApplicationID)
 		if err != nil {
-			return nil, fmt.Errorf("cold start: failed to resolve database connection details: %w", err)
+			return nil, fmt.Errorf("cold start: failed to resolve the application's database and secrets: %w", err)
 		}
 		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
 			Name: containerName, ImageRef: state.ImageRef, ContainerPort: state.ContainerPort,
