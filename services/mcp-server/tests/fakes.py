@@ -38,6 +38,10 @@ class FakePlatformClient:
             "by_department": {},
         }
         self.owners: dict[str, list[dict[str, Any]]] = {}
+        # Per-application secret metadata, and the applications whose secret
+        # list this fake caller may not see (the Platform API's 403).
+        self.secrets: dict[str, list[dict[str, Any]]] = {}
+        self.secrets_forbidden: set[str] = set()
 
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -207,6 +211,12 @@ class FakePlatformClient:
     async def list_owners(self, application_id: str) -> list[dict[str, Any]]:
         self._record("list_owners", application_id)
         return list(self.owners.get(application_id, []))
+
+    async def list_secrets(self, application_id: str) -> list[dict[str, Any]]:
+        self._record("list_secrets", application_id)
+        if application_id in self.secrets_forbidden:
+            raise ToolError(ErrorCode.UNAUTHORIZED, "requester is not authorized to perform this action")
+        return [dict(s) for s in self.secrets.get(application_id, [])]
 
     async def grant_owner(self, application_id: str, email: str, ownership_role: str) -> dict[str, Any]:
         self._record("grant_owner", application_id, email, ownership_role)

@@ -264,6 +264,15 @@ class PlatformClient:
         data = await self._request("GET", f"/applications/{application_id}/owners")
         return data.get("owners", [])
 
+    async def list_secrets(self, application_id: str) -> list[dict[str, Any]]:
+        # Names and metadata only: the Platform API has no endpoint that
+        # returns a secret's value, so nothing on this path could relay one.
+        # There is deliberately no method here that sends one either
+        # (SEC-SECRET-3) — see README.md's "Why no MCP tool accepts a
+        # secret value".
+        data = await self._request("GET", f"/applications/{application_id}/secrets")
+        return data.get("secrets", [])
+
     async def grant_owner(self, application_id: str, email: str, ownership_role: str) -> dict[str, Any]:
         return await self._request(
             "POST",

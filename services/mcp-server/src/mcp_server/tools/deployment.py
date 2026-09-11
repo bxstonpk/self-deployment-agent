@@ -112,6 +112,29 @@ async def deploy_application(
     return result
 
 
+# Section 13.7 anticipates "secret references" in this tool's output (its
+# security note keeps them from auditors), and SEC-SECRET-3 lets the agent
+# know *which* secrets exist — never their values. Relayed through an
+# explicit allowlist of fields, so even if the Platform API ever returned
+# more, a value could not ride along.
+_SECRET_REFERENCE_FIELDS = ("name", "managed_by", "version", "updated_at")
+
+
+async def _secret_references(
+    client: PlatformClient, application_id: str
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    try:
+        rows = await client.list_secrets(application_id)
+    except ToolError as exc:
+        # Owner-only on the Platform API. For anyone else the honest answer
+        # is "not visible to you" — never [], which would claim there are
+        # none (the same mistake the Admin Portal's first draft made).
+        if exc.code != ErrorCode.UNAUTHORIZED:
+            raise
+        return None, "Only this application's owners can see its secret names."
+    return [{field: row.get(field) for field in _SECRET_REFERENCE_FIELDS} for row in rows], None
+
+
 async def get_application_status(client: PlatformClient, application_id: str) -> dict[str, Any]:
     app = await client.get_application(application_id)
     latest_deployment_id = None
@@ -127,6 +150,8 @@ async def get_application_status(client: PlatformClient, application_id: str) ->
         if exc.code != ErrorCode.NOT_FOUND:
             raise
 
+    secrets, secrets_note = await _secret_references(client, application_id)
+
     return success(
         {
             "application_id": application_id,
@@ -134,6 +159,8 @@ async def get_application_status(client: PlatformClient, application_id: str) ->
             "current_lifecycle_state": app.get("lifecycle_status"),
             "latest_deployment_id": latest_deployment_id,
             "url": url,
+            "secrets": secrets,
+            "secrets_note": secrets_note,
         }
     )
 
