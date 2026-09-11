@@ -66,6 +66,14 @@ app doesn't pretend to offer anything they can't actually deliver.
     successful entry — calls the real `rollback_application` endpoint with
     that row's own deployment id, not a guess.
   - **Scale events** table (`GET .../scale-events`).
+  - **Metrics** (Module T) — what the platform measured about the
+    application: requests, errors and their rate, mean and max latency,
+    and the latest CPU and memory, over a 15m/1h/24h window, with
+    sparklines of CPU and of requests-per-minute (failures drawn over
+    them, and stated in the caption so the colour isn't carrying it
+    alone). It reports the instance count and last scale event, and says
+    plainly when the platform's own sampling is behind rather than
+    showing an empty window as a quiet application.
   - **Logs** (Module S) — what this application's containers printed,
     newest first, with a text filter, a service filter and **Load older
     lines** that follows the cursor the Platform API hands back. Each line
@@ -181,10 +189,11 @@ enforcing anything.
   `confirm: true` boolean is still what actually gates the irreversible
   action server-side; this is a materially weaker confirmation UX than the
   MCP path has, worth tightening in a follow-up.
-- **No metric views** — `platform-api` has measured CPU, memory, requests,
-  errors and latency since Module T (`GET /applications/{id}/metrics`,
-  also behind `mcp-server`'s `get_application_metrics`), but this Portal
-  doesn't chart any of it yet. Logs do have a view (see
+- **Metrics are a summary, not a dashboard** — the Metrics section shows
+  the platform's numbers with two small sparklines (see **Metrics UI**
+  below), over a 15m/1h/24h window. There is no per-service breakdown, no
+  zoom, no auto-refresh, and no percentiles — the platform doesn't compute
+  any. Logs have their own view (see
   **Logs UI** below), with the limits that view carries: no live
   tail/follow, no download, and a text search only — the endpoint's
   `since`/`until` and `environment` filters aren't exposed here.
@@ -672,3 +681,40 @@ One check in the first version of that driver script was wrong — not the
 page: it asserted the line just printed was at the top. This application
 prints a line a second, so a newer one legitimately overtakes it. The
 check now asserts the ordering itself.
+
+### Metrics UI (Module T), verified for real
+
+The application detail page has a **Metrics** section: requests, errors and
+their rate, mean and max latency, and the latest CPU and memory, over a
+**15m / 1h / 24h** window, with a CPU sparkline and a requests-per-minute
+bar strip whose failures are drawn in red *and* stated in the caption.
+Below them, the instance count and the last scale event. A `draft` or
+`validated` application asks the platform for nothing and says nothing has
+run yet; a non-owner is told the metrics are owners-only, for the same
+reason the Logs section does — the platform answers `404` for "not yours"
+and "no such application" alike, and on this page the application has
+already loaded.
+
+When the platform reports `collecting: false` — its own sampling behind,
+or no reading taken yet — the section says so in the platform's own words
+rather than showing an empty window as a quiet application.
+
+A Playwright pass against a real stack, driving an application that had
+served 12 requests through the platform (two deliberate 500s, one
+deliberately slow, one burning CPU), in two independent browser contexts.
+Confirmed for real: **12 requests, 2 errors (17%)**, a **535.17 ms mean
+against a 6,013.19 ms max** — the CPU-burning request — memory **1.7 MB**,
+and CPU **0%**, which is what the container was doing when the platform
+last looked, the burn having finished. Both charts rendered; the failure
+count appeared in the caption as well as in the colour; the instance line
+read `api: 1 instance · last scale event: api scaled_up
+(initial_activation)`; switching to 15m and back to 24h re-queried the
+platform and kept showing this run's traffic; and no console errors. In
+the second context, an uninvolved employee got the owners-only message and
+no numbers at all.
+
+Looking at that run's screenshot — not only at its assertions — caught two
+things no check would have: the latency tile wrapped mid-value, and a
+single minute of traffic drew a full-width solid bar that read as a trend
+it wasn't. Sub-values now sit on their own line, and a bar's width is
+capped so one minute draws one bar.

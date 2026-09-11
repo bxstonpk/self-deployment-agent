@@ -29,6 +29,22 @@ const LOG_LINES: LogLine[] = [
   { timestamp: "2026-01-05T10:00:01Z", service: "api", stream: "stdout", message: "using API_KEY=[REDACTED:API_KEY]", deployment_id: "dep-1", instance: "b1c2d3e4f5a6" },
 ];
 
+const METRICS = {
+  from: "2026-01-05T09:00:00Z",
+  to: "2026-01-05T10:00:00Z",
+  collection: { collecting: true, last_sample_at: "2026-01-05T09:59:45Z", note: "" },
+  instances: [{ service: "api", instances: 1, scaled_to_zero: false }],
+  last_scale_event: { service: "api", direction: "scaled_up", reason: "cold_start", occurred_at: "2026-01-05T09:30:00Z" },
+  resource: [
+    { timestamp: "2026-01-05T09:59:45Z", service: "api", instance: "abc123def456", cpu_percent: 12.5, memory_bytes: 52428800, memory_limit_bytes: 536870912 },
+    { timestamp: "2026-01-05T09:59:30Z", service: "api", instance: "abc123def456", cpu_percent: 3.5, memory_bytes: 52000000, memory_limit_bytes: 536870912 },
+  ],
+  traffic: [
+    { minute: "2026-01-05T09:59:00Z", service: "api", environment: "dev", requests: 10, errors: 1, error_rate: 0.1, latency_ms_mean: 12, latency_ms_max: 40 },
+  ],
+  summary: { requests: 10, errors: 1, error_rate: 0.1, latency_ms_mean: 12, latency_ms_max: 40, cpu_percent_latest: 12.5, memory_bytes_latest: 52428800 },
+};
+
 const SECRET_VALUE = "sk-test-0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 
 type Call = { method: string; path: string; search?: string; body?: string };
@@ -42,6 +58,8 @@ function mockPlatformApi(
     rotateError?: { status: number; code: string; message: string };
     logs?: LogLine[]; olderLogs?: LogLine[]; nextCursor?: string;
     logsError?: { status: number; code: string; message: string };
+    metrics?: object;
+    metricsError?: { status: number; code: string; message: string };
   } = {},
 ) {
   const calls: Call[] = [];
@@ -80,6 +98,13 @@ function mockPlatformApi(
       }
       if (method === "DELETE" && path.startsWith("/applications/app-1/secrets/")) {
         return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/applications/app-1/metrics") {
+        if (opts.metricsError) {
+          const { status, code, message } = opts.metricsError;
+          return Promise.resolve(jsonResponse({ error: { code, message } }, status));
+        }
+        return Promise.resolve(jsonResponse(opts.metrics ?? METRICS));
       }
       if (path === "/applications/app-1/logs") {
         if (opts.logsError) {
@@ -422,8 +447,10 @@ describe("ApplicationDetail — Logs", () => {
     const calls = mockPlatformApi({ app: { ...APP, lifecycle_status: "draft" } });
     renderDetail();
 
-    await screen.findByRole("heading", { name: "Logs" });
-    expect(screen.getByText(/Nothing has run yet/)).toBeInTheDocument();
+    const heading = await screen.findByRole("heading", { name: "Logs" });
+    // Scoped to this section: Metrics says the same thing, for the same reason.
+    const section = heading.closest("section") as HTMLElement;
+    expect(within(section).getByText(/Nothing has run yet/)).toBeInTheDocument();
     expect(calls.some((c) => c.path === "/applications/app-1/logs")).toBe(false);
   });
 
@@ -448,5 +475,93 @@ describe("ApplicationDetail — Logs", () => {
     const heading = await screen.findByRole("heading", { name: "Logs" });
     const section = heading.closest("section") as HTMLElement;
     expect(await within(section).findByText("failed to read logs")).toBeInTheDocument();
+  });
+});
+
+describe("ApplicationDetail — Metrics", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    signInAs();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  async function metricsSection(): Promise<HTMLElement> {
+    const heading = await screen.findByRole("heading", { name: "Metrics" });
+    return heading.closest("section") as HTMLElement;
+  }
+
+  it("shows the numbers the platform measured", async () => {
+    mockPlatformApi();
+    renderDetail();
+    const section = await metricsSection();
+
+    expect(await within(section).findByText("10")).toBeInTheDocument(); // requests
+    expect(within(section).getByText("12.5%")).toBeInTheDocument(); // CPU now
+    expect(within(section).getByText("50 MB")).toBeInTheDocument(); // memory now
+    expect(within(section).getByText("max 40 ms")).toBeInTheDocument();
+    expect(within(section).getByText("10%")).toBeInTheDocument(); // error rate
+  });
+
+  it("reports the instance count and the last scale event", async () => {
+    mockPlatformApi();
+    renderDetail();
+    const section = await metricsSection();
+
+    expect(await within(section).findByText(/api: 1 instance/)).toBeInTheDocument();
+    expect(within(section).getByText(/scaled_up \(cold_start\)/)).toBeInTheDocument();
+  });
+
+  // An empty window must never be passed off as a quiet application.
+  it("says when the platform's own sampling is behind", async () => {
+    mockPlatformApi({
+      metrics: {
+        ...METRICS,
+        collection: { collecting: false, last_sample_at: null, note: "A container is running, but no resource reading has been taken yet." },
+      },
+    });
+    renderDetail();
+    const section = await metricsSection();
+
+    expect(await within(section).findByText(/no resource reading has been taken yet/)).toBeInTheDocument();
+  });
+
+  it("asks the platform for the window the user picked", async () => {
+    const calls = mockPlatformApi();
+    const user = userEvent.setup();
+    renderDetail();
+    const section = await metricsSection();
+
+    await user.click(within(section).getByRole("button", { name: "Last 24h" }));
+
+    await waitFor(() => {
+      const metricCalls = calls.filter((c) => c.path === "/applications/app-1/metrics");
+      const from = new URLSearchParams(metricCalls[metricCalls.length - 1].search).get("from");
+      expect(from).toBeTruthy();
+      const hoursBack = (Date.now() - new Date(from as string).getTime()) / 3_600_000;
+      expect(hoursBack).toBeGreaterThan(23);
+      expect(hoursBack).toBeLessThan(25);
+    });
+  });
+
+  it("tells a non-owner the metrics are owners-only, not that the application is missing", async () => {
+    mockPlatformApi({ metricsError: { status: 404, code: "not_found", message: "application not found" } });
+    renderDetail();
+    const section = await metricsSection();
+
+    expect(await within(section).findByText("Only this application's owners can read its metrics.")).toBeInTheDocument();
+    expect(within(section).queryByText("application not found")).toBeNull();
+  });
+
+  it("says nothing has run yet for an application that never deployed, and asks the platform for nothing", async () => {
+    const calls = mockPlatformApi({ app: { ...APP, lifecycle_status: "draft" } });
+    renderDetail();
+    const section = await metricsSection();
+
+    expect(within(section).getByText(/Nothing has run yet/)).toBeInTheDocument();
+    expect(calls.some((c) => c.path === "/applications/app-1/metrics")).toBe(false);
   });
 });
