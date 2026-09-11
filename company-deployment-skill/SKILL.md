@@ -339,9 +339,10 @@ Independent of what the employee asks for:
   conversation, not even to "help set it up". If their application needs
   an API key or token, tell them the **name** to register it under (e.g.
   `PAYROLL_API_KEY`) and that they set the value themselves, directly on
-  the platform and outside this conversation — today through the
-  Platform API (`PUT /applications/{id}/secrets/{name}`); the Admin Portal
-  has no Secrets view yet. There is deliberately no MCP tool that accepts
+  the platform and outside this conversation — in the Admin Portal (the
+  application's page, **Secrets** section) or directly through the
+  Platform API (`PUT /applications/{id}/secrets/{name}`). There is
+  deliberately no MCP tool that accepts
   a secret value (`docs/11_Security_Requirements.md` SEC-SECRET-3). Every
   secret registered to an application is injected into its containers as
   an environment variable of the same name, so write the application to

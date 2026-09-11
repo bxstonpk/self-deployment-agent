@@ -73,6 +73,22 @@ export interface OwnershipTransfer {
   resolved_at?: string;
 }
 
+// --- Secrets (Module O) ---
+
+// Metadata only. platform-api has no endpoint that returns a secret's
+// value (FR-070), so there is deliberately no `value` field here for
+// anything to ever populate.
+export type SecretManagedBy = "employee" | "platform";
+
+export interface SecretMetadata {
+  name: string;
+  managed_by: SecretManagedBy;
+  version: number;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface RunningContainer {
   container_id: string;
   host_port: number;

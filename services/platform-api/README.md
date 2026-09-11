@@ -1159,9 +1159,10 @@ socket check would call it ready a moment too early.
 - **SEC-SECRET-8 (force-rotation on detected leakage) and FR-066's
   exception flow (scanning source for committed credentials) are not
   implemented.**
-- **No Admin Portal view yet**, and deliberately no MCP tool that accepts
-  a value (see `services/mcp-server/README.md`) — today an owner sets a
-  secret through the Platform API directly.
+- **Deliberately no MCP tool that accepts a value** (see
+  `services/mcp-server/README.md`): an owner sets a secret in the Admin
+  Portal's Secrets section (see `apps/admin-portal/README.md`) or through
+  the Platform API directly, never through the agent.
 
 ### Verifying it
 

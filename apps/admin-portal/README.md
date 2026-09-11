@@ -70,6 +70,15 @@ app doesn't pretend to offer anything they can't actually deliver.
     fetched unconditionally (unlike Build/Deploy/Scale events above, a
     `draft`/`validated` application already has real audit entries —
     registering and validating it are themselves audited actions).
+  - **Secrets** (Module O) — each secret's name, whether an owner or the
+    platform manages it, its version and when it was last set; never a
+    value, because no `platform-api` endpoint returns one. **Save secret**
+    sets or replaces one (write-only: the field clears the moment the save
+    succeeds); **Delete** asks first, and appears only for owner-set
+    secrets. Someone who isn't an owner is told the section is
+    owners-only, rather than shown an empty list. See **Secrets UI
+    (Module O), verified for real** below for the choices made about the
+    value field.
 - **Audit Log** (`AuditLog.tsx`, reachable from the header nav on every
   page) — the platform-wide view: filter by resource type/action, **Export
   CSV** (a real file download carrying the same identity headers as every
@@ -134,6 +143,7 @@ enforces (checked against source, not assumed):
 | Restart | `running` | `lifecycle_service.go`'s `Restart` |
 | Archive | `running` or `suspended` | `lifecycle_service.go`'s `Archive` |
 | Delete | `archived` or `suspended` | `lifecycle_service.go`'s `Delete` |
+| Save secret | anything but `deleted` | `secret_service.go`'s `Set` (a deleted application's secrets were purged with it) |
 
 This is a convenience, not a security boundary — the Platform API
 re-validates every precondition itself regardless of what this app shows;
@@ -181,6 +191,10 @@ enforcing anything.
   identity for display. Matches every other place in this app that shows a
   raw id today (e.g. `requested_by` on a deployment); worth a real user
   lookup once one exists, not something this page invents on its own.
+- **A secret's value is visible on screen while it's being typed.** The
+  field is a plain textarea (see **Secrets UI** below for why), which
+  nothing masks; it's cleared the moment the save succeeds and never shown
+  again. A show/hide toggle would be a reasonable follow-up.
 
 ## Real port-collision note (found while verifying, not hypothetical)
 
@@ -534,3 +548,46 @@ catchable by any assertion: the environment and department breakdown
 tables sat directly on top of each other with no separation, reading as
 one table with a stray repeated header row. Fixed with spacing between
 them, then re-rendered and re-checked.
+
+### Secrets UI (Module O), verified for real
+
+An eighth Playwright pass, against a real application built and deployed
+for it, from two browser contexts: the application's owner, and an
+employee who isn't one. What it checked is what matters for a secret —
+where the value goes, not just what the page shows:
+
+- As the owner: a lowercase name is stopped by the browser's own
+  `pattern` check with nothing sent; a reserved name (`DATABASE_URL`)
+  shows the server's real `reserved_secret_name` error and keeps what was
+  typed; a real save reports the name and version — not the value — and
+  clears the form. Recording every request and response for the whole
+  run, the value left the browser **exactly once**, in that one `PUT`, and
+  appears in no API response, the page's DOM, `localStorage` or
+  `sessionStorage` afterwards.
+- **Restart** from Lifecycle actions, then a check *outside* the browser,
+  through the platform's own proxy: the running container received
+  exactly that value (compared by hash — the test application never
+  echoes it). After **Delete** (confirm dialog accepted) and another
+  restart, the next container no longer had it.
+- As the other employee: the section says it's owners-only and shows not
+  even the secret's name; their attempt to overwrite it gets the real
+  `403 forbidden`, and the owner's value is untouched.
+- Console: only the deliberate `400` and the non-owner's expected `403`s.
+  Screenshots looked at, not just captured: name, value and Save on one
+  row at 1280px, one column at 420px; the audit log beneath shows
+  `set secret API_KEY (version 1)` and `deleted secret API_KEY` — names,
+  never values.
+
+**One real bug, found while writing the non-owner step, before the pass
+even ran:** `listSecrets` returns `403` to someone who isn't an owner,
+and the page's catch-all for failed fetches turned that into an empty
+list — so the section told them **"No secrets yet."** That's false; there
+may well be secrets, they just can't see them. A `403` is now told apart
+from an empty list, with its own unit test.
+
+**The value field, deliberately:** a `<textarea>`, not a password input —
+plenty of credentials are multi-line (PEM keys, JSON service-account
+files), and a password field invites the browser's password manager to
+save the value. Spell-check is off (enhanced spell-checking can send what's
+typed to a third-party service), as is autocomplete. The cost is that the
+value is visible while it's typed — listed under **Known gaps**.
