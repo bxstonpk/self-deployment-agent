@@ -33,6 +33,12 @@ const (
 	// single specific recipient (the nominee), not every active owner —
 	// see NotificationService.NotifyUser.
 	NotificationOwnershipTransfer NotificationCategory = "ownership_transfer"
+	// NotificationHealthRemediation implements FR-085 step 4 and FR-085's
+	// alternative/exception flows: an instance was automatically restarted
+	// after failing continuous health checks (Module R, FR-084), or
+	// automatic remediation itself failed or was paused and needs human
+	// review. See service.HealthMonitorService.
+	NotificationHealthRemediation NotificationCategory = "health_remediation"
 )
 
 type Notification struct {

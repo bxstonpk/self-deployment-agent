@@ -41,6 +41,13 @@ type Config struct {
 	// are TBD, so nothing is purged either.
 	MetricsSampleInterval time.Duration
 
+	// HealthSweepInterval is how often Module R re-checks every already-
+	// Running instance's health (FR-084), on top of the checks already run
+	// at deploy/resume/restart/cold-start gate points. Same status as
+	// MetricsSampleInterval above: an engineering default, not a value the
+	// requirements specify.
+	HealthSweepInterval time.Duration
+
 	// OwnershipTransferWindow implements FR-016's "policy window" for a
 	// nominated new owner to accept a transfer before it expires — exact
 	// value TBD (docs/17_Decision_Log.md), same "starting point, not a
@@ -83,6 +90,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	healthSweepInterval, err := getEnvSeconds("HEALTH_SWEEP_INTERVAL_SECONDS", 15)
+	if err != nil {
+		return Config{}, err
+	}
 	port := getEnv("PORT", "8080")
 	return Config{
 		DatabaseURL:             databaseURL,
@@ -93,6 +104,7 @@ func Load() (Config, error) {
 		ScaleToZeroIdleTimeout:  idleTimeout,
 		ScaleSweepInterval:      sweepInterval,
 		MetricsSampleInterval:   metricsInterval,
+		HealthSweepInterval:     healthSweepInterval,
 		OwnershipTransferWindow: transferWindow,
 		SecretKey:               secretKey,
 	}, nil

@@ -6,8 +6,9 @@ at a time. Currently covers **Draft**, **Validated**, **Build**,
 application), **Suspend/Resume/Restart**, **Rollback**, **Archive/Delete**
 — every Application Lifecycle state reachable without Module P (Domain
 Management), which doesn't exist yet — together with **Modules N and O**
-(Database and Secret Management), **Module S (Logging)** and **Module T
-(Monitoring)**, plus
+(Database and Secret Management), **Module S (Logging)**, **Module T
+(Monitoring)** and **Module R (Continuous Health Monitoring &
+Remediation)**, plus
 **Module W (Audit Log)**, an append-only, hash-chained record of every
 state-changing action across all of the above; **Module X
 (Notification)**, an in-app notification inbox for deployment status and
@@ -35,8 +36,11 @@ Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
 `FR-108` (Module X — Notification — see below); `FR-016`, `FR-017`
 (Module E — Co-Owner/Contributor Management and Transfer Ownership — see
 below); `FR-127`, `FR-128` (Module AB — Reporting — see below); and
-`FR-086`, `FR-087`, `FR-089` (Module S — Logging — see below); and
-`FR-090`, `FR-091` (Module T — Monitoring — see below). See
+`FR-086`, `FR-087`, `FR-089` (Module S — Logging — see below);
+`FR-090`, `FR-091` (Module T — Monitoring — see below); and `FR-084`,
+`FR-085` (Module R — Continuous Health Monitoring & Remediation — see
+below; `FR-082`, `FR-083` — default health check and the deploy-time gate
+— predate this module, see **How Deploy works**). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -82,7 +86,7 @@ for how it fits the Control Plane.
 | `GET /audit-log` | FR-104 | Filter by `actor_user_id`/`resource_type`/`resource_id`/`action`/`from`/`to`/`limit`; scoped to entries the caller performed or that concern an application they own |
 | `GET /audit-log/export` | FR-105 | Same filters, CSV response; the export itself is recorded as a new audit entry |
 | `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
-| `GET /notifications` | FR-107, FR-108 | The caller's own notifications, newest first; `?unread_only=true` filters to unread |
+| `GET /notifications` | FR-107, FR-108, FR-085 | The caller's own notifications, newest first; `?unread_only=true` filters to unread. Also where a Module R automatic-remediation notification shows up — see **How Continuous Health Monitoring works** |
 | `POST /notifications/{id}/read` | — | Marks one of the caller's own notifications read; a different user's notification id 404s, not 403 — see **How Notifications work** |
 | `GET /reports/application-inventory` | FR-127 | Current-state inventory of every application the caller owns — see **How Reporting works** |
 | `GET /reports/deployment-activity` | FR-128 | Deployment outcomes over a period (`?from=&to=` RFC3339, default last 30 days), broken down by environment and department |
@@ -204,9 +208,12 @@ successful build, and runs:
    swappable later per `NFR-046`) starts one container per service, port
    published dynamically.
 4. **Health Check** — polls the container until it responds or a 15s
-   timeout elapses (simplified stand-in for Module R, not yet its own
-   module). Failure here stops the containers just started for *this*
-   attempt only.
+   timeout elapses (`FR-083`'s pre-activation gate; a simplified stand-in
+   for `FR-082`'s configurable check — it always polls `/`). Failure here
+   stops the containers just started for *this* attempt only. The same
+   check keeps running after activation, continuously, for as long as the
+   instance is `Running` — see **How Continuous Health Monitoring works
+   (Module R)** below.
 5. **Traffic Activation** — on success, the application moves to `running`
    and the deployment's `containers` field carries each service's reachable
    URL. If a different deployment was already `running` for this
@@ -218,10 +225,11 @@ while a *previous* version is already `running` (a failed redeploy attempt)
 never touches that previous version — the application's `lifecycle_status`
 only moves to `failed` when there was no prior good version to protect. This
 was unit-tested explicitly (`TestInitiateDeploy_HealthCheckFailure_Redeploy_LeavesAppRunning`).
-Full continuous post-activation health monitoring triggering an *automatic*
-rollback of an already-live version (FR-099, Module V) is out of scope — it
-needs ongoing background monitoring infrastructure this
-synchronous-per-request pipeline doesn't have. The deliberate,
+An *automatic* rollback triggered by a post-activation health regression
+(FR-099, Module V) is still not wired up: the background health-monitoring
+infrastructure it would need now exists (Module R, below), but FR-099 needs
+its own scoping on top of it — distinguishing "a freshly activated version
+regressed" from "an instance flaked" — that isn't built. The deliberate,
 requester-initiated rollback path (FR-098) is implemented — see **How
 Rollback works** below.
 
@@ -440,8 +448,12 @@ already transient for a forward deploy).
   gap as the approval gate's approver-independence gap, blocked on
   `DEC-001`/`DEC-002`).
 - **FR-099** (fully *automatic* rollback triggered by a post-activation
-  health regression) isn't wired to any trigger — that needs continuous
-  runtime health monitoring (Module T), not built. What's already true
+  health regression) still isn't wired to any trigger. Module R (below) now
+  gives the platform continuous runtime health monitoring, so the
+  infrastructure gap is closed — what's still open is FR-099's own logic:
+  distinguishing "a freshly activated version regressed" (roll back) from
+  "one instance of an otherwise-fine version flaked" (Module R's own
+  restart-in-place, FR-085, already handles that). What's already true
   without any Module V code at all: FR-044's existing pre-activation failure
   handling means a failed forward-deploy attempt never touches an
   already-`running` previous version in the first place (see **How Deploy
@@ -1578,6 +1590,96 @@ confirms that the answer then contains no samples at all — not zeros —
 and says why, that no audit entry is written for a metrics read, and that
 deleting the application leaves no container behind.
 
+## How Continuous Health Monitoring works (Module R, FR-084/085)
+
+FR-083's deploy-time health check (see **How Deploy works** above) only
+ever ran once, at activation. Nothing re-checked an instance afterward —
+a service that started healthy and later hung, deadlocked, or leaked its
+way into failure just kept receiving traffic, forever, until someone
+noticed and restarted it by hand. `cmd/api/main.go`'s `runHealthSweeper`
+closes that: on a platform-wide interval (`HEALTH_SWEEP_INTERVAL_SECONDS`,
+default 15s, same "engineering default, not a ratified value" status as
+the scale-to-zero and metrics intervals), `HealthMonitorService.Sweep`
+re-runs the same health check against every currently-`Running` instance
+across every application — not only the ones the idle sweeper cares about;
+a static frontend or a `scaling.min>=1` backend is never scale-to-zero
+eligible, but it still gets checked here.
+
+- **Detection debounces a single blip.** A miss has to happen on two
+  consecutive sweeps before it counts as FR-084's "begins failing health
+  checks" — a lone dropped packet or GC pause isn't a service that's down.
+- **Remediation (FR-085)** stops the unhealthy container and starts a
+  fresh one in its place — the same Stop/StartContainer/HealthCheck
+  sequence `Restart` (FR-048) already uses, just system-triggered and
+  scoped to the one instance that actually failed. The replacement is
+  itself health-checked before it rejoins the pool (mirrors FR-083); if it
+  also fails, the service is left with **no** running instance rather than
+  quietly serving a container already known to be broken, and the owner is
+  notified (Module X) that it needs manual attention.
+- **A restart loop is not treated as routine remediation.** If the same
+  service gets remediated 3 times within 5 minutes (platform-chosen
+  numbers, not spec-given), the platform stops trying, leaves it down, and
+  sends one elevated notification rather than one every sweep — FR-085's
+  alternative flow calls this out explicitly ("to avoid a restart loop
+  masking a systemic issue"). The pause lifts on its own once the window
+  passes with no further remediation; there's no administrator role yet to
+  action an explicit "resume" on.
+- **A scaled-to-zero instance has nothing to poll**, per FR-084's own
+  business rule — the sweep only ever looks at services with a live
+  container.
+- **"Remediation event is logged" (FR-085 step 4)** is Module S: the
+  replacement container's output is captured exactly like any other
+  (`Log` is set on every `StartContainer` call here too), so its
+  history — including whatever it printed while unhealthy — isn't lost.
+
+### Known gaps
+
+- **FR-099 (automatic rollback on a post-activation health regression)
+  still isn't wired up** — see **How Rollback works** above for exactly
+  what's missing now that the monitoring infrastructure itself exists.
+- **The failure/remediation-count bookkeeping is in-memory**, not
+  persisted — a platform-api restart forgets how many times a service was
+  recently remediated (the circuit breaker resets) and forgets any
+  in-progress debounce count (a service that had one recent miss needs a
+  fresh sustained failure to trigger remediation again). Never a false
+  remediation, only a slower one, and simpler than persisting a counter no
+  read path needs.
+- **No dedicated "instance down" or "remediation history" API/UI.** What
+  happened is visible in the platform's own log and in the owner's
+  notification inbox (`GET /notifications`), not as a queryable timeline —
+  no FR here asks for one, unlike FR-056's scale-event history, which the
+  Admin Portal does show.
+- **The numbers (debounce count, remediation timeout, circuit breaker
+  limit/window) are this platform's own choices**, the same status as the
+  scale-to-zero idle timeout and the metrics sampling interval: nothing in
+  the requirements specifies them.
+
+### Verifying it
+
+`scripts/verify_module_r.py` runs against a live stack and a real Docker
+daemon, no mocks:
+
+```bash
+docker compose up -d --build   # from the repo root, HEALTH_SWEEP_INTERVAL_SECONDS=3 in .env to watch it move
+python services/platform-api/scripts/verify_module_r.py
+```
+
+It deploys an application that answers normally until told to fail, waits
+through several sweeps to confirm a healthy instance is left alone, then
+tells it to start failing. In the run that verified this module: the
+platform's own background sweeper — not this script — detected the
+failure and replaced the container within one sweep interval of the
+debounce, proven at the Docker level (the container id changed) and at the
+application level (a different instance answered, by its own hostname);
+the application kept serving throughout at its stable `/run/{app}/{service}`
+URL; and the owner had a `health_remediation` notification explaining what
+happened. The exception flow (a replacement that's also unhealthy) and the
+circuit-breaker alternative flow are covered by
+`internal/service/health_service_test.go`'s unit tests instead — a live
+container can't easily be scripted into staying broken across a restart on
+demand, and those tests can exercise exact failure sequences a real one
+can't be made to reproduce reliably.
+
 ## What's deliberately NOT here yet
 
 Each will land as its own feature branch/PR, per the Application Lifecycle:
@@ -1602,9 +1704,12 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   builds/deploys but won't scale to slow ones without a background
   job/worker model.
 - Fully-automatic rollback triggered by a post-activation health regression
-  (FR-099) — needs continuous background health monitoring (Module T) this
-  request-scoped pipeline doesn't have. The deliberate, requester-initiated
-  rollback path (FR-098) is implemented — see **How Rollback works** above.
+  (FR-099) — the continuous background health monitoring it would build on
+  now exists (Module R, below), but FR-099 itself needs its own scoping on
+  top of it (telling "a freshly activated version regressed" apart from "one
+  instance flaked", which Module R's own restart-in-place already handles).
+  The deliberate, requester-initiated rollback path (FR-098) is implemented
+  — see **How Rollback works** above.
 - Image-scan severity threshold is hardcoded to "any CRITICAL blocks" —
   FR-041 says this should be Security Administrator policy; no such policy
   exists yet to read from (worth a `DEC-xxx` entry).
@@ -1614,10 +1719,6 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   `go`/`react`/`vue` is a fixed platform constant (see **How Build works**).
 - True horizontal scaling above 1 instance (FR-054's `scaling.max` ceiling)
   — see **How Scale-to-Zero works** above.
-- Continuous post-activation health monitoring feeding scale decisions —
-  the idle sweeper only ever *scales down*; nothing currently restarts a
-  service that crashes on its own after activation (that's FR-099, already
-  noted above, not duplicated here).
 - Graceful in-flight-request draining before a scale-to-zero shutdown
   (FR-052's alternative flow) — the sweeper stops a container based on
   idle time only; a request that arrives in the same instant as a sweep

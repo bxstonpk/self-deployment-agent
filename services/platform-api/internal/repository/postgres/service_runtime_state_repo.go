@@ -140,6 +140,34 @@ func (r *ServiceRuntimeStateRepo) ListEligibleActive(ctx context.Context) ([]dom
 	return out, rows.Err()
 }
 
+// ListAllActive returns every service currently running a container,
+// across every deployment, regardless of scale-to-zero eligibility — the
+// candidate set for Module R's continuous health sweep (FR-084). Unlike
+// ListEligibleActive, this has no `eligible = true` filter: a static
+// frontend or a min>=1 backend is never a candidate for the idle sweep,
+// but it still needs continuous health monitoring.
+func (r *ServiceRuntimeStateRepo) ListAllActive(ctx context.Context) ([]domain.ServiceRuntimeState, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+serviceRuntimeStateColumns+`
+		FROM service_runtime_state
+		WHERE container_id IS NOT NULL
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list all active services: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.ServiceRuntimeState
+	for rows.Next() {
+		s, err := scanServiceRuntimeStateRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan service runtime state row: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // DeleteForDeployment removes runtime state when a deployment is
 // superseded — it's no longer the live one, so neither the proxy nor the
 // sweeper should act on it further (its containers are stopped separately

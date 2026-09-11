@@ -158,6 +158,26 @@ README for exactly what was tested and how):
   request — the deliberately slow request showed up in the latency
   maximum, and a suspended application produced no samples at all, with
   the answer saying why rather than looking like an outage.
+- Continuous Health Monitoring & Remediation (Module R, `FR-084`/`085`) —
+  until now, the health check every instance passes at deploy time
+  (`FR-083`) only ever ran once; nothing re-checked it afterward, so a
+  service that started healthy and later hung just kept receiving traffic.
+  A background sweeper now re-checks every running instance on an
+  interval, and when one starts failing, stops and replaces it — the same
+  sequence a manual restart already used, just system-triggered — then
+  health-checks the replacement before it rejoins. A service that gets
+  remediated repeatedly in a short window is left stopped rather than
+  restarted forever, and the owner is notified either way. Verified
+  against a real Docker daemon (see
+  `services/platform-api/scripts/verify_module_r.py`): the platform's own
+  sweeper — not the verification script — detected a real instance failing
+  real HTTP health checks and replaced it, proven by both the Docker
+  container id and the application's own hostname changing, with the
+  application still serving throughout at its stable URL. Verifying it for
+  real caught an actual bug: the new notification category had nowhere to
+  go, silently rejected by a database check constraint that predated it —
+  found because the "owner was notified" check failed even though
+  remediation itself worked, and fixed with a migration.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this

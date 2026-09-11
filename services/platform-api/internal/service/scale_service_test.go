@@ -73,6 +73,16 @@ func (f *fakeServiceRuntimeStateRepo) ListEligibleActive(ctx context.Context) ([
 	return out, nil
 }
 
+func (f *fakeServiceRuntimeStateRepo) ListAllActive(ctx context.Context) ([]domain.ServiceRuntimeState, error) {
+	var out []domain.ServiceRuntimeState
+	for _, s := range f.byKey {
+		if s.ContainerID != nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeServiceRuntimeStateRepo) ListForDeployment(ctx context.Context, deploymentID string) ([]domain.ServiceRuntimeState, error) {
 	var out []domain.ServiceRuntimeState
 	for _, s := range f.byKey {
