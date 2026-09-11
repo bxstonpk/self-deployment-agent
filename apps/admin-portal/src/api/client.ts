@@ -12,6 +12,8 @@ import {
   type Deployment,
   type DeploymentActivityReport,
   type InventoryRow,
+  type LogPage,
+  type LogQueryParams,
   type Notification,
   type OwnershipRole,
   type OwnershipTransfer,
@@ -264,6 +266,22 @@ export async function listDepartments(identity: Identity): Promise<Department[]>
 export async function listSupportedStacks(identity: Identity): Promise<SupportedStack[]> {
   const data = await request<{ stacks: SupportedStackRaw[] }>(identity, "GET", "/supported-stacks");
   return data.stacks.map((s) => ({ id: s.ID, kind: s.Kind, name: s.Name, status: s.Status }));
+}
+
+// --- Logs (Module S) ------------------------------------------------------
+//
+// Owner-only server-side, and a non-owner gets the same 404 a nonexistent
+// application does (FR-087). So a failure here cannot be reported as "not
+// allowed" — the Platform API deliberately doesn't say, and neither can
+// this page.
+export function getLogs(identity: Identity, id: string, params: LogQueryParams = {}): Promise<LogPage> {
+  const q = new URLSearchParams();
+  if (params.contains) q.set("contains", params.contains);
+  if (params.service) q.set("service", params.service);
+  if (params.limit) q.set("limit", String(params.limit));
+  if (params.cursor) q.set("cursor", params.cursor);
+  const s = q.toString();
+  return request(identity, "GET", `/applications/${id}/logs${s ? `?${s}` : ""}`);
 }
 
 // --- Audit Log (Module W) -------------------------------------------------

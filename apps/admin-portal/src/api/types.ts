@@ -98,6 +98,33 @@ export interface RotationResult {
   note: string;
 }
 
+// One line an application's containers printed (Module S, FR-086/087). A
+// value the platform injected is replaced with "[REDACTED:NAME]" before the
+// line is stored, so no response here ever carries one. "instance" is the
+// container it came from, which the line outlives.
+export interface LogEntry {
+  timestamp: string;
+  service: string;
+  stream: "stdout" | "stderr";
+  message: string;
+  deployment_id?: string;
+  instance: string;
+}
+
+// next_cursor is set only when a page came back full: pass it back as
+// `cursor` for the next, older page.
+export interface LogPage {
+  entries: LogEntry[];
+  next_cursor: string | null;
+}
+
+export interface LogQueryParams {
+  service?: string;
+  contains?: string;
+  limit?: number;
+  cursor?: string;
+}
+
 export interface RunningContainer {
   container_id: string;
   host_port: number;

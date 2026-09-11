@@ -66,6 +66,14 @@ app doesn't pretend to offer anything they can't actually deliver.
     successful entry — calls the real `rollback_application` endpoint with
     that row's own deployment id, not a guess.
   - **Scale events** table (`GET .../scale-events`).
+  - **Logs** (Module S) — what this application's containers printed,
+    newest first, with a text filter, a service filter and **Load older
+    lines** that follows the cursor the Platform API hands back. Each line
+    says which stream it came from in words (`out`/`err`), never colour
+    alone. Secret values the platform injected arrive already redacted
+    (`[REDACTED:NAME]`): this app never has one to show. A non-owner is
+    told the logs are owners-only — see **Logs UI** below for why that is
+    what a `404` means on this page.
   - **Audit log** — this application's own entries (`GET /audit-log?resource_type=application&resource_id=...`),
     fetched unconditionally (unlike Build/Deploy/Scale events above, a
     `draft`/`validated` application already has real audit entries —
@@ -173,11 +181,12 @@ enforcing anything.
   `confirm: true` boolean is still what actually gates the irreversible
   action server-side; this is a materially weaker confirmation UX than the
   MCP path has, worth tightening in a follow-up.
-- **No log or metric views** — `platform-api` has served an owner's
-  application logs since Module S (`GET /applications/{id}/logs`, also
-  behind `mcp-server`'s `get_application_logs`), but this Portal doesn't
-  show them yet. Metrics don't exist anywhere: there is no Monitoring
-  module (same gap `mcp-server`'s `get_application_metrics` documents).
+- **No metric views** — metrics don't exist anywhere: there is no
+  Monitoring module (the same gap `mcp-server`'s
+  `get_application_metrics` documents). Logs do have a view now (see
+  **Logs UI** below), with the limits that view carries: no live
+  tail/follow, no download, and a text search only — the endpoint's
+  `since`/`until` and `environment` filters aren't exposed here.
 - **No pagination** on the application list — `GET /applications` supports
   `limit`/`offset` server-side (defaults to 20 with no cap requested), but
   this app always requests the default page and doesn't yet expose paging
@@ -625,3 +634,40 @@ updated. Then, checked outside the browser from the application's own
 network: the old password was refused, the new one worked, the restarted
 application still reached its database, and the audit trail recorded the
 rotation by version. No page errors.
+
+### Logs UI (Module S), verified for real
+
+The application detail page has a **Logs** section: the lines this
+application's containers printed, newest first, 50 at a time, with a text
+filter, a service filter and **Load older lines** that follows the cursor
+the Platform API hands back rather than counting offsets in the browser.
+A `draft` or `validated` application asks the platform for nothing at all
+— it has never had a container — and says "Nothing has run yet" instead.
+
+A non-owner is told "Only this application's owners can read its logs."
+The Platform API answers `404` for "no such application" and "not yours"
+alike, so it never confirms to a stranger that an application exists
+(`FR-087`). On this page the application itself has already loaded, so a
+`404` from the logs endpoint can only mean the second — and saying so is
+clearer than repeating "application not found" on a page showing that
+very application.
+
+A Playwright pass against a real stack, driving a deployed application
+that prints a line a second, prints its own `API_KEY` on purpose, and
+writes one line to stderr, in two independent browser contexts (its owner
+and an uninvolved employee). Confirmed for real: the owner sees a line
+printed seconds earlier; the 50 lines shown run newest first by their own
+timestamps; the secret reads `[REDACTED:API_KEY]` and its value appears
+nowhere in the page's HTML; the stderr line is marked `err` in text; a
+filter matching nothing says so rather than showing an empty box; Clear
+restores the unfiltered lines; **Load older lines** appended a second page
+(50, then 100) without moving or repeating a single line already on
+screen, and the two pages together still ran newest first; no console
+errors. In the second context, the uninvolved employee got the
+owners-only message, no lines at all, and nothing the application had
+printed anywhere in their page.
+
+One check in the first version of that driver script was wrong — not the
+page: it asserted the line just printed was at the top. This application
+prints a line a second, so a newer one legitimately overtakes it. The
+check now asserts the ordering itself.

@@ -8,6 +8,7 @@ import {
   deployApplication,
   deploymentHistory,
   getApplication,
+  getLogs,
   getPendingOwnershipTransfer,
   grantOwner,
   initiateOwnershipTransfer,
@@ -36,6 +37,7 @@ import type {
   Build,
   Deployment,
   DeploymentStatus,
+  LogEntry,
   OwnershipRole,
   OwnershipTransfer,
   ScaleEvent,
@@ -48,6 +50,10 @@ import { StatusBadge } from "../components/StatusBadge";
 // Mirrors lifecycle_service.go's requireNothingLive: deployment statuses that
 // still count as "in progress".
 const IN_FLIGHT_DEPLOYMENT: DeploymentStatus[] = ["scanning", "pending_approval", "deploying", "health_check"];
+
+// One screenful of log lines at a time; older ones come from the cursor the
+// platform hands back, never from a client-side offset.
+const LOG_PAGE = 50;
 
 export function ApplicationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -73,6 +79,15 @@ export function ApplicationDetail() {
   const [environment, setEnvironment] = useState<"dev" | "production">("dev");
   const [busy, setBusy] = useState<string | null>(null); // name of the in-flight action, for disabling buttons
   const [message, setMessage] = useState<{ kind: "error" | "info"; text: string } | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logCursor, setLogCursor] = useState<string | null>(null);
+  const [logsLoaded, setLogsLoaded] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [logsBusy, setLogsBusy] = useState(false);
+  const [logFilter, setLogFilter] = useState("");
+  const [logService, setLogService] = useState("");
+  // Which of "no lines at all" and "none match what you asked for" to say.
+  const [logFilterApplied, setLogFilterApplied] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!identity || !id) return;
@@ -147,6 +162,74 @@ export function ApplicationDetail() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Logs load on their own rather than inside refresh(): they have their own
+  // filters, and an action's refresh shouldn't throw away the page someone
+  // is reading. draft and validated have never had a container to print
+  // anything — the same reasoning as refresh()'s early return.
+  const hasRun = app !== null && app.lifecycle_status !== "draft" && app.lifecycle_status !== "validated";
+
+  useEffect(() => {
+    if (!identity || !id || !hasRun) return;
+    let cancelled = false;
+    getLogs(identity, id, { limit: LOG_PAGE })
+      .then((page) => {
+        if (cancelled) return;
+        setLogs(page.entries ?? []);
+        setLogCursor(page.next_cursor ?? null);
+        setLogsError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLogs([]);
+        setLogCursor(null);
+        setLogsError(logsFailure(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLogsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, id, hasRun]);
+
+  // The Platform API answers 404 for "no such application" and "not yours"
+  // alike, so it never confirms to a stranger that an application exists
+  // (FR-087). On this page the application has already loaded, so a 404
+  // from the logs endpoint can only be the second — and saying so beats
+  // repeating "application not found" on a page showing that application.
+  function logsFailure(err: unknown): string {
+    if (err instanceof ApiError && err.status === 404) return "Only this application's owners can read its logs.";
+    return err instanceof ApiError ? err.message : String(err);
+  }
+
+  // cursor: the platform's own, for an older page, which is appended rather
+  // than replacing what's on screen. contains/service override the fields
+  // for Clear, whose state changes aren't readable here yet.
+  async function fetchLogs(opts: { cursor?: string; contains?: string; service?: string } = {}) {
+    if (!identity || !id) return;
+    const contains = (opts.contains ?? logFilter).trim();
+    const service = (opts.service ?? logService).trim();
+    setLogsBusy(true);
+    try {
+      const page = await getLogs(identity, id, {
+        contains: contains || undefined,
+        service: service || undefined,
+        limit: LOG_PAGE,
+        cursor: opts.cursor,
+      });
+      setLogs((prev) => (opts.cursor ? [...prev, ...(page.entries ?? [])] : page.entries ?? []));
+      setLogCursor(page.next_cursor ?? null);
+      setLogsError(null);
+    } catch (err) {
+      if (!opts.cursor) setLogs([]);
+      setLogsError(logsFailure(err));
+    } finally {
+      setLogFilterApplied(contains !== "" || service !== "");
+      setLogsLoaded(true);
+      setLogsBusy(false);
+    }
+  }
 
   async function runAction<T>(name: string, action: () => Promise<T>, successText: string) {
     setBusy(name);
@@ -706,6 +789,87 @@ export function ApplicationDetail() {
               ))}
             </tbody>
           </table>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Logs</h2>
+        <p className="hint">
+          What this application's containers printed, newest first. A secret the platform injected appears as{" "}
+          <code>[REDACTED:NAME]</code>: it is replaced before the line is stored, so it never reaches this page. Lines
+          outlive the container that wrote them — a failed deploy's included. Only this application's owners can read
+          them.
+        </p>
+        {!hasRun && <p className="hint">Nothing has run yet. Logs appear once a deploy starts a container.</p>}
+        {hasRun && (
+          <>
+            <form
+              className="toolbar"
+              onSubmit={(e) => {
+                e.preventDefault();
+                fetchLogs();
+              }}
+            >
+              <input
+                aria-label="Search log text"
+                placeholder="Search text"
+                value={logFilter}
+                onChange={(e) => setLogFilter(e.target.value)}
+              />
+              <input
+                aria-label="Filter by service"
+                placeholder="Service"
+                value={logService}
+                onChange={(e) => setLogService(e.target.value)}
+              />
+              <button type="submit" disabled={logsBusy}>
+                Search
+              </button>
+              <button type="button" disabled={logsBusy} onClick={() => fetchLogs()}>
+                {logsBusy ? "Loading…" : "Refresh"}
+              </button>
+              {(logFilter !== "" || logService !== "") && (
+                <button
+                  type="button"
+                  disabled={logsBusy}
+                  onClick={() => {
+                    setLogFilter("");
+                    setLogService("");
+                    fetchLogs({ contains: "", service: "" });
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </form>
+            {logsError && <p className="error-text">{logsError}</p>}
+            {!logsError && logsLoaded && logs.length === 0 && (
+              <p className="hint">{logFilterApplied ? "No lines match this filter." : "No log lines yet."}</p>
+            )}
+            {logs.length > 0 && (
+              <ol className="log-lines">
+                {logs.map((l, i) => (
+                  <li
+                    key={`${l.timestamp}-${l.instance}-${i}`}
+                    className={l.stream === "stderr" ? "log-line log-stderr" : "log-line"}
+                  >
+                    <time dateTime={l.timestamp}>{new Date(l.timestamp).toLocaleTimeString()}</time>
+                    {/* Never the colour alone: the stream is spelled out. */}
+                    <span className="log-stream">{l.stream === "stderr" ? "err" : "out"}</span>
+                    <span className="log-service" title={`container ${l.instance}`}>
+                      {l.service}
+                    </span>
+                    <span className="log-message">{l.message}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {logCursor && (
+              <button disabled={logsBusy} onClick={() => fetchLogs({ cursor: logCursor })}>
+                Load older lines
+              </button>
+            )}
+          </>
         )}
       </section>
 
