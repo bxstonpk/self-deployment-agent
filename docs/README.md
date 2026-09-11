@@ -31,7 +31,7 @@ This is **not** an implementation. No source code, no Kubernetes manifests, no D
 | 14 | [14_Test_Strategy.md](14_Test_Strategy.md) | Strategy for all 14 test types, with platform-specific depth on MCP testing, scale-to-zero/cold-start, and rollback/failure recovery |
 | 15 | [15_Traceability_Matrix.md](15_Traceability_Matrix.md) | The Requirements Traceability Matrix: Business Objective → FR → NFR → System Module → Test Type → Acceptance Criteria, plus a gap analysis |
 | 16 | [16_Risk_Register.md](16_Risk_Register.md) | 30 business/project/operational risks (RISK-001–RISK-030), ranked, with mitigation and ownership |
-| 17 | [17_Decision_Log.md](17_Decision_Log.md) | 26 open decisions (DEC-001–DEC-026) that Management/IT/Security must answer before later phases can proceed |
+| 17 | [17_Decision_Log.md](17_Decision_Log.md) | 26 tracked decisions (DEC-001–DEC-026); 19 still open as of 2026-09-11, the rest Decided or Deferred — see the log's Decision Index for current status |
 
 ## Suggested reading order
 
@@ -54,7 +54,7 @@ This is **not** an implementation. No source code, no Kubernetes manifests, no D
 - **ENT-01…ENT-20** (data entities) → owned by `12_Data_Requirements.md`
 - **THREAT-001…THREAT-018** (security threats) → owned by `11_Security_Requirements.md`
 - **RISK-001…RISK-030** (business/project risk — distinct from THREAT-xxx) → owned by `16_Risk_Register.md`
-- **DEC-001…DEC-026** (open decisions) → owned by `17_Decision_Log.md`
+- **DEC-001…DEC-026** (decisions, open or resolved) → owned by `17_Decision_Log.md`
 
 `15_Traceability_Matrix.md` is the only document that cross-references all of the above at once, to prove every Business Objective in the BRD has real, traceable requirement, module, and test coverage — and to name the few places it doesn't (see its Gap Analysis section).
 
