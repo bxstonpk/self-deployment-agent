@@ -54,6 +54,7 @@ const (
 	AuditActionSetSecret           AuditAction = "secret.set"
 	AuditActionDeleteSecret        AuditAction = "secret.delete"
 	AuditActionRotateSecret        AuditAction = "secret.rotate"
+	AuditActionReadLogs            AuditAction = "application.read_logs"
 )
 
 // AuditEntry is one append-only row. PrevHash/EntryHash implement FR-106:

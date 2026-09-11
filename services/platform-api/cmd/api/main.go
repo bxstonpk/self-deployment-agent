@@ -62,6 +62,7 @@ func main() {
 	transferRepo := postgres.NewOwnershipTransferRepo(pool)
 	databaseRepo := postgres.NewProvisionedDatabaseRepo(pool)
 	secretRepo := postgres.NewApplicationSecretRepo(pool)
+	logRepo := postgres.NewLogRepo(pool)
 
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
@@ -70,6 +71,14 @@ func main() {
 	dockerEngine := buildengine.NewDockerEngine(dockerCli)
 	scanner := imagescan.NewTrivyScanner(dockerCli)
 	runtime := runtimeengine.NewDockerRuntime(dockerCli)
+	// Module S: collect every application container's output (FR-086), and
+	// pick collection back up for containers that outlived a restart.
+	runtime.EnableLogCollection(logRepo)
+	if resumed, err := runtime.ResumeLogCollection(ctx); err != nil {
+		log.Printf("logs: could not resume collection: %v", err)
+	} else if resumed > 0 {
+		log.Printf("logs: resumed collection for %d application container(s)", resumed)
+	}
 
 	auditService := service.NewAuditService(auditRepo, ownerRepo, deploymentRepo, buildRepo)
 	secretBox, err := secretbox.FromBase64(cfg.SecretKey)
@@ -101,6 +110,7 @@ func main() {
 	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService, resources, buildRepo)
 	rotationService := service.NewRotationService(applicationRepo, ownerRepo, secretService, databaseService, lifecycleService, auditService)
 	reportingService := service.NewReportingService(applicationRepo, ownerRepo, departmentRepo, deploymentRepo, auditRepo)
+	logService := service.NewLogService(applicationRepo, ownerRepo, logRepo, auditService)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
@@ -118,6 +128,7 @@ func main() {
 		Notifications:      httpapi.NewNotificationHandler(notificationService),
 		Reports:            httpapi.NewReportHandler(reportingService),
 		Secrets:            httpapi.NewSecretHandler(secretService, rotationService),
+		Logs:               httpapi.NewLogHandler(logService),
 		PlatformEnv:        cfg.PlatformEnv,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})

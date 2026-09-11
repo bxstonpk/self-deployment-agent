@@ -18,18 +18,17 @@ actual message; it's written to be specific, not a template to work around).
 
 ## `INTERNAL_ERROR`s that mean "not built yet," not "broken"
 
-Two specific tools always return `INTERNAL_ERROR` with a message
-explaining exactly this — don't retry them, and don't report them to the
-employee as if something is wrong with their request:
+One tool always returns `INTERNAL_ERROR` with a message explaining
+exactly this — don't retry it, and don't report it to the employee as if
+something is wrong with their request:
 
-- **`get_application_logs`** — application log storage doesn't exist on
-  this platform yet (no Logging module).
 - **`get_application_metrics`** — application metrics storage doesn't
   exist on this platform yet (no Monitoring module).
 
 If an employee needs deeper diagnosis than `get_deployment_status`'s
-failure detail provides, say so honestly: this platform doesn't have log
-or metric inspection through the MCP (or at all) yet.
+failure detail provides, `get_application_logs` shows what the
+application itself printed, including a container from a failed deploy
+that has already been removed. There is no metric inspection yet.
 
 ## Common `VALIDATION_ERROR` messages you'll actually see
 

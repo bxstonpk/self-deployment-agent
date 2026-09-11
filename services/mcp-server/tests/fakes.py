@@ -42,6 +42,8 @@ class FakePlatformClient:
         # list this fake caller may not see (the Platform API's 403).
         self.secrets: dict[str, list[dict[str, Any]]] = {}
         self.secrets_forbidden: set[str] = set()
+        self.logs: dict[str, list[dict[str, Any]]] = {}
+        self.last_log_params: dict[str, Any] | None = None
 
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -211,6 +213,15 @@ class FakePlatformClient:
     async def list_owners(self, application_id: str) -> list[dict[str, Any]]:
         self._record("list_owners", application_id)
         return list(self.owners.get(application_id, []))
+
+    async def get_logs(self, application_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._record("get_logs", application_id)
+        if application_id not in self.applications:
+            raise ToolError(ErrorCode.NOT_FOUND, "application not found")
+        self.last_log_params = dict(params)
+        limit = params.get("limit") or 200
+        page = list(self.logs.get(application_id, []))[:limit]
+        return {"entries": page, "next_cursor": f"cursor-after-{len(page)}" if len(page) == limit else None}
 
     async def list_secrets(self, application_id: str) -> list[dict[str, Any]]:
         self._record("list_secrets", application_id)

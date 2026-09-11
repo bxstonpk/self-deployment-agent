@@ -413,8 +413,14 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 		running, err := s.runtime.StartContainer(ctx, domain.ContainerSpec{
 			Name: containerName, ImageRef: imageRef, ContainerPort: containerPort,
 			Env: wiring.Env, NetworkID: wiring.NetworkID,
+			Log: domain.LogSource{ApplicationID: app.ID, DeploymentID: deployment.ID, Service: serviceName},
 		})
 		if err != nil {
+			// The services already started for this deployment go too, as
+			// they do when a health check fails below.
+			for _, c := range containers {
+				_ = s.runtime.Stop(ctx, c.ContainerID)
+			}
 			return s.markDeploymentFailedFrom(ctx, app.ID, transientAppStatus, wasAlreadyRunning, deployment,
 				fmt.Sprintf("failed to start container for service %s: %v", serviceName, err))
 		}

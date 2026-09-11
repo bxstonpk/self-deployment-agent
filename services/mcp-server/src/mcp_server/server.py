@@ -223,7 +223,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
             deployment.restart_application(client, idempotency, application_id, idempotency_key),
         )
 
-    # --- 13.9-13.10: observability (not implemented — see module doc) --
+    # --- 13.9-13.10: observability (logs via Module S; metrics not implemented — see module doc) --
 
     @mcp.tool()
     async def get_application_logs(
@@ -233,6 +233,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
         time_range: str | None = None,
         service: str | None = None,
         severity: str | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         params = {
             "application_id": application_id,
@@ -241,11 +242,12 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
             "time_range": time_range,
             "service": service,
             "severity": severity,
+            "cursor": cursor,
         }
         return await _run_tool(
             audit("get_application_logs", params, application_id),
             observability.get_application_logs(
-                application_id, environment, tail_lines, time_range, service, severity
+                client, application_id, environment, tail_lines, time_range, service, severity, cursor
             ),
         )
 

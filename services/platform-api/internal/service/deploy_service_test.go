@@ -206,7 +206,10 @@ type fakeRuntime struct {
 	stopped        []string
 	healthCheckErr error
 	startErr       error
-	nextPort       int
+	// startFailsAfter makes every start fail once this many have
+	// succeeded (0: never).
+	startFailsAfter int
+	nextPort        int
 }
 
 func newHealthyRuntime() *fakeRuntime {
@@ -216,6 +219,9 @@ func newHealthyRuntime() *fakeRuntime {
 func (f *fakeRuntime) StartContainer(ctx context.Context, spec domain.ContainerSpec) (domain.RunningContainer, error) {
 	if f.startErr != nil {
 		return domain.RunningContainer{}, f.startErr
+	}
+	if f.startFailsAfter > 0 && len(f.started) >= f.startFailsAfter {
+		return domain.RunningContainer{}, errors.New("container exited as it started")
 	}
 	f.started = append(f.started, spec.Name)
 	// Recorded so tests can assert Module N actually handed the database
@@ -910,5 +916,27 @@ func TestInitiateDeploy_Production_NotifiesOwnersOfApprovalRequest(t *testing.T)
 	}
 	if calls[0].Category != domain.NotificationApprovalRequest || calls[0].ResourceID != d.ID {
 		t.Fatalf("unexpected notification: %+v", calls[0])
+	}
+}
+
+// A deployment whose second service fails to start must not leave the
+// first one running: nothing would ever route to it, stop it or remove it.
+func TestInitiateDeploy_AServiceFailingToStart_StopsTheOnesAlreadyStarted(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	app.DeploymentYAMLDraft = "app:\n  name: overtime\n  owner: HR\nservices:\n  api:\n    runtime: go\n    port: 8080\n  worker:\n    runtime: go\n    port: 9090\n"
+	build.ImageRefs["worker"] = "platform-build/overtime-worker:latest"
+	svc, _, _, runtime, _, _ := newDeployService(app, build, "owner-1")
+	runtime.startFailsAfter = 1
+
+	d, _ := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+
+	if len(runtime.started) != 1 {
+		t.Fatalf("expected one service started before the other failed, got %v", runtime.started)
+	}
+	if want := "container-" + runtime.started[0]; len(runtime.stopped) != 1 || runtime.stopped[0] != want {
+		t.Fatalf("expected %s stopped after the failed start, got %v", want, runtime.stopped)
+	}
+	if d.Status != domain.DeploymentFailed {
+		t.Errorf("expected the deployment Failed, got %q", d.Status)
 	}
 }

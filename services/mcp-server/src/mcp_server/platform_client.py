@@ -273,6 +273,13 @@ class PlatformClient:
         data = await self._request("GET", f"/applications/{application_id}/secrets")
         return data.get("secrets", [])
 
+    async def get_logs(self, application_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        # Module S: {"entries": [...], "next_cursor": ...}, newest first,
+        # already redacted at collection time.
+        return await self._request(
+            "GET", f"/applications/{application_id}/logs", params={k: v for k, v in params.items() if v is not None}
+        )
+
     async def grant_owner(self, application_id: str, email: str, ownership_role: str) -> dict[str, Any]:
         return await self._request(
             "POST",

@@ -29,6 +29,16 @@ func assertWired(t *testing.T, spec domain.ContainerSpec, where string) {
 	}
 }
 
+// Module S tags every container a start path creates, so each line it
+// writes is attributed to its application, deployment and service
+// (FR-086) — the same four paths, and the same way to miss one.
+func assertTagged(t *testing.T, spec domain.ContainerSpec, where string) {
+	t.Helper()
+	if spec.Log.ApplicationID != "app-1" || spec.Log.DeploymentID == "" || spec.Log.Service == "" {
+		t.Errorf("%s: container %q is not tagged for log collection: %+v", where, spec.Name, spec.Log)
+	}
+}
+
 func TestDeploy_WiresDatabaseIntoTheContainer(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
 	app.DeploymentYAMLDraft = "app:\n  name: overtime\n  owner: HR\nservices:\n  api:\n    runtime: go\n    port: 8080\ndatabase:\n  type: postgres\n"
@@ -47,6 +57,7 @@ func TestDeploy_WiresDatabaseIntoTheContainer(t *testing.T) {
 		t.Fatalf("expected one container started, got %d", len(runtime.startedSpecs))
 	}
 	assertWired(t, runtime.startedSpecs[0], "deploy")
+	assertTagged(t, runtime.startedSpecs[0], "deploy")
 }
 
 // An application that declares no database must be unaffected by Module N
@@ -89,6 +100,7 @@ func TestResume_WiresDatabaseIntoTheContainer(t *testing.T) {
 		t.Fatalf("expected one container started on resume, got %d", len(runtime.startedSpecs))
 	}
 	assertWired(t, runtime.startedSpecs[0], "resume")
+	assertTagged(t, runtime.startedSpecs[0], "resume")
 }
 
 func TestRestart_WiresDatabaseIntoTheContainer(t *testing.T) {
@@ -109,6 +121,7 @@ func TestRestart_WiresDatabaseIntoTheContainer(t *testing.T) {
 		t.Fatalf("expected one container started on restart, got %d", len(runtime.startedSpecs))
 	}
 	assertWired(t, runtime.startedSpecs[0], "restart")
+	assertTagged(t, runtime.startedSpecs[0], "restart")
 }
 
 // The one most easily missed: a cold start carries only a deployment id,
@@ -130,6 +143,7 @@ func TestColdStart_WiresDatabaseIntoTheContainer(t *testing.T) {
 		t.Fatalf("expected one container cold-started, got %d", len(runtime.startedSpecs))
 	}
 	assertWired(t, runtime.startedSpecs[0], "cold start")
+	assertTagged(t, runtime.startedSpecs[0], "cold start")
 }
 
 // FR-065: no live database instance survives a deleted application.

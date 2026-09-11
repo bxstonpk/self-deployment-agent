@@ -173,9 +173,11 @@ enforcing anything.
   `confirm: true` boolean is still what actually gates the irreversible
   action server-side; this is a materially weaker confirmation UX than the
   MCP path has, worth tightening in a follow-up.
-- **No log/metric views** — `platform-api` doesn't have Logging or
-  Monitoring modules to show anything from (same gap `mcp-server`'s
-  `get_application_logs`/`get_application_metrics` document).
+- **No log or metric views** — `platform-api` has served an owner's
+  application logs since Module S (`GET /applications/{id}/logs`, also
+  behind `mcp-server`'s `get_application_logs`), but this Portal doesn't
+  show them yet. Metrics don't exist anywhere: there is no Monitoring
+  module (same gap `mcp-server`'s `get_application_metrics` documents).
 - **No pagination** on the application list — `GET /applications` supports
   `limit`/`offset` server-side (defaults to 20 with no cap requested), but
   this app always requests the default page and doesn't yet expose paging

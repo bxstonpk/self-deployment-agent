@@ -15,9 +15,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -32,10 +34,22 @@ import (
 
 type DockerRuntime struct {
 	cli *client.Client
+
+	// Module S collection (logs.go); nil until EnableLogCollection.
+	logs      LogSink
+	followMu  sync.Mutex
+	followers map[string]*follower
 }
 
 func NewDockerRuntime(cli *client.Client) *DockerRuntime {
-	return &DockerRuntime{cli: cli}
+	return &DockerRuntime{cli: cli, followers: map[string]*follower{}}
+}
+
+// EnableLogCollection turns on Module S: from here on, every application
+// container this runtime starts is followed from its first line, and Stop
+// waits for a container's last lines before removing it.
+func (r *DockerRuntime) EnableLogCollection(sink LogSink) {
+	r.logs = sink
 }
 
 // StartContainer implements the Deployment pipeline step: starts one
@@ -54,6 +68,9 @@ func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.Containe
 		Env:          spec.Env,
 		ExposedPorts: nat.PortSet{portKey: struct{}{}},
 	}
+	if spec.Log.Collect() {
+		cfg.Labels = containerLabels(spec.Log, spec.Env)
+	}
 	hostCfg := &container.HostConfig{
 		PortBindings: nat.PortMap{
 			portKey: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "0"}},
@@ -64,29 +81,44 @@ func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.Containe
 	if err != nil {
 		return domain.RunningContainer{}, fmt.Errorf("create container: %w", err)
 	}
+	// From here on, a failure must not leave the container behind. The
+	// usual one is a container that exits before its port is published —
+	// it crashed on start — which used to stay there, exited, for good.
+	fail := func(err error) (domain.RunningContainer, error) {
+		r.discard(created.ID)
+		return domain.RunningContainer{}, err
+	}
 	// Attached as an ADDITIONAL network, not a replacement: the container
 	// keeps its default-bridge connectivity, which is what publishes its
 	// host port and lets the platform health-check it.
 	if spec.NetworkID != "" {
 		if err := r.cli.NetworkConnect(ctx, spec.NetworkID, created.ID, nil); err != nil {
-			return domain.RunningContainer{}, fmt.Errorf("attach container to its application network: %w", err)
+			return fail(fmt.Errorf("attach container to its application network: %w", err))
 		}
 	}
 	if err := r.cli.ContainerStart(ctx, created.ID, types.ContainerStartOptions{}); err != nil {
-		return domain.RunningContainer{}, fmt.Errorf("start container: %w", err)
+		return fail(fmt.Errorf("start container: %w", err))
+	}
+	// Module S: followed from its very first line, before the health check
+	// — so a container that crashes on start still leaves its output.
+	if r.logs != nil && spec.Log.Collect() {
+		r.follow(created.ID, spec.Log, redactionsFor(spec.Env, secretEnvKeys(spec.Env)), time.Time{})
 	}
 
 	inspected, err := r.cli.ContainerInspect(ctx, created.ID)
 	if err != nil {
-		return domain.RunningContainer{}, fmt.Errorf("inspect container: %w", err)
+		return fail(fmt.Errorf("inspect container: %w", err))
+	}
+	if inspected.State != nil && !inspected.State.Running {
+		return fail(fmt.Errorf("container exited as it started (exit code %d); what it printed is in the application's logs", inspected.State.ExitCode))
 	}
 	bindings, ok := inspected.NetworkSettings.Ports[portKey]
 	if !ok || len(bindings) == 0 {
-		return domain.RunningContainer{}, fmt.Errorf("container started but published no host port for %s", portKey)
+		return fail(fmt.Errorf("container started but published no host port for %s", portKey))
 	}
 	hostPort, err := strconv.Atoi(bindings[0].HostPort)
 	if err != nil {
-		return domain.RunningContainer{}, fmt.Errorf("parse published host port: %w", err)
+		return fail(fmt.Errorf("parse published host port: %w", err))
 	}
 
 	return domain.RunningContainer{
@@ -94,6 +126,17 @@ func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.Containe
 		HostPort:    hostPort,
 		URL:         fmt.Sprintf("http://localhost:%d", hostPort),
 	}, nil
+}
+
+// discard gets rid of a container StartContainer created but can't hand
+// back, the way Stop does: stopped, its last lines stored, removed. On a
+// fresh context, because the request's may be what just failed.
+func (r *DockerRuntime) discard(containerID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.Stop(ctx, containerID); err != nil {
+		log.Printf("runtime: could not remove container %s after a failed start: %v", shortContainerID(containerID), err)
+	}
 }
 
 // HealthCheck implements the Health Check pipeline gate by polling the
@@ -138,6 +181,10 @@ func (r *DockerRuntime) Stop(ctx context.Context, containerID string) error {
 	if err := r.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout}); err != nil {
 		return fmt.Errorf("stop container: %w", err)
 	}
+	// Module S: the log stream ends when the container does. Wait for its
+	// last lines to be stored before the container — and with it Docker's
+	// own copy of its output — is gone.
+	r.waitForLogs(containerID)
 	if err := r.cli.ContainerRemove(ctx, containerID, types.ContainerRemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("remove container: %w", err)
 	}
