@@ -32,6 +32,7 @@ function mockPlatformApi(
   opts: {
     app?: object; secretsForbidden?: boolean; deployments?: object[]; build?: object;
     putError?: { status: number; code: string; message: string };
+    rotateError?: { status: number; code: string; message: string };
   } = {},
 ) {
   const calls: Call[] = [];
@@ -51,6 +52,20 @@ function mockPlatformApi(
         return Promise.resolve(jsonResponse({
           name, managed_by: "employee", version: 3, updated_by: "user-1",
           created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-03T00:00:00Z",
+        }));
+      }
+      if (method === "POST" && path.endsWith("/rotate")) {
+        if (opts.rotateError) {
+          const { status, code, message } = opts.rotateError;
+          return Promise.resolve(jsonResponse({ error: { code, message } }, status));
+        }
+        return Promise.resolve(jsonResponse({
+          secret: {
+            name: "DATABASE_PASSWORD", managed_by: "platform", version: 2, updated_by: null,
+            created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-04T00:00:00Z",
+          },
+          restarted: true,
+          note: "Running instances were restarted onto the new password.",
         }));
       }
       if (method === "DELETE" && path.startsWith("/applications/app-1/secrets/")) {
@@ -119,7 +134,9 @@ describe("ApplicationDetail — Secrets", () => {
     const section = await secretsSection();
 
     expect(within(rowFor(section, "API_KEY")).getByRole("button", { name: "Delete" })).toBeInTheDocument();
-    expect(within(rowFor(section, "DATABASE_PASSWORD")).queryByRole("button")).toBeNull();
+    // It has Rotate now (see the Rotate suite below) — what matters here is
+    // that nothing offers to delete a secret the platform depends on.
+    expect(within(rowFor(section, "DATABASE_PASSWORD")).queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
   it("sends the value once, then forgets it", async () => {
@@ -243,5 +260,63 @@ describe("ApplicationDetail — Delete", () => {
     const button = await lifecycleDelete();
     await waitFor(() => expect(button).toBeDisabled());
     expect(button.getAttribute("title")).toMatch(/never went live/);
+  });
+});
+
+describe("ApplicationDetail — Rotate", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    signInAs();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("offers Rotate for the platform-managed database password, not for an owner's secret", async () => {
+    mockPlatformApi();
+    renderDetail();
+    const section = await secretsSection();
+
+    expect(within(rowFor(section, "DATABASE_PASSWORD")).getByRole("button", { name: "Rotate" })).toBeInTheDocument();
+    expect(within(rowFor(section, "API_KEY")).queryByRole("button", { name: "Rotate" })).toBeNull();
+  });
+
+  it("rotates only after confirming, and reports the new version and what happened", async () => {
+    const calls = mockPlatformApi();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    renderDetail();
+    const section = await secretsSection();
+    const rotate = within(rowFor(section, "DATABASE_PASSWORD")).getByRole("button", { name: "Rotate" });
+
+    await user.click(rotate);
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+
+    confirm.mockReturnValue(true);
+    await user.click(rotate);
+    expect(await screen.findByText(/Rotated DATABASE_PASSWORD \(version 2\)\. Running instances were restarted/)).toBeInTheDocument();
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual([
+      "/applications/app-1/secrets/DATABASE_PASSWORD/rotate",
+    ]);
+  });
+
+  it("shows an incomplete rotation as an error, not a success", async () => {
+    mockPlatformApi({
+      rotateError: {
+        status: 500, code: "rotation_incomplete",
+        message: "the secret was rotated, but running instances could not all be restarted onto it",
+      },
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    renderDetail();
+    const section = await secretsSection();
+
+    await user.click(within(rowFor(section, "DATABASE_PASSWORD")).getByRole("button", { name: "Rotate" }));
+    expect(await screen.findByText(/rotation_incomplete/)).toBeInTheDocument();
+    expect(screen.queryByText(/Rotated DATABASE_PASSWORD/)).toBeNull();
   });
 });

@@ -75,7 +75,8 @@ app doesn't pretend to offer anything they can't actually deliver.
     value, because no `platform-api` endpoint returns one. **Save secret**
     sets or replaces one (write-only: the field clears the moment the save
     succeeds); **Delete** asks first, and appears only for owner-set
-    secrets. Someone who isn't an owner is told the section is
+    secrets; **Rotate** appears only on the platform-managed database
+    password (FR-068). Someone who isn't an owner is told the section is
     owners-only, rather than shown an empty list. See **Secrets UI
     (Module O), verified for real** below for the choices made about the
     value field.
@@ -606,3 +607,19 @@ a real stack confirmed both sides: on an application mid-rebuild with its
 previous version live, Delete is disabled and its tooltip says why; on a
 draft, Delete is enabled, and confirming it really deletes the
 application. No page errors.
+
+### Rotating the database password, verified for real
+
+The platform-managed `DATABASE_PASSWORD` row has a **Rotate** button;
+owner-set secrets don't, since the platform can't invalidate a credential
+a third party issued. It confirms first, then shows the server's own
+account of what happened, and an incomplete rotation
+(`rotation_incomplete`) shows as an error rather than a success. A
+Playwright pass against a real application with a real database: the row
+offered Rotate and not Delete, the owner-set secret offered no Rotate, the
+confirmation said the old password stops working at once, and after
+confirming the result read "version 2 … restarted" with the table
+updated. Then, checked outside the browser from the application's own
+network: the old password was refused, the new one worked, the restarted
+application still reached its database, and the audit trail recorded the
+rotation by version. No page errors.

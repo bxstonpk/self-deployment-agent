@@ -15,6 +15,7 @@ import {
   type Notification,
   type OwnershipRole,
   type OwnershipTransfer,
+  type RotationResult,
   type ScaleEvent,
   type SecretMetadata,
   type SupportedStack,
@@ -240,6 +241,12 @@ export function setSecret(identity: Identity, id: string, name: string, value: s
 
 export function deleteSecret(identity: Identity, id: string, name: string): Promise<void> {
   return request(identity, "DELETE", `/applications/${id}/secrets/${encodeURIComponent(name)}`);
+}
+
+// FR-068: platform-generated secrets only (today, the database password).
+// The response carries the new version, never the value.
+export function rotateSecret(identity: Identity, id: string, name: string): Promise<RotationResult> {
+  return request(identity, "POST", `/applications/${id}/secrets/${encodeURIComponent(name)}/rotate`);
 }
 
 // --- Departments / Supported Stacks (raw PascalCase — see types.ts) -------

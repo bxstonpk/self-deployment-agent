@@ -133,7 +133,10 @@ Populate from what you inspected and confirmed with the employee:
   password into `deployment.yaml`, source, or anything you show the
   employee — the platform generates them and the application reads them
   from its environment.** The database is deprovisioned when the
-  application is deleted.
+  application is deleted. If its password may have leaked, the owner can
+  rotate it (Admin Portal → the application's **Secrets** → **Rotate**):
+  the old password stops working at once and running instances restart
+  onto the new one.
 - `scaling.min`/`max` — default to scale-to-zero-friendly (`min: 0`) for
   stateless web/API services unless the employee has a reason to opt out
   (`min >= 1` keeps an instance always warm, at the cost of not
