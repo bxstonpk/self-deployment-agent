@@ -89,6 +89,15 @@ export interface SecretMetadata {
   updated_at: string;
 }
 
+// What rotating a platform-generated secret returns (FR-068): the new
+// version and whether running instances were restarted onto it — never the
+// value.
+export interface RotationResult {
+  secret: SecretMetadata;
+  restarted: boolean;
+  note: string;
+}
+
 export interface RunningContainer {
   container_id: string;
   host_port: number;

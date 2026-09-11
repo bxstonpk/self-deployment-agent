@@ -1154,7 +1154,9 @@ disagree about which password is current:
 
 The response and the `secret.rotate` audit entry carry the version, never
 a value. An owner-set secret is refused with `409 secret_not_rotatable` —
-the platform didn't issue it and can't invalidate it.
+the platform didn't issue it and can't invalidate it. The Admin Portal
+offers this as a **Rotate** button on the database password's row in an
+application's Secrets section.
 
 **How it was checked, and a trap in checking it.** The first probe of
 `ALTER ROLE` against a throwaway Postgres said the *old* password still
