@@ -193,7 +193,10 @@ Section 13's tool boundary is coarser than the Business API's:
   first to check the current state, calls `archive_application` only if
   the application is currently `running` (Delete already accepts
   `suspended` directly — archiving an already-suspended app would be a
-  needless extra round trip), then calls `delete_application`. It also
+  needless extra round trip — and, for an application that never went
+  live, `draft`/`validated`/`build`/`failed` too; the Platform API still
+  refuses with `CONFLICT` if a previous version is actually serving), then
+  calls `delete_application`. It also
   checks the caller's `confirmation` string against the application's
   actual name **before** calling the Platform API at all — Section
   13.13's "explicit confirmation... a single ambiguous instruction must

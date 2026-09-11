@@ -29,7 +29,10 @@ type Call = { method: string; path: string; body?: string };
 // Routes by path, so the whole detail page can load. Everything this suite
 // doesn't care about 404s — which the page already treats as "none yet".
 function mockPlatformApi(
-  opts: { app?: object; secretsForbidden?: boolean; putError?: { status: number; code: string; message: string } } = {},
+  opts: {
+    app?: object; secretsForbidden?: boolean; deployments?: object[]; build?: object;
+    putError?: { status: number; code: string; message: string };
+  } = {},
 ) {
   const calls: Call[] = [];
   vi.stubGlobal(
@@ -61,6 +64,8 @@ function mockPlatformApi(
             : jsonResponse({ secrets: SECRETS }),
         );
       }
+      if (path === "/applications/app-1/deployments" && opts.deployments) return Promise.resolve(jsonResponse(opts.deployments));
+      if (path === "/applications/app-1/builds/latest" && opts.build) return Promise.resolve(jsonResponse(opts.build));
       return Promise.resolve(jsonResponse({ error: { code: "not_found", message: "not found" } }, 404));
     }),
   );
@@ -202,5 +207,41 @@ describe("ApplicationDetail — Secrets", () => {
 
     expect(await screen.findByText(/Only this application's owners can see or change its secrets/)).toBeInTheDocument();
     expect(screen.queryByText("No secrets yet.")).toBeNull();
+  });
+});
+
+describe("ApplicationDetail — Delete", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    signInAs();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  async function lifecycleDelete(): Promise<HTMLElement> {
+    const section = (await screen.findByRole("heading", { name: "Lifecycle actions" })).closest("section") as HTMLElement;
+    return within(section).getByRole("button", { name: "Delete" });
+  }
+
+  it("offers Delete for a draft that never went live", async () => {
+    mockPlatformApi({ app: { ...APP, lifecycle_status: "draft" } });
+    renderDetail();
+    expect(await lifecycleDelete()).toBeEnabled();
+  });
+
+  it("does not offer Delete while a previous version is still serving", async () => {
+    // A rebuild leaves the application in Build with the old deployment live.
+    mockPlatformApi({
+      app: { ...APP, lifecycle_status: "build" },
+      build: { id: "b-1", application_id: "app-1", status: "succeeded" },
+      deployments: [{ id: "dep-1", application_id: "app-1", status: "running", environment: "dev", created_at: "2026-01-01T00:00:00Z" }],
+    });
+    renderDetail();
+    const button = await lifecycleDelete();
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(button.getAttribute("title")).toMatch(/never went live/);
   });
 });

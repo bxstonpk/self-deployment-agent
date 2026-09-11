@@ -21,6 +21,14 @@ func newLifecycleService(app domain.Application, deployment domain.Deployment, o
 func newLifecycleServiceWithDatabase(app domain.Application, deployment domain.Deployment, ownerID string, databases *fakeDatabaseService) (
 	*service.LifecycleService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeServiceRuntimeStateRepo, *fakeRuntime,
 ) {
+	return newLifecycleServiceWithBuilds(app, deployment, ownerID, databases, newFakeBuildRepo())
+}
+
+// newLifecycleServiceWithBuilds also leaves the build history in the
+// test's hands — what Delete's "nothing in flight" guard reads.
+func newLifecycleServiceWithBuilds(app domain.Application, deployment domain.Deployment, ownerID string, databases *fakeDatabaseService, builds *fakeBuildRepo) (
+	*service.LifecycleService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeServiceRuntimeStateRepo, *fakeRuntime,
+) {
 	apps := newFakeLifecycleRepo(app)
 	owners := newFakeOwnerRepo()
 	owners.owners[app.ID] = []domain.ApplicationOwner{{
@@ -31,7 +39,7 @@ func newLifecycleServiceWithDatabase(app domain.Application, deployment domain.D
 	states := newFakeServiceRuntimeStateRepo()
 	runtime := newHealthyRuntime()
 
-	svc := service.NewLifecycleService(apps, owners, deployments, states, runtime, newFakeAuditRecorder(), databases)
+	svc := service.NewLifecycleService(apps, owners, deployments, states, runtime, newFakeAuditRecorder(), databases, builds)
 	return svc, apps, deployments, states, runtime
 }
 
@@ -416,7 +424,7 @@ func newLifecycleServiceWithAudit(app domain.Application, deployment domain.Depl
 	states := newFakeServiceRuntimeStateRepo()
 	runtime := newHealthyRuntime()
 	audit := newFakeAuditRecorder()
-	return service.NewLifecycleService(apps, owners, deployments, states, runtime, audit, newFakeDatabaseService()), audit
+	return service.NewLifecycleService(apps, owners, deployments, states, runtime, audit, newFakeDatabaseService(), newFakeBuildRepo()), audit
 }
 
 func TestSuspend_Success_RecordsAuditEntry(t *testing.T) {

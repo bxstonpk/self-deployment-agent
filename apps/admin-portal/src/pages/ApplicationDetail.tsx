@@ -34,6 +34,7 @@ import type {
   AuditEntry,
   Build,
   Deployment,
+  DeploymentStatus,
   OwnershipRole,
   OwnershipTransfer,
   ScaleEvent,
@@ -42,6 +43,10 @@ import type {
 } from "../api/types";
 import { useIdentity } from "../context/IdentityContext";
 import { StatusBadge } from "../components/StatusBadge";
+
+// Mirrors lifecycle_service.go's requireNothingLive: deployment statuses that
+// still count as "in progress".
+const IN_FLIGHT_DEPLOYMENT: DeploymentStatus[] = ["scanning", "pending_approval", "deploying", "health_check"];
 
 export function ApplicationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -229,7 +234,22 @@ export function ApplicationDetail() {
   const canResume = app.lifecycle_status === "suspended";
   const canRestart = app.lifecycle_status === "running";
   const canArchive = app.lifecycle_status === "running" || app.lifecycle_status === "suspended";
-  const canDelete = app.lifecycle_status === "archived" || app.lifecycle_status === "suspended";
+  // Two routes into Deleted, mirroring lifecycle_service.go's Delete:
+  // FR-050's own (archived or suspended), and straight from a state that
+  // never went live — but only while nothing is actually serving or in
+  // progress, since a rebuild leaves an application in Build with its
+  // previous version still live. The server enforces this regardless.
+  const somethingLive =
+    history.some((d) => d.status === "running" || IN_FLIGHT_DEPLOYMENT.includes(d.status)) ||
+    build?.status === "queued" ||
+    build?.status === "in_progress";
+  const neverWentLive =
+    app.lifecycle_status === "draft" ||
+    app.lifecycle_status === "validated" ||
+    app.lifecycle_status === "build" ||
+    app.lifecycle_status === "failed";
+  const canDelete =
+    app.lifecycle_status === "archived" || app.lifecycle_status === "suspended" || (neverWentLive && !somethingLive);
   const canDeploy = app.lifecycle_status === "running" || app.lifecycle_status === "build" || app.lifecycle_status === "failed";
   const canValidate = app.lifecycle_status === "draft";
   const canBuild = app.lifecycle_status === "validated" || app.lifecycle_status === "running" || app.lifecycle_status === "failed";
@@ -392,7 +412,11 @@ export function ApplicationDetail() {
           <button
             className="button-danger"
             disabled={busy !== null || !canDelete}
-            title={canDelete ? undefined : "Requires archived or suspended"}
+            title={
+              canDelete
+                ? undefined
+                : "Requires archived or suspended — or, for an application that never went live, nothing still running or in progress"
+            }
             onClick={() => {
               const confirmed = window.confirm(
                 `Type-confirm: delete "${app.name}"? This is irreversible. Click OK only if you're certain.`,

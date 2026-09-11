@@ -68,7 +68,7 @@ for how it fits the Control Plane.
 | `POST /applications/{id}/resume` | FR-048 | `suspended` → `running`: restarts non-eligible services immediately; eligible ones stay at zero and cold-start on demand as usual. Owner-only |
 | `POST /applications/{id}/restart` | FR-048 | Recycles currently-running instances in place — same version, fresh containers, no redeploy. Owner-only |
 | `POST /applications/{id}/archive` | FR-049 | `running`/`suspended` → `archived`: releases compute more permanently than Suspend, retains config/history. Owner-only |
-| `POST /applications/{id}/delete` | FR-050, FR-065 | `archived`/`suspended` → `deleted` (terminal); requires `{"confirm": true}`. Deprovisions the application's database, if it has one, and deletes its secrets, before the status moves. Owner-only |
+| `POST /applications/{id}/delete` | FR-050, FR-065 | `archived`/`suspended` → `deleted` (terminal) — or straight from `draft`/`validated`/`build`/`failed` while nothing is running or in progress (`409 application_still_live` otherwise); requires `{"confirm": true}`. Deprovisions the application's database, if it has one, and deletes its secrets, before the status moves. Owner-only |
 | `GET /applications/{id}/secrets` | FR-066, FR-070 | Names, versions and who last set each secret — never a value. Includes platform-managed ones (the database password). Owner-only — see **How Secret Management works** |
 | `PUT /applications/{id}/secrets/{name}` | FR-066 | Sets or replaces a secret from `{"value": "..."}`. Write-only: the response is metadata, and no endpoint ever returns a value. Takes effect at the application's next container start. Owner-only |
 | `DELETE /applications/{id}/secrets/{name}` | FR-066 | Removes an owner-set secret; a platform-managed one is refused with `409`. Owner-only |
@@ -449,9 +449,10 @@ to refuse an archived application either.
   one with its own acceptance criteria), so Archive is, today, a genuine
   one-way door — recoverable only via direct database intervention. This is
   the literal, honest reading of the business rule, not an oversight.
-- **Delete (FR-050)** is callable from `Archived` or `Suspended` only —
-  FR-050's precondition explicitly excludes deleting directly from `Running`
-  ("requires an explicit stop-first confirmation"), implemented by requiring
+- **Delete (FR-050)** is callable from `Archived` or `Suspended` — and from
+  a state that never went live, see the next item. FR-050's precondition
+  explicitly excludes deleting directly from `Running` ("requires an
+  explicit stop-first confirmation"), implemented by requiring
   Suspend or Archive as a genuinely separate prior action rather than a
   same-request flag. Requires `{"confirm": true}` in the body — FR-050's
   main flow literally says "requester confirms deletion, acknowledging
@@ -462,6 +463,26 @@ to refuse an archived application either.
   anywhere accepts `Deleted` as a valid `from` status, so every other
   lifecycle action already rejects it via the same
   `ErrInvalidLifecycleTransition` path — verified for real (see Test plan).
+- **Deleting an application that never went live.** Until this was added,
+  an application that had never been deployed could not be deleted by
+  anyone: Delete required `Archived`/`Suspended`, and Archive requires
+  `Running`. Found for real — two applications abandoned during this
+  repo's own verification runs, one `validated` and one `build`, were stuck
+  exactly that way. `docs/05_Process_Flows.md` specifies the missing
+  transition (`Draft → Deleted`, guarded by "no active deployment attempt
+  exists") and `docs/01_BRD.md` generalises it ("any pre-Running state may
+  terminate to Deleted directly if abandoned"), so Delete now also accepts
+  `Draft`, `Validated`, `Build` and `Failed` — guarded by what is actually
+  running, not by the state's name. Neither `Build` nor `Failed` promises
+  nothing is live: a rebuild of a running application leaves it in `Build`
+  with the previous version still serving, and a failed redeploy of that
+  leaves it in `Failed` the same way, with the *latest* deployment record
+  being the failed one — so the guard reads every deployment, not just the
+  latest. Anything serving, any deployment in progress, or any build queued
+  or running is refused with `409 application_still_live`. The same change
+  fixed a quieter case: a first deploy that provisioned a database and then
+  failed left the application `Failed` with that database running, and
+  nothing could ever remove it.
 
 **Known gaps, documented not hidden — this is the module where "not built
 yet" is most visible, because FR-050 in particular is *mostly* about
@@ -474,6 +495,11 @@ deprovisioning resources that don't exist yet:**
   retains configuration (FR-049). What Delete DOES do for real:
   guarantees no container, database instance or stored secret is left
   for the application.
+- An application in `Build` or `Failed` whose previous version is still
+  serving can't be deleted — correctly — but it can't be suspended or
+  archived either, since both require `Running`; the only way to retire it
+  is to deploy it again first. A pre-existing restriction that the delete
+  change made visible, not one it introduced.
 - FR-050's production-deletion approval gate ("mirrors FR-014") isn't
   enforced — needs the de-registration approval workflow (Module C), the
   same category of gap as the production-deploy approval gate's
@@ -1514,3 +1540,12 @@ result of testing against the real thing instead of only fakes:
   first connection to its own database was refused, because the platform
   reported the deployment running before Postgres had finished
   initialising.
+- **Deleting an application that never went live**: checked against the
+  live stack. The two genuinely stuck applications from this repo's earlier
+  verification runs (`validated` and `build`) were deleted through the API;
+  a draft was deleted directly, with the secret set on it purged; a first
+  deploy that crashed after its database was provisioned was deleted, with
+  that database's container, network, record and password all gone; and an
+  application mid-rebuild with its previous version still serving was
+  refused with `409` and kept serving. The Admin Portal's Delete button was
+  checked the same way in a real browser.

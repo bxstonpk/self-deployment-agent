@@ -29,6 +29,13 @@ type LifecycleService struct {
 	runtime     RuntimeEngine
 	audit       AuditRecorder
 	resources   LifecycleResources
+	builds      BuildLookup
+}
+
+// BuildLookup is all Delete needs to know about builds: whether one is
+// still queued or running.
+type BuildLookup interface {
+	LatestForApplication(ctx context.Context, applicationID string) (domain.Build, error)
 }
 
 // LifecycleResources is the Modules N and O seam for the lifecycle paths
@@ -43,11 +50,11 @@ type LifecycleResources interface {
 func NewLifecycleService(
 	apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository,
 	deployments DeploymentRepository, states ServiceRuntimeStateRepository, runtime RuntimeEngine, audit AuditRecorder,
-	resources LifecycleResources,
+	resources LifecycleResources, builds BuildLookup,
 ) *LifecycleService {
 	return &LifecycleService{
 		apps: apps, owners: owners, deployments: deployments, states: states,
-		runtime: runtime, audit: audit, resources: resources,
+		runtime: runtime, audit: audit, resources: resources, builds: builds,
 	}
 }
 
@@ -401,7 +408,25 @@ func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterI
 	if !confirm {
 		return domain.Application{}, domain.ErrDeleteNotConfirmed
 	}
-	if app.LifecycleStatus != domain.StatusArchived && app.LifecycleStatus != domain.StatusSuspended {
+	switch app.LifecycleStatus {
+	case domain.StatusArchived, domain.StatusSuspended:
+		// FR-050's own preconditions: already stopped.
+	case domain.StatusDraft, domain.StatusValidated, domain.StatusBuild, domain.StatusFailed:
+		// The second route: straight from a state that never went live —
+		// docs/05_Process_Flows.md's "Draft → Deleted: Employee deletes
+		// draft (no active deployment attempt exists)", and docs/01_BRD.md's
+		// "any pre-Running state may terminate to Deleted directly if
+		// abandoned". Build and Failed are where abandoned applications
+		// actually end up (built but never deployed; a first build or
+		// deploy that failed), but neither state name guarantees nothing is
+		// live: a rebuild of a running application leaves it in Build with
+		// the previous version still serving, and a failed redeploy of that
+		// leaves it in Failed the same way. So the guard checks what is
+		// actually running, not what the state is called.
+		if err := s.requireNothingLive(ctx, applicationID); err != nil {
+			return domain.Application{}, err
+		}
+	default:
 		return domain.Application{}, domain.ErrInvalidLifecycleTransition
 	}
 
@@ -429,6 +454,30 @@ func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterI
 	}
 
 	return s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, domain.StatusDeleted, false)
+}
+
+// requireNothingLive is the guard on Delete's second route: no deployment
+// serving traffic or in progress — any of them, not just the latest, since
+// after a failed redeploy the latest record is the failed one while an
+// older one still serves — and no build queued or running.
+func (s *LifecycleService) requireNothingLive(ctx context.Context, applicationID string) error {
+	deployments, err := s.deployments.ListForApplication(ctx, applicationID)
+	if err != nil {
+		return err
+	}
+	for _, d := range deployments {
+		if d.Status == domain.DeploymentRunning || isInFlight(d.Status) {
+			return domain.ErrApplicationStillLive
+		}
+	}
+	build, err := s.builds.LatestForApplication(ctx, applicationID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	if err == nil && (build.Status == domain.BuildQueued || build.Status == domain.BuildInProgress) {
+		return domain.ErrApplicationStillLive
+	}
+	return nil
 }
 
 // stopAllContainers stops and clears every service's container for a
