@@ -80,6 +80,21 @@ to field. This is the same discipline Section 13.13 applies to deletion
 via its explicit-confirmation rule, pointed at accountability instead of
 destruction.
 
+#### Why Module O (Secret Management) has no tools here
+
+The Platform API stores application secrets (`GET`/`PUT`/`DELETE
+/applications/{id}/secrets`), and none of it is exposed over MCP — on
+purpose. `docs/11_Security_Requirements.md` SEC-SECRET-3 says a secret
+value must never transit "the Company Deployment MCP, the Claude Code
+agent process, or any conversational/agent transcript", and limits the
+agent to declaring *that* a secret is needed and *which* name to use. A
+`set_application_secret` tool would put the value in exactly those
+places: the tool call's arguments, the transcript, and this server's own
+structured audit stream. `company-deployment-skill/SKILL.md` instead tells
+the agent to name the secret and have the employee set its value
+directly on the platform. A names-only listing tool would not break that
+rule; it has not been added.
+
 ### Two small Platform API additions this PR needed
 
 Building the MCP layer surfaced two real, small gaps in the Business API

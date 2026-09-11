@@ -116,6 +116,12 @@ func (h *LifecycleHandler) actApp(w http.ResponseWriter, r *http.Request, action
 
 func writeLifecycleError(w http.ResponseWriter, err error) {
 	switch {
+	// FR-067's exception flow surfaced, not swallowed: the application was
+	// deliberately not started without its secrets, and the owner should be
+	// told why. The message names the secret and the cause (e.g. a changed
+	// platform key) — never a value.
+	case errors.Is(err, domain.ErrSecretUnreadable), errors.Is(err, domain.ErrSecretNotFound):
+		writeError(w, http.StatusInternalServerError, "secret_unavailable", err.Error())
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "application not found")
 	case errors.Is(err, domain.ErrUnauthorized):

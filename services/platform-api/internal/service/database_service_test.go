@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"platform-api/internal/domain"
 	"platform-api/internal/service"
@@ -15,8 +16,10 @@ import (
 // constraint — the fake enforces it too, so a test can't pass here and
 // fail against the real unique index.
 type fakeProvisionedDatabaseRepo struct {
-	rows   []domain.ProvisionedDatabase
-	nextID int
+	rows    []domain.ProvisionedDatabase
+	nextID  int
+	legacy  []domain.LegacyDatabasePassword
+	cleared []string
 }
 
 func newFakeProvisionedDatabaseRepo() *fakeProvisionedDatabaseRepo {
@@ -54,6 +57,15 @@ func (f *fakeProvisionedDatabaseRepo) MarkDeprovisioned(ctx context.Context, id 
 	return nil
 }
 
+func (f *fakeProvisionedDatabaseRepo) ListLegacyPlaintextPasswords(ctx context.Context) ([]domain.LegacyDatabasePassword, error) {
+	return f.legacy, nil
+}
+
+func (f *fakeProvisionedDatabaseRepo) ClearPlaintextPassword(ctx context.Context, id string) error {
+	f.cleared = append(f.cleared, id)
+	return nil
+}
+
 type fakeDatabaseRuntime struct {
 	networksCreated []string
 	networksRemoved []string
@@ -62,8 +74,11 @@ type fakeDatabaseRuntime struct {
 
 	createNetworkErr error
 	startErr         error
+	readyErr         error
 	stopErr          error
 	removeNetworkErr error
+
+	readyWaits int
 }
 
 func newFakeDatabaseRuntime() *fakeDatabaseRuntime {
@@ -102,10 +117,14 @@ func (f *fakeDatabaseRuntime) Stop(ctx context.Context, containerID string) erro
 	return nil
 }
 
+func (f *fakeDatabaseRuntime) WaitDatabaseReady(ctx context.Context, containerID string, spec domain.DatabaseSpec, timeout time.Duration) error {
+	f.readyWaits++
+	return f.readyErr
+}
+
 func newDatabaseService() (*service.DatabaseService, *fakeProvisionedDatabaseRepo, *fakeDatabaseRuntime) {
-	repo := newFakeProvisionedDatabaseRepo()
-	runtime := newFakeDatabaseRuntime()
-	return service.NewDatabaseService(repo, runtime), repo, runtime
+	svc, repo, runtime, _ := newDatabaseServiceWithSecrets()
+	return svc, repo, runtime
 }
 
 func testApp() domain.Application {
@@ -113,7 +132,7 @@ func testApp() domain.Application {
 }
 
 func TestEnsureProvisioned_CreatesIsolatedPostgres(t *testing.T) {
-	svc, _, runtime := newDatabaseService()
+	svc, _, runtime, secrets := newDatabaseServiceWithSecrets()
 
 	db, err := svc.EnsureProvisioned(context.Background(), testApp(), "postgres")
 	if err != nil {
@@ -139,8 +158,8 @@ func TestEnsureProvisioned_CreatesIsolatedPostgres(t *testing.T) {
 	if db.Port != 5432 {
 		t.Fatalf("expected the in-network postgres port, got %d", db.Port)
 	}
-	if db.Password == "" || db.Password == spec.Password && len(db.Password) < 20 {
-		t.Fatalf("expected a generated password of meaningful length, got %q", db.Password)
+	if stored := secrets.password("app-1"); len(stored) < 20 || stored != spec.Password {
+		t.Fatalf("expected the generated password in the secret store and in the database spec, got %q", stored)
 	}
 	if db.Status != domain.DatabaseProvisioned {
 		t.Fatalf("expected status provisioned, got %q", db.Status)
@@ -197,7 +216,7 @@ func TestEnsureProvisioned_NoDeclaredTypeProvisionsNothing(t *testing.T) {
 }
 
 func TestWiringFor_CarriesConnectionDetailsAndNetwork(t *testing.T) {
-	svc, _, _ := newDatabaseService()
+	svc, _, _, secrets := newDatabaseServiceWithSecrets()
 
 	db, err := svc.EnsureProvisioned(context.Background(), testApp(), "postgres")
 	if err != nil {
@@ -218,12 +237,13 @@ func TestWiringFor_CarriesConnectionDetailsAndNetwork(t *testing.T) {
 			t.Fatalf("wiring env is missing %q:\n%s", want, env)
 		}
 	}
-	if !strings.Contains(env, "DATABASE_PASSWORD="+db.Password) {
+	password := secrets.password("app-1")
+	if !strings.Contains(env, "DATABASE_PASSWORD="+password) {
 		t.Fatalf("wiring env does not carry the generated password")
 	}
 	// The DSN must be usable as-is: a password with '@' or '/' in it would
 	// otherwise split the URL in the wrong place.
-	if !strings.Contains(env, "postgres://appuser:"+db.Password+"@"+db.Host+":5432/appdb") {
+	if !strings.Contains(env, "postgres://appuser:"+password+"@"+db.Host+":5432/appdb") {
 		t.Fatalf("DATABASE_URL is not a well-formed DSN:\n%s", env)
 	}
 }

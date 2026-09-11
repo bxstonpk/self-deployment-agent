@@ -1,8 +1,8 @@
 // Database implements Module N's service layer
 // (docs/02_Functional_Requirements.md FR-061/062/063/065). See
 // internal/domain/database.go's package comment for the scope this slice
-// covers — in particular that FR-063's at-rest half is NOT satisfied,
-// because Module O (Secret Management) doesn't exist to satisfy it.
+// covers. The passwords it generates live in Module O's secret store
+// (secret_service.go), never in this module's own table.
 package service
 
 import (
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"platform-api/internal/domain"
 )
@@ -25,10 +26,17 @@ const postgresImage = "postgres:16-alpine"
 
 const postgresPort = 5432
 
+// databaseReadyTimeout bounds how long a freshly started database gets to
+// begin accepting connections. The official image runs initdb and restarts
+// itself once before it does — a few seconds on a warm host.
+const databaseReadyTimeout = 60 * time.Second
+
 type ProvisionedDatabaseRepository interface {
 	Create(ctx context.Context, d domain.ProvisionedDatabase) (domain.ProvisionedDatabase, error)
 	GetLiveForApplication(ctx context.Context, applicationID string) (domain.ProvisionedDatabase, error)
 	MarkDeprovisioned(ctx context.Context, id string) error
+	ListLegacyPlaintextPasswords(ctx context.Context) ([]domain.LegacyDatabasePassword, error)
+	ClearPlaintextPassword(ctx context.Context, id string) error
 }
 
 // DatabaseRuntime is the narrow seam into the Runtime Platform that
@@ -39,16 +47,26 @@ type DatabaseRuntime interface {
 	CreateNetwork(ctx context.Context, name string) (string, error)
 	RemoveNetwork(ctx context.Context, networkID string) error
 	StartDatabase(ctx context.Context, spec domain.DatabaseSpec) (string, error)
+	WaitDatabaseReady(ctx context.Context, containerID string, spec domain.DatabaseSpec, timeout time.Duration) error
 	Stop(ctx context.Context, containerID string) error
+}
+
+// DatabaseSecretStore is the part of Module O this module needs:
+// somewhere to keep the password it generates that is not its own table
+// (FR-063).
+type DatabaseSecretStore interface {
+	PutManaged(ctx context.Context, applicationID, name, value string) error
+	ManagedValue(ctx context.Context, applicationID, name string) (string, error)
 }
 
 type DatabaseService struct {
 	repo    ProvisionedDatabaseRepository
 	runtime DatabaseRuntime
+	secrets DatabaseSecretStore
 }
 
-func NewDatabaseService(repo ProvisionedDatabaseRepository, runtime DatabaseRuntime) *DatabaseService {
-	return &DatabaseService{repo: repo, runtime: runtime}
+func NewDatabaseService(repo ProvisionedDatabaseRepository, runtime DatabaseRuntime, secrets DatabaseSecretStore) *DatabaseService {
+	return &DatabaseService{repo: repo, runtime: runtime, secrets: secrets}
 }
 
 // generatePassword produces the credential FR-063 requires the platform to
@@ -73,6 +91,12 @@ func generatePassword() (string, error) {
 // Returns ErrDatabaseNotProvisioned for the "declares no database" case
 // rather than a nil-and-no-error pair, so callers can't accidentally treat
 // "none wanted" as "one exists".
+//
+// The order of the steps is the point. The password is sealed into the
+// secret store before the database that uses it starts, so there is never
+// a running database whose password exists only in this process's memory;
+// and the database is recorded as provisioned only once it actually
+// accepts connections.
 func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Application, declaredType string) (domain.ProvisionedDatabase, error) {
 	declaredType = strings.TrimSpace(strings.ToLower(declaredType))
 	if declaredType == "" {
@@ -103,6 +127,10 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 	if err != nil {
 		return domain.ProvisionedDatabase{}, err
 	}
+	if err := s.secrets.PutManaged(ctx, app.ID, domain.DatabasePasswordSecret, password); err != nil {
+		return domain.ProvisionedDatabase{}, fmt.Errorf("store the generated database password: %w", err)
+	}
+
 	containerName := fmt.Sprintf("platform-db-%s-%s", sanitizeName(app.Name), shortID(app.ID))
 	spec := domain.DatabaseSpec{
 		Name:         containerName,
@@ -116,7 +144,22 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 	if err != nil {
 		// Leave the network in place: CreateNetwork is idempotent, so the
 		// retry reuses it, and removing it here would race any container
-		// still attaching to it.
+		// still attaching to it. The stored password is simply replaced by
+		// the retry's new one.
+		return domain.ProvisionedDatabase{}, err
+	}
+
+	// Found by a real deployment, not assumed: StartDatabase returns the
+	// moment the container starts, but Postgres's official image runs initdb
+	// and restarts itself once before it accepts connections. Without this
+	// wait the platform reported an application Running while its database
+	// still refused connections — so an application that connects at
+	// startup, and exits if it can't, would fail its first deploy and
+	// succeed on the retry.
+	if err := s.runtime.WaitDatabaseReady(ctx, containerID, spec, databaseReadyTimeout); err != nil {
+		if stopErr := s.runtime.Stop(ctx, containerID); stopErr != nil {
+			log.Printf("database: failed to stop unready container %s for application %s: %v", containerID, app.ID, stopErr)
+		}
 		return domain.ProvisionedDatabase{}, err
 	}
 
@@ -131,7 +174,6 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 		Port:         postgresPort,
 		DatabaseName: spec.DatabaseName,
 		Username:     spec.Username,
-		Password:     password,
 	})
 }
 
@@ -142,16 +184,16 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 // DATABASE_URL is the whole DSN (what most frameworks read directly); the
 // individual parts are provided too, since plenty of libraries want host
 // and port separately rather than parsing a URL.
-func (s *DatabaseService) ConnectionEnv(db domain.ProvisionedDatabase) []string {
+func (s *DatabaseService) ConnectionEnv(db domain.ProvisionedDatabase, password string) []string {
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		db.Username, db.Password, db.Host, db.Port, db.DatabaseName)
+		db.Username, password, db.Host, db.Port, db.DatabaseName)
 	return []string{
 		"DATABASE_URL=" + dsn,
 		"DATABASE_HOST=" + db.Host,
 		fmt.Sprintf("DATABASE_PORT=%d", db.Port),
 		"DATABASE_NAME=" + db.DatabaseName,
 		"DATABASE_USER=" + db.Username,
-		"DATABASE_PASSWORD=" + db.Password,
+		"DATABASE_PASSWORD=" + password,
 	}
 }
 
@@ -169,6 +211,11 @@ type RuntimeWiring struct {
 // restart, cold start) calls. Getting this wrong in even one of them
 // would mean an application silently losing its database on that path —
 // which is why it's one function rather than four copies of the lookup.
+//
+// This is where the database password is decrypted: at container start
+// (FR-067), and nowhere else. A password that can't be read fails the
+// start rather than handing the application a connection string that
+// won't authenticate.
 func (s *DatabaseService) WiringFor(ctx context.Context, applicationID string) (RuntimeWiring, error) {
 	db, err := s.repo.GetLiveForApplication(ctx, applicationID)
 	if errors.Is(err, domain.ErrDatabaseNotProvisioned) {
@@ -177,13 +224,19 @@ func (s *DatabaseService) WiringFor(ctx context.Context, applicationID string) (
 	if err != nil {
 		return RuntimeWiring{}, err
 	}
-	return RuntimeWiring{Env: s.ConnectionEnv(db), NetworkID: db.NetworkID}, nil
+	password, err := s.secrets.ManagedValue(ctx, applicationID, domain.DatabasePasswordSecret)
+	if err != nil {
+		return RuntimeWiring{}, fmt.Errorf("database password: %w", err)
+	}
+	return RuntimeWiring{Env: s.ConnectionEnv(db, password), NetworkID: db.NetworkID}, nil
 }
 
 // Deprovision implements FR-065: no live database instance survives a
 // Deleted application. Best-effort on the runtime teardown itself — a
 // container or network that's already gone is a success, not a failure,
-// so a repeated or partially-completed deletion can always finish.
+// so a repeated or partially-completed deletion can always finish. The
+// password in the secret store goes with the application's other secrets
+// (see ApplicationResources.Deprovision).
 //
 // Known gap: FR-065's "per policy: purge or retain-then-purge" is purged,
 // full stop. Retention would need the data-retention policy FR-065 defers
@@ -205,4 +258,30 @@ func (s *DatabaseService) Deprovision(ctx context.Context, applicationID string)
 		log.Printf("database: failed to remove network %s for application %s: %v", db.NetworkID, applicationID, err)
 	}
 	return s.repo.MarkDeprovisioned(ctx, db.ID)
+}
+
+// MigrateLegacyPlaintextPasswords moves every live database password that
+// Module N stored in plaintext — before Module O existed — into the secret
+// store, then clears the plaintext copy. Runs once at startup (it needs
+// the encryption key, which a SQL migration doesn't have).
+//
+// Idempotent and safe to interrupt: the plaintext is cleared only after
+// the sealed copy is stored, so the worst an interruption can do is store
+// the same password twice.
+func (s *DatabaseService) MigrateLegacyPlaintextPasswords(ctx context.Context) (int, error) {
+	legacy, err := s.repo.ListLegacyPlaintextPasswords(ctx)
+	if err != nil {
+		return 0, err
+	}
+	moved := 0
+	for _, l := range legacy {
+		if err := s.secrets.PutManaged(ctx, l.ApplicationID, domain.DatabasePasswordSecret, l.Password); err != nil {
+			return moved, fmt.Errorf("move the password for database %s into the secret store: %w", l.DatabaseID, err)
+		}
+		if err := s.repo.ClearPlaintextPassword(ctx, l.DatabaseID); err != nil {
+			return moved, fmt.Errorf("clear the plaintext password for database %s: %w", l.DatabaseID, err)
+		}
+		moved++
+	}
+	return moved, nil
 }

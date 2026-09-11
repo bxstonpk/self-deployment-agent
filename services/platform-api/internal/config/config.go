@@ -32,6 +32,11 @@ type Config struct {
 	// value TBD (docs/17_Decision_Log.md), same "starting point, not a
 	// ratified value" status as the scale-to-zero timeouts above.
 	OwnershipTransferWindow time.Duration
+
+	// SecretKey is Module O's encryption key (FR-066), base64 — see
+	// internal/secretbox. Required with no fallback, for the same reason
+	// as DatabaseURL: a default would be a key published in source code.
+	SecretKey string
 }
 
 // Load reads configuration from the environment. DatabaseURL has no
@@ -43,6 +48,10 @@ func Load() (Config, error) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required (no default — see .env.example at the repo root)")
+	}
+	secretKey := os.Getenv("PLATFORM_SECRET_KEY")
+	if secretKey == "" {
+		return Config{}, fmt.Errorf("PLATFORM_SECRET_KEY is required (no default — generate one with `openssl rand -base64 32`; see .env.example at the repo root)")
 	}
 	idleTimeout, err := getEnvSeconds("SCALE_TO_ZERO_IDLE_SECONDS", 300)
 	if err != nil {
@@ -64,6 +73,7 @@ func Load() (Config, error) {
 		ScaleToZeroIdleTimeout:  idleTimeout,
 		ScaleSweepInterval:      sweepInterval,
 		OwnershipTransferWindow: transferWindow,
+		SecretKey:               secretKey,
 	}, nil
 }
 

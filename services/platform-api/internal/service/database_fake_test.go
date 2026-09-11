@@ -7,10 +7,11 @@ import (
 	"platform-api/internal/service"
 )
 
-// fakeDatabaseService stands in for Module N across every other service's
-// tests — they need to know whether the database wiring was requested and
-// handed to the container, not to re-exercise database_service.go's own
-// logic (that's database_service_test.go's job).
+// fakeDatabaseService stands in for the ApplicationResources seam (Modules
+// N and O) across every other service's tests, and for Module N inside
+// ApplicationResources' own tests. Callers need to know whether the wiring
+// was requested and handed to the container, not to re-exercise
+// database_service.go or secret_service.go — their own tests do that.
 //
 // Zero value = "this application declares no database", which is the case
 // for every pre-existing test, so they keep passing unchanged.

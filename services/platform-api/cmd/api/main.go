@@ -23,6 +23,7 @@ import (
 	"platform-api/internal/imagescan"
 	"platform-api/internal/repository/postgres"
 	"platform-api/internal/runtimeengine"
+	"platform-api/internal/secretbox"
 	"platform-api/internal/service"
 )
 
@@ -60,6 +61,7 @@ func main() {
 	notificationRepo := postgres.NewNotificationRepo(pool)
 	transferRepo := postgres.NewOwnershipTransferRepo(pool)
 	databaseRepo := postgres.NewProvisionedDatabaseRepo(pool)
+	secretRepo := postgres.NewApplicationSecretRepo(pool)
 
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
@@ -70,16 +72,33 @@ func main() {
 	runtime := runtimeengine.NewDockerRuntime(dockerCli)
 
 	auditService := service.NewAuditService(auditRepo, ownerRepo, deploymentRepo, buildRepo)
-	databaseService := service.NewDatabaseService(databaseRepo, runtime)
+	secretBox, err := secretbox.FromBase64(cfg.SecretKey)
+	if err != nil {
+		log.Fatalf("PLATFORM_SECRET_KEY: %v", err)
+	}
+	log.Printf("secret store: sealing with key %s", secretBox.KeyID())
+	secretService := service.NewSecretService(applicationRepo, ownerRepo, secretRepo, secretBox, auditService)
+	databaseService := service.NewDatabaseService(databaseRepo, runtime, secretService)
+	// FR-063's at-rest half for databases provisioned before Module O
+	// existed, whose passwords were stored in plaintext. Fatal on failure:
+	// starting anyway would leave them there.
+	moved, err := databaseService.MigrateLegacyPlaintextPasswords(ctx)
+	if err != nil {
+		log.Fatalf("secret store: migrate legacy database passwords: %v", err)
+	}
+	if moved > 0 {
+		log.Printf("secret store: moved %d legacy plaintext database password(s) into the encrypted store", moved)
+	}
+	resources := service.NewApplicationResources(databaseService, secretService)
 	notificationService := service.NewNotificationService(notificationRepo, ownerRepo)
 	applicationService := service.NewApplicationService(
 		applicationRepo, ownerRepo, departmentRepo, userRepo, transferRepo, notificationService, cfg.OwnershipTransferWindow, auditService,
 	)
 	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo, auditService)
 	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine, auditService)
-	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime, databaseService)
-	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService, notificationService, databaseService)
-	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService, databaseService)
+	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime, resources)
+	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService, notificationService, resources)
+	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService, resources)
 	reportingService := service.NewReportingService(applicationRepo, ownerRepo, departmentRepo, deploymentRepo, auditRepo)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
@@ -97,6 +116,7 @@ func main() {
 		Audit:         httpapi.NewAuditHandler(auditService),
 		Notifications: httpapi.NewNotificationHandler(notificationService),
 		Reports:       httpapi.NewReportHandler(reportingService),
+		Secrets:       httpapi.NewSecretHandler(secretService),
 		PlatformEnv:        cfg.PlatformEnv,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})

@@ -251,3 +251,65 @@ func (r *DockerRuntime) StartDatabase(ctx context.Context, spec domain.DatabaseS
 
 	return created.ID, nil
 }
+
+// WaitDatabaseReady blocks until a just-started database accepts TCP
+// connections, or the timeout passes. It asks the database container
+// itself (pg_isready, via exec) because platform-api is deliberately not
+// on the application's private network, and so cannot dial the database.
+//
+// "-h 127.0.0.1" matters: during initdb the official image runs a
+// temporary server that listens only on its Unix socket. pg_isready
+// without -h would report that temporary server ready a moment before it
+// shuts down to make way for the real one.
+func (r *DockerRuntime) WaitDatabaseReady(ctx context.Context, containerID string, spec domain.DatabaseSpec, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	cmd := []string{"pg_isready", "-q", "-h", "127.0.0.1", "-p", "5432", "-U", spec.Username, "-d", spec.DatabaseName}
+	var lastErr error
+	for time.Now().Before(deadline) {
+		exitCode, err := r.execExitCode(ctx, containerID, cmd)
+		if err == nil && exitCode == 0 {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("pg_isready exited %d", exitCode)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("database did not accept connections within %s: %w", timeout, lastErr)
+}
+
+// execExitCode runs cmd inside a container and returns its exit code.
+func (r *DockerRuntime) execExitCode(ctx context.Context, containerID string, cmd []string) (int, error) {
+	created, err := r.cli.ContainerExecCreate(ctx, containerID, types.ExecConfig{Cmd: cmd})
+	if err != nil {
+		return -1, fmt.Errorf("create exec: %w", err)
+	}
+	if err := r.cli.ContainerExecStart(ctx, created.ID, types.ExecStartCheck{Detach: true}); err != nil {
+		return -1, fmt.Errorf("start exec: %w", err)
+	}
+	// Bounded: pg_isready answers in milliseconds, so ten seconds means
+	// something is wrong with the exec itself rather than the database.
+	for i := 0; i < 100; i++ {
+		inspected, err := r.cli.ContainerExecInspect(ctx, created.ID)
+		if err != nil {
+			return -1, fmt.Errorf("inspect exec: %w", err)
+		}
+		// Pid 0 means it hasn't started yet; not running with a pid means
+		// it has finished.
+		if !inspected.Running && inspected.Pid != 0 {
+			return inspected.ExitCode, nil
+		}
+		select {
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return -1, fmt.Errorf("exec %v did not finish", cmd)
+}
