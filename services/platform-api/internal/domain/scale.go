@@ -47,6 +47,17 @@ type ScaleEvent struct {
 	OccurredAt    time.Time
 }
 
+// ResolvedService is what the proxy learns while routing one request:
+// where it goes, and whose it is — Module T counts the request against
+// that application, service and environment.
+type ResolvedService struct {
+	ApplicationID string
+	DeploymentID  string
+	Environment   Environment
+	ServiceName   string
+	HostPort      int
+}
+
 var (
 	ErrApplicationNotFound  = errors.New("application not found")
 	ErrNoRunningDeployment  = errors.New("application has no running deployment")

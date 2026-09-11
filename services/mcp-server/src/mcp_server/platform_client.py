@@ -273,6 +273,13 @@ class PlatformClient:
         data = await self._request("GET", f"/applications/{application_id}/secrets")
         return data.get("secrets", [])
 
+    async def get_metrics(self, application_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        # Module T: resource samples, per-minute traffic, and a "collection"
+        # block saying whether sampling is keeping up.
+        return await self._request(
+            "GET", f"/applications/{application_id}/metrics", params={k: v for k, v in params.items() if v is not None}
+        )
+
     async def get_logs(self, application_id: str, params: dict[str, Any]) -> dict[str, Any]:
         # Module S: {"entries": [...], "next_cursor": ...}, newest first,
         # already redacted at collection time.

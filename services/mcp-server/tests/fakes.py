@@ -44,6 +44,21 @@ class FakePlatformClient:
         self.secrets_forbidden: set[str] = set()
         self.logs: dict[str, list[dict[str, Any]]] = {}
         self.last_log_params: dict[str, Any] | None = None
+        self.metrics: dict[str, Any] = {
+            "from": "2026-01-02T09:00:00Z",
+            "to": "2026-01-02T10:00:00Z",
+            "collection": {"collecting": True, "last_sample_at": "2026-01-02T09:59:45Z", "note": ""},
+            "instances": [{"service": "api", "instances": 1, "scaled_to_zero": False}],
+            "last_scale_event": {"service": "api", "direction": "scaled_up", "reason": "cold_start",
+                                 "occurred_at": "2026-01-02T09:30:00Z"},
+            "resource": [{"timestamp": "2026-01-02T09:59:45Z", "service": "api", "instance": "abc123def456",
+                          "cpu_percent": 12.5, "memory_bytes": 52428800, "memory_limit_bytes": 536870912}],
+            "traffic": [{"minute": "2026-01-02T09:59:00Z", "service": "api", "environment": "dev", "requests": 10,
+                         "errors": 1, "error_rate": 0.1, "latency_ms_mean": 12.0, "latency_ms_max": 40.0}],
+            "summary": {"requests": 10, "errors": 1, "error_rate": 0.1, "latency_ms_mean": 12.0,
+                        "latency_ms_max": 40.0, "cpu_percent_latest": 12.5, "memory_bytes_latest": 52428800},
+        }
+        self.last_metric_params: dict[str, Any] | None = None
 
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -213,6 +228,13 @@ class FakePlatformClient:
     async def list_owners(self, application_id: str) -> list[dict[str, Any]]:
         self._record("list_owners", application_id)
         return list(self.owners.get(application_id, []))
+
+    async def get_metrics(self, application_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._record("get_metrics", application_id)
+        if application_id not in self.applications:
+            raise ToolError(ErrorCode.NOT_FOUND, "application not found")
+        self.last_metric_params = dict(params)
+        return self.metrics
 
     async def get_logs(self, application_id: str, params: dict[str, Any]) -> dict[str, Any]:
         self._record("get_logs", application_id)

@@ -16,19 +16,20 @@ actual message; it's written to be specific, not a template to work around).
 | `PENDING_APPROVAL` | **Not a failure.** A production-affecting action is queued for human approval | Tell the employee it's queued and by what process; poll `get_deployment_status` rather than treating this as an error — see `SKILL.md`'s "Handling production approval" |
 | `INTERNAL_ERROR` | Either an unexpected platform-side failure, or a deliberate, honest "this capability doesn't exist yet" (see below) | For a genuine unexpected failure: tell the employee plainly, suggest retrying once. For the deliberate cases below: don't retry, they won't start working |
 
-## `INTERNAL_ERROR`s that mean "not built yet," not "broken"
+## Diagnosing beyond `get_deployment_status`
 
-One tool always returns `INTERNAL_ERROR` with a message explaining
-exactly this — don't retry it, and don't report it to the employee as if
-something is wrong with their request:
+Two tools show what the platform itself observed, and neither needs the
+application to be instrumented:
 
-- **`get_application_metrics`** — application metrics storage doesn't
-  exist on this platform yet (no Monitoring module).
+- **`get_application_logs`** — what the application printed, including a
+  container from a failed deploy the platform has already removed.
+- **`get_application_metrics`** — CPU and memory read from the container,
+  and requests, errors and latency counted at the platform's proxy.
 
-If an employee needs deeper diagnosis than `get_deployment_status`'s
-failure detail provides, `get_application_logs` shows what the
-application itself printed, including a container from a failed deploy
-that has already been removed. There is no metric inspection yet.
+Neither invents anything to fill a gap. An error is a 5xx (never a 4xx),
+latency is a mean and a max rather than percentiles, and an application
+scaled to zero simply has no resource samples — the answer's `collecting`
+flag and `note` say which of those you are looking at.
 
 ## Common `VALIDATION_ERROR` messages you'll actually see
 

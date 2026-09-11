@@ -77,8 +77,64 @@ async def test_someone_elses_application_is_not_found():
     assert exc_info.value.code == ErrorCode.NOT_FOUND
 
 
-async def test_get_application_metrics_raises_honest_not_implemented_error():
+async def test_get_application_metrics_returns_the_platform_series():
+    client = FakePlatformClient()
+    app_id = await _app(client)
+
+    result = await observability.get_application_metrics(client, app_id, "dev")
+    data = result["data"]
+    assert result["status"] == "success"
+    assert data["summary"]["requests"] == 10
+    assert data["series"]["cpu_percent"][0]["value"] == 12.5
+    assert data["series"]["requests_per_minute"][0]["value"] == 10
+    assert data["series"]["latency_ms"][0]["max"] == 40.0
+    # The MCP contract asks for these alongside the series (§13.10).
+    assert data["instances"][0]["instances"] == 1
+    assert data["last_scale_event"]["direction"] == "scaled_up"
+    assert client.last_metric_params["environment"] == "dev"
+
+
+async def test_metric_types_select_the_series_returned():
+    client = FakePlatformClient()
+    app_id = await _app(client)
+
+    result = await observability.get_application_metrics(client, app_id, "dev", metric_types=["cpu"])
+    assert list(result["data"]["series"]) == ["cpu_percent"]
+
+
+async def test_an_unknown_metric_type_is_rejected_with_the_supported_ones():
+    client = FakePlatformClient()
+    app_id = await _app(client)
+
     with pytest.raises(ToolError) as exc_info:
-        await observability.get_application_metrics("app-1", "dev")
-    assert exc_info.value.code == ErrorCode.INTERNAL_ERROR
-    assert "Module T" in exc_info.value.message
+        await observability.get_application_metrics(client, app_id, "dev", metric_types=["cpu", "disk"])
+    assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
+    assert "disk" in exc_info.value.message
+    assert client.last_metric_params is None
+
+
+async def test_metrics_time_range_becomes_a_from_timestamp():
+    client = FakePlatformClient()
+    app_id = await _app(client)
+
+    await observability.get_application_metrics(client, app_id, "dev", time_range="24h")
+    assert client.last_metric_params["from"]
+
+
+async def test_metrics_pass_on_the_platforms_own_account_of_collection():
+    client = FakePlatformClient()
+    app_id = await _app(client)
+    client.metrics = dict(client.metrics)
+    client.metrics["collection"] = {"collecting": False, "last_sample_at": None,
+                                    "note": "A container is running, but no resource reading has been taken yet."}
+
+    result = await observability.get_application_metrics(client, app_id, "dev")
+    assert result["data"]["collecting"] is False
+    assert "no resource reading has been taken yet" in result["data"]["note"]
+
+
+async def test_metrics_for_someone_elses_application_are_not_found():
+    client = FakePlatformClient()
+    with pytest.raises(ToolError) as exc_info:
+        await observability.get_application_metrics(client, "not-mine", "dev")
+    assert exc_info.value.code == ErrorCode.NOT_FOUND

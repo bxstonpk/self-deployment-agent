@@ -138,11 +138,24 @@ README for exactly what was tested and how):
   was being stopped, is kept; and after platform-api itself is stopped
   and started again, every line is there exactly once, including the
   ones written while it was down.
+- Monitoring (Module T, `FR-090`/`091`) — CPU and memory are read from
+  each running container on an interval, and requests, errors and latency
+  are counted at the platform's own proxy, so an application gets metrics
+  without instrumenting anything. Owners query them through the Platform
+  API or the MCP server's `get_application_metrics`; anyone else gets the
+  same 404 a nonexistent application gets. Verified against real work (see
+  `services/platform-api/scripts/verify_module_t.py`): an application that
+  burns CPU on demand moved the reading from 0% to 97.7%, allocating
+  96 MiB moved memory from 1.6 MB to 103 MB, the proxy's counts matched
+  the requests actually made — a 5xx counted as an error, a 404 only as a
+  request — the deliberately slow request showed up in the latency
+  maximum, and a suspended application produced no samples at all, with
+  the answer saying why rather than looking like an outage.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this
 application," full stop — no IT/Platform/Security Administrator roles),
-Domain/Network management, Monitoring, Resource quotas.
+Domain/Network management, Resource quotas.
 See "Known gaps" below and each
 component's own README for the honest, itemized list — nothing here claims
 these exist when they don't. Note in particular that Module O above ships
@@ -259,13 +272,16 @@ These block real production use, not just missing polish:
   policy the requirement itself marks TBD. See
   `services/platform-api/README.md`'s "How Database Management works" for
   the full scope.
-- **No Monitoring** (Module T) — the MCP server's metrics tool returns an
-  honest "not implemented" error rather than fabricating data. Logging
-  (Module S) exists without retention: `FR-088`'s period is TBD, so
-  nothing is purged yet; log levels aren't parsed; and nothing streams —
-  reading logs is a page-at-a-time query in the Portal and over MCP alike.
-  See `services/platform-api/README.md`'s "How Logging works". (Modules W,
-  X and AB — Audit Log, Notification and
+- **Observability stops short of alerting and retention.** Logging
+  (Module S) and Monitoring (Module T) both collect and serve, but
+  `FR-088`'s and `NFR-032`'s retention periods are TBD, so nothing is
+  purged; `FR-092`'s alert thresholds are specified nowhere, so no alert
+  is raised on numbers nobody agreed to; `FR-093`'s platform-wide
+  dashboard needs administrator roles that don't exist; log levels aren't
+  parsed; latency has no percentiles; and nothing streams — reading logs
+  is a page-at-a-time query in the Portal and over MCP alike. See
+  `services/platform-api/README.md`'s "How Logging works" and "How
+  Monitoring works". (Modules W, X and AB — Audit Log, Notification and
   Reporting — are implemented; see `services/platform-api/README.md`'s
   "How Audit Logging works", "How Notifications work" and "How Reporting
   works" sections for what each does and doesn't cover. Notably Module X

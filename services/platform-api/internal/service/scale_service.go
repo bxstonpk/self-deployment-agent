@@ -154,16 +154,25 @@ func (s *ScaleService) CleanupForDeployment(ctx context.Context, deploymentID st
 // EnsureRunningByName implements the proxy's entry point (FR-053): resolve
 // a public application/service name to its current live deployment, then
 // ensure a container is up.
-func (s *ScaleService) EnsureRunningByName(ctx context.Context, appName, serviceName string) (hostPort int, err error) {
+func (s *ScaleService) EnsureRunningByName(ctx context.Context, appName, serviceName string) (domain.ResolvedService, error) {
 	app, err := s.apps.GetByName(ctx, appName)
 	if err != nil {
-		return 0, err
+		return domain.ResolvedService{}, err
 	}
 	deployment, err := s.deployments.CurrentRunning(ctx, app.ID)
 	if err != nil {
-		return 0, err
+		return domain.ResolvedService{}, err
 	}
-	return s.EnsureRunning(ctx, deployment.ID, serviceName)
+	hostPort, err := s.EnsureRunning(ctx, deployment.ID, serviceName)
+	if err != nil {
+		return domain.ResolvedService{}, err
+	}
+	// Who the request was for, not only where it goes: Module T counts it
+	// against this application, service and environment.
+	return domain.ResolvedService{
+		ApplicationID: app.ID, DeploymentID: deployment.ID, Environment: deployment.Environment,
+		ServiceName: serviceName, HostPort: hostPort,
+	}, nil
 }
 
 // EnsureRunning implements FR-052 (touch activity on a live service) and

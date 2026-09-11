@@ -33,7 +33,7 @@ something this server works around by dropping one):
 | `get_application_status` | 13.7 | `GET /applications/{id}`, `GET .../deployments/latest`, `GET .../secrets` | Includes the application's **secret names**, never values — 13.7's "secret references"; see **Why no MCP tool accepts a secret value** |
 | `get_deployment_status` | 13.8 | `GET /deployments/{id}` | New Platform API endpoint added in this PR — see below |
 | `get_application_logs` | 13.9 | `GET .../logs` | What the application's containers printed, newest first, with the secrets the platform injected already redacted (Module S). `time_range` (`15m`, `1h`, `7d`…) becomes `since`; `next_cursor` pages back. `level` is always `null` — levels aren't parsed — and a `severity` filter is reported in `note` as not applied rather than silently ignored. `NOT_FOUND` for an application the caller doesn't own |
-| `get_application_metrics` | 13.10 | *(none)* | Always a clear `INTERNAL_ERROR` — Module T doesn't exist |
+| `get_application_metrics` | 13.10 | `GET .../metrics` | CPU and memory sampled from the container, plus requests, errors and latency counted at the platform's proxy (Module T). `metric_types` selects which series come back, and an unknown one is refused rather than ignored. Carries the platform's own `collecting` flag, so an empty window is never passed off as a quiet application. `NOT_FOUND` for an application the caller doesn't own |
 | `rollback_application` | 13.11 | `GET .../deployments` (for `target_version="previous"`), `POST .../rollback` | |
 | `restart_application` | 13.12 | `POST .../restart` | |
 | `delete_application` | 13.13 | `GET /applications/{id}`, `POST .../archive` (if `running`), `POST .../delete` | Orchestrates two Platform API calls behind one tool — see below |
@@ -450,9 +450,10 @@ MCP stdio protocol (not calling Python functions directly):
    `restarted_at` (same previously-`null` bug, same fix).
 7. `get_application_logs` — confirmed it returns the line the deployed
    application actually printed on startup, collected from its container
-   by Module S. `get_application_metrics` — confirmed the honest
-   Module-T-doesn't-exist `INTERNAL_ERROR`, not a crash or a fabricated
-   empty result.
+   by Module S. `get_application_metrics` — confirmed it returns Module
+   T's real series for that application, including the requests this run
+   itself made through the proxy, and confirmed an unsupported
+   `metric_types` value is refused rather than silently ignored.
 8. `deploy_application` again, different source, **same already-`running`
    application** — a genuine rebuild-and-redeploy of v2, confirmed the
    live URL's actual HTTP response changed to v2's text. This is the
@@ -495,10 +496,9 @@ confirmed both of `grant_application_access`'s rejections for real — an
 `access_level` of `primary` refused before the platform is even called,
 and a genuinely unknown employee refused by the Platform API itself.
 
-Every one of the 21 tools was exercised for real in this run — including
-the one that can't succeed until Module T exists
-(`get_application_metrics`) — not just the ones that were easy to make
-pass. The first full run of this exact script (back when it covered 13)
-is also what surfaced the context-cancellation bug described above: it
-failed partway through step 8 with a stuck build, which is what led to
-finding and fixing the root cause rather than just retrying past it.
+Every one of the 21 tools was exercised for real in this run — not just
+the ones that were easy to make pass. The first full run of this exact
+script (back when it covered 13) is also what surfaced the
+context-cancellation bug described above: it failed partway through step 8
+with a stuck build, which is what led to finding and fixing the root cause
+rather than just retrying past it.

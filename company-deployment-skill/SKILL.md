@@ -346,10 +346,21 @@ below, the application's output is shown exactly as it printed it.
 - For an application the employee doesn't own, the result is `NOT_FOUND`,
   exactly as if it didn't exist.
 
-**`get_application_metrics` is not available yet** — it always returns
-`INTERNAL_ERROR` explaining that metrics storage doesn't exist on the
-platform yet. Don't retry it; tell the employee honestly that metric
-inspection isn't available through the platform today.
+**`get_application_metrics`** returns what the platform measured about the
+application, with no instrumentation on its side: CPU and memory read from
+its container, and requests, errors and latency counted at the platform's
+proxy.
+
+- `metric_types` selects the series: `cpu`, `memory`, `requests`,
+  `errors`, `latency`. Anything else is refused, not quietly dropped.
+- An error means the application answered 5xx, or didn't answer at all. A
+  404 from the application counts as a request, not an error.
+- Latency is a mean and a max per minute; there are no percentiles, so
+  don't report one.
+- `collecting: false` means the platform's own sampling is behind, and the
+  `note` says why. Say so rather than reporting the numbers as complete.
+- A scaled-to-zero application has no resource samples, which is the
+  platform working correctly — not an outage.
 
 ## Guardrails — never do this
 

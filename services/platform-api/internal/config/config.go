@@ -27,6 +27,13 @@ type Config struct {
 	ScaleToZeroIdleTimeout time.Duration
 	ScaleSweepInterval     time.Duration
 
+	// MetricsSampleInterval is how often Module T reads each running
+	// container's CPU and memory (FR-090). An engineering default rather
+	// than a policy value: nothing in the requirements sets a sampling
+	// rate, and NFR-032's retention durations — the part that is policy —
+	// are TBD, so nothing is purged either.
+	MetricsSampleInterval time.Duration
+
 	// OwnershipTransferWindow implements FR-016's "policy window" for a
 	// nominated new owner to accept a transfer before it expires — exact
 	// value TBD (docs/17_Decision_Log.md), same "starting point, not a
@@ -65,6 +72,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	metricsInterval, err := getEnvSeconds("METRICS_SAMPLE_INTERVAL_SECONDS", 15)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		DatabaseURL:             databaseURL,
 		Port:                    getEnv("PORT", "8080"),
@@ -72,6 +83,7 @@ func Load() (Config, error) {
 		CORSAllowedOrigins:      getEnvList("CORS_ALLOWED_ORIGINS", "http://localhost:5173"),
 		ScaleToZeroIdleTimeout:  idleTimeout,
 		ScaleSweepInterval:      sweepInterval,
+		MetricsSampleInterval:   metricsInterval,
 		OwnershipTransferWindow: transferWindow,
 		SecretKey:               secretKey,
 	}, nil
