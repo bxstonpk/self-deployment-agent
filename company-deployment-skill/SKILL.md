@@ -257,6 +257,12 @@ Relay the exact `data.url` from `get_application_status`'s response to the
 employee, along with the environment. Never construct, pattern-match, or
 guess a "likely" URL before this confirmation exists.
 
+The URL the platform returns is its own address for the application, not a
+container's port, so it keeps working after a restart, a redeploy or a
+scale-to-zero cold start — the employee can save it. That is a reason to
+report it, not a reason to predict it: still only ever the one the
+platform returned.
+
 ### 11. Never touch infrastructure directly
 
 At every step, your only path to the platform is these 13 MCP tools. You

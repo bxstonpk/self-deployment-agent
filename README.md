@@ -141,7 +141,12 @@ README for exactly what was tested and how):
 - Monitoring (Module T, `FR-090`/`091`) — CPU and memory are read from
   each running container on an interval, and requests, errors and latency
   are counted at the platform's own proxy, so an application gets metrics
-  without instrumenting anything. Owners query them through the Platform
+  without instrumenting anything. That proxy is also the address the
+  platform reports as an application's URL
+  (`/run/{application}/{service}`), which is what keeps it working after
+  the container behind it is replaced — it used to report the container's
+  own published port, which broke on every restart and went around the
+  proxy entirely. Owners query them through the Platform
   API or the MCP server's `get_application_metrics`; anyone else gets the
   same 404 a nonexistent application gets. Verified against real work (see
   `services/platform-api/scripts/verify_module_t.py`): an application that

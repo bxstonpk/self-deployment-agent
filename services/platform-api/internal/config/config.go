@@ -11,7 +11,14 @@ import (
 type Config struct {
 	DatabaseURL string
 	Port        string
-	PlatformEnv string // "dev" enables the temporary header-based auth stub; see DEC-001
+
+	// PublicBaseURL is how callers outside this process reach it, and so
+	// the base of the stable /run/{app}/{service} address an application
+	// is served on (see internal/httpapi/service_url.go). It cannot be
+	// derived from Port: under Docker the API listens on 8080 inside its
+	// container and is published on a different port outside.
+	PublicBaseURL string
+	PlatformEnv   string // "dev" enables the temporary header-based auth stub; see DEC-001
 
 	// CORSAllowedOrigins lets apps/admin-portal (a browser client, its own
 	// origin) call this API — see httpapi.RouterConfig's doc comment.
@@ -76,9 +83,11 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	port := getEnv("PORT", "8080")
 	return Config{
 		DatabaseURL:             databaseURL,
-		Port:                    getEnv("PORT", "8080"),
+		Port:                    port,
+		PublicBaseURL:           strings.TrimRight(getEnv("PLATFORM_PUBLIC_BASE_URL", "http://localhost:"+port), "/"),
 		PlatformEnv:             getEnv("PLATFORM_ENV", "dev"),
 		CORSAllowedOrigins:      getEnvList("CORS_ALLOWED_ORIGINS", "http://localhost:5173"),
 		ScaleToZeroIdleTimeout:  idleTimeout,

@@ -8,6 +8,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -20,10 +21,14 @@ import (
 
 type DeployHandler struct {
 	svc *service.DeploymentService
+	// apps and publicBaseURL turn a deployment's containers into the
+	// address they are actually served on — see service_url.go.
+	apps          ApplicationNamer
+	publicBaseURL string
 }
 
-func NewDeployHandler(svc *service.DeploymentService) *DeployHandler {
-	return &DeployHandler{svc: svc}
+func NewDeployHandler(svc *service.DeploymentService, apps ApplicationNamer, publicBaseURL string) *DeployHandler {
+	return &DeployHandler{svc: svc, apps: apps, publicBaseURL: publicBaseURL}
 }
 
 type deployRequest struct {
@@ -48,12 +53,12 @@ type deploymentResponse struct {
 	CompletedAt       string                             `json:"completed_at,omitempty"`
 }
 
-func toDeploymentResponse(d domain.Deployment) deploymentResponse {
+func toDeploymentResponse(d domain.Deployment, publicBaseURL, appName string) deploymentResponse {
 	resp := deploymentResponse{
 		ID: d.ID, ApplicationID: d.ApplicationID, BuildID: d.BuildID,
 		Environment: string(d.Environment), Status: string(d.Status),
 		ScanPassed: d.ScanPassed, ScanCriticalCount: d.ScanCriticalCount, ScanHighCount: d.ScanHighCount,
-		ScanReports: d.ScanReports, Containers: d.Containers,
+		ScanReports: d.ScanReports, Containers: withPublicURLs(d.Containers, publicBaseURL, appName),
 		CreatedAt: d.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt: d.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
@@ -67,6 +72,12 @@ func toDeploymentResponse(d domain.Deployment) deploymentResponse {
 		resp.CompletedAt = d.CompletedAt.Format("2006-01-02T15:04:05Z07:00")
 	}
 	return resp
+}
+
+// response maps one deployment for the wire, resolving the application's
+// name so its services carry the stable address they're served on.
+func (h *DeployHandler) response(ctx context.Context, d domain.Deployment) deploymentResponse {
+	return toDeploymentResponse(d, h.publicBaseURL, applicationName(ctx, h.apps, d.ApplicationID))
 }
 
 // TriggerDeploy handles POST /applications/{id}/deploy — FR-039.
@@ -95,7 +106,7 @@ func (h *DeployHandler) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		writeDeployError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
+	writeJSON(w, http.StatusOK, h.response(r.Context(), deployment))
 }
 
 // LatestDeployment handles GET /applications/{id}/deployments/latest — FR-043.
@@ -106,7 +117,7 @@ func (h *DeployHandler) LatestDeployment(w http.ResponseWriter, r *http.Request)
 		writeDeployError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
+	writeJSON(w, http.StatusOK, h.response(r.Context(), deployment))
 }
 
 // GetDeployment handles GET /deployments/{deploymentId} — the deployment_id
@@ -119,7 +130,7 @@ func (h *DeployHandler) GetDeployment(w http.ResponseWriter, r *http.Request) {
 		writeDeployError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
+	writeJSON(w, http.StatusOK, h.response(r.Context(), deployment))
 }
 
 // DeploymentHistory handles GET /applications/{id}/deployments — FR-095:
@@ -133,8 +144,9 @@ func (h *DeployHandler) DeploymentHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	resp := make([]deploymentResponse, len(history))
+	name := applicationName(r.Context(), h.apps, chi.URLParam(r, "id"))
 	for i, d := range history {
-		resp[i] = toDeploymentResponse(d)
+		resp[i] = toDeploymentResponse(d, h.publicBaseURL, name)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -167,7 +179,7 @@ func (h *DeployHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeDeployError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
+	writeJSON(w, http.StatusOK, h.response(r.Context(), deployment))
 }
 
 type approveRequest struct {
@@ -205,7 +217,7 @@ func (h *DeployHandler) DecideApproval(w http.ResponseWriter, r *http.Request) {
 		writeDeployError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
+	writeJSON(w, http.StatusOK, h.response(r.Context(), deployment))
 }
 
 func writeDeployError(w http.ResponseWriter, err error) {

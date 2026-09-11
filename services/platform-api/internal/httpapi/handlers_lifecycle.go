@@ -28,10 +28,14 @@ type LifecycleActor interface {
 
 type LifecycleHandler struct {
 	svc LifecycleActor
+	// See service_url.go: a deployment's containers are reported at the
+	// platform's own stable address, not at their published ports.
+	apps          ApplicationNamer
+	publicBaseURL string
 }
 
-func NewLifecycleHandler(svc LifecycleActor) *LifecycleHandler {
-	return &LifecycleHandler{svc: svc}
+func NewLifecycleHandler(svc LifecycleActor, apps ApplicationNamer, publicBaseURL string) *LifecycleHandler {
+	return &LifecycleHandler{svc: svc, apps: apps, publicBaseURL: publicBaseURL}
 }
 
 func (h *LifecycleHandler) Suspend(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +99,8 @@ func (h *LifecycleHandler) act(w http.ResponseWriter, r *http.Request, action fu
 		writeLifecycleError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment))
+	writeJSON(w, http.StatusOK, toDeploymentResponse(deployment, h.publicBaseURL,
+		applicationName(r.Context(), h.apps, deployment.ApplicationID)))
 }
 
 func (h *LifecycleHandler) actApp(w http.ResponseWriter, r *http.Request, action func(context.Context, string, string) (domain.Application, error)) {
