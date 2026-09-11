@@ -63,6 +63,7 @@ func main() {
 	databaseRepo := postgres.NewProvisionedDatabaseRepo(pool)
 	secretRepo := postgres.NewApplicationSecretRepo(pool)
 	logRepo := postgres.NewLogRepo(pool)
+	metricRepo := postgres.NewMetricRepo(pool)
 
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
@@ -111,6 +112,11 @@ func main() {
 	rotationService := service.NewRotationService(applicationRepo, ownerRepo, secretService, databaseService, lifecycleService, auditService)
 	reportingService := service.NewReportingService(applicationRepo, ownerRepo, departmentRepo, deploymentRepo, auditRepo)
 	logService := service.NewLogService(applicationRepo, ownerRepo, logRepo, auditService)
+	// Module T: the proxy counts every request it forwards, and the
+	// sampler below reads each running container's CPU and memory.
+	trafficRecorder := service.NewTrafficRecorder()
+	metricsService := service.NewMetricsService(applicationRepo, ownerRepo, metricRepo, runtime, trafficRecorder,
+		deploymentRepo, serviceStateRepo, scaleEventRepo, cfg.MetricsSampleInterval)
 	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
@@ -122,18 +128,20 @@ func main() {
 		Builds:             httpapi.NewBuildHandler(buildService),
 		Deploys:            httpapi.NewDeployHandler(deployService),
 		ScaleEvents:        httpapi.NewScaleEventsHandler(deployService, scaleService),
-		Proxy:              httpapi.NewProxyHandler(scaleService),
+		Proxy:              httpapi.NewProxyHandler(scaleService, trafficRecorder),
 		Lifecycle:          httpapi.NewLifecycleHandler(lifecycleService),
 		Audit:              httpapi.NewAuditHandler(auditService),
 		Notifications:      httpapi.NewNotificationHandler(notificationService),
 		Reports:            httpapi.NewReportHandler(reportingService),
 		Secrets:            httpapi.NewSecretHandler(secretService, rotationService),
 		Logs:               httpapi.NewLogHandler(logService),
+		Metrics:            httpapi.NewMetricsHandler(metricsService),
 		PlatformEnv:        cfg.PlatformEnv,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})
 
 	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)
+	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -177,6 +185,25 @@ func runScaleSweeper(ctx context.Context, scaleService *service.ScaleService, in
 			}
 			if scaledDown > 0 {
 				log.Printf("scale sweeper: scaled %d service(s) to zero", scaledDown)
+			}
+		}
+	}
+}
+
+// runMetricsSampler implements FR-090's collection loop: one reading of
+// every running application container, and whatever traffic the proxy has
+// counted since the last sweep. Runs until ctx is cancelled.
+func runMetricsSampler(ctx context.Context, metricsService *service.MetricsService, interval time.Duration) {
+	log.Printf("metrics sampler running every %s", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := metricsService.Collect(ctx); err != nil {
+				log.Printf("metrics sampler: %v", err)
 			}
 		}
 	}

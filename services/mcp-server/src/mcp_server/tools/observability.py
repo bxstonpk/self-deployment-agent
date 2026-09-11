@@ -7,8 +7,12 @@ secret value the platform injected already redacted at collection time. A
 caller who isn't an owner gets NOT_FOUND — the Platform API won't confirm
 the application exists (FR-087).
 
-get_application_metrics still has nothing to call: Module T (Monitoring)
-doesn't exist, and the tool says so rather than inventing numbers.
+get_application_metrics reads Module T's two series through the Platform API
+(GET /applications/{id}/metrics): CPU and memory sampled from the container
+runtime, and requests, errors and latency counted at the platform's proxy.
+Neither asks the application to instrument anything. The answer carries the
+platform's own account of whether collection is keeping up, so an empty
+window is never passed off as a quiet application.
 """
 
 from __future__ import annotations
@@ -20,11 +24,7 @@ from typing import Any
 from ..envelope import ErrorCode, ErrorDetail, ToolError, success
 from ..platform_client import PlatformClient
 
-_METRICS_MESSAGE = (
-    "application metrics are not implemented — Module T (Monitoring) does not "
-    "exist in the Platform API. There is no metrics storage anywhere to query. "
-    "This is a persistent gap, not a transient failure; do not retry."
-)
+_METRIC_TYPES = ("cpu", "memory", "requests", "errors", "latency")
 
 _DEFAULT_LINES = 200
 _MAX_LINES = 1000
@@ -95,9 +95,68 @@ async def get_application_logs(
 
 
 async def get_application_metrics(
+    client: PlatformClient,
     application_id: str,
     environment: str,
     time_range: str | None = None,
     metric_types: list[str] | None = None,
 ) -> dict[str, Any]:
-    raise ToolError(ErrorCode.INTERNAL_ERROR, _METRICS_MESSAGE)
+    wanted = [t.strip().lower() for t in (metric_types or _METRIC_TYPES)]
+    unknown = [t for t in wanted if t not in _METRIC_TYPES]
+    if unknown:
+        raise ToolError(
+            ErrorCode.VALIDATION_ERROR,
+            f"unknown metric type(s): {', '.join(unknown)}",
+            details=[ErrorDetail(field="metric_types", reason=f"supported: {', '.join(_METRIC_TYPES)}")],
+        )
+    page = await client.get_metrics(application_id, {
+        "environment": environment or None,
+        "from": _since(time_range),
+    })
+    resource = page.get("resource") or []
+    traffic = page.get("traffic") or []
+
+    series: dict[str, Any] = {}
+    if "cpu" in wanted:
+        series["cpu_percent"] = [
+            {"timestamp": p["timestamp"], "service": p["service"], "instance": p["instance"], "value": p["cpu_percent"]}
+            for p in resource
+        ]
+    if "memory" in wanted:
+        series["memory_bytes"] = [
+            {"timestamp": p["timestamp"], "service": p["service"], "instance": p["instance"],
+             "value": p["memory_bytes"], "limit": p["memory_limit_bytes"]}
+            for p in resource
+        ]
+    if "requests" in wanted:
+        series["requests_per_minute"] = [
+            {"minute": b["minute"], "service": b["service"], "value": b["requests"]} for b in traffic
+        ]
+    if "errors" in wanted:
+        series["errors_per_minute"] = [
+            {"minute": b["minute"], "service": b["service"], "value": b["errors"], "error_rate": b["error_rate"]}
+            for b in traffic
+        ]
+    if "latency" in wanted:
+        series["latency_ms"] = [
+            {"minute": b["minute"], "service": b["service"], "mean": b["latency_ms_mean"], "max": b["latency_ms_max"]}
+            for b in traffic
+        ]
+
+    collection = page.get("collection") or {}
+    notes = [
+        "Latency is a mean and a max per minute; no percentiles are computed. An error is a 5xx "
+        "(or no answer at all), never a 4xx.",
+    ]
+    if collection.get("note"):
+        notes.append(collection["note"])
+    return success({
+        "application_id": application_id,
+        "window": {"from": page.get("from"), "to": page.get("to")},
+        "summary": page.get("summary") or {},
+        "instances": page.get("instances") or [],
+        "last_scale_event": page.get("last_scale_event"),
+        "series": series,
+        "collecting": collection.get("collecting", True),
+        "note": " ".join(notes),
+    })

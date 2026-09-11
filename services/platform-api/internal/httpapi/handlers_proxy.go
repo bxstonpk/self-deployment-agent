@@ -28,16 +28,25 @@ import (
 )
 
 type ScaleResolver interface {
-	EnsureRunningByName(ctx context.Context, appName, serviceName string) (hostPort int, err error)
+	EnsureRunningByName(ctx context.Context, appName, serviceName string) (domain.ResolvedService, error)
+}
+
+// TrafficRecorder is Module T's traffic half (FR-090): every request to a
+// deployed application passes through here, so the platform can count
+// requests, errors and latency without the application instrumenting
+// anything. Recording happens in memory, on the request's own goroutine.
+type TrafficRecorder interface {
+	Record(applicationID, service string, environment domain.Environment, status int, latency time.Duration)
 }
 
 type ProxyHandler struct {
-	scale  ScaleResolver
-	client *http.Client
+	scale   ScaleResolver
+	traffic TrafficRecorder
+	client  *http.Client
 }
 
-func NewProxyHandler(scale ScaleResolver) *ProxyHandler {
-	return &ProxyHandler{scale: scale, client: &http.Client{Timeout: 30 * time.Second}}
+func NewProxyHandler(scale ScaleResolver, traffic TrafficRecorder) *ProxyHandler {
+	return &ProxyHandler{scale: scale, traffic: traffic, client: &http.Client{Timeout: 30 * time.Second}}
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +56,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hostPort, err := h.scale.EnsureRunningByName(r.Context(), appName, serviceName)
+	resolved, err := h.scale.EnsureRunningByName(r.Context(), appName, serviceName)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -57,7 +66,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// itself — same reasoning as the deploy pipeline's health check (see
 	// deploy_service.go). host.docker.internal reaches the sibling
 	// container that was just ensured running.
-	target := "http://host.docker.internal:" + strconv.Itoa(hostPort) + remainder
+	target := "http://host.docker.internal:" + strconv.Itoa(resolved.HostPort) + remainder
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
@@ -69,11 +78,17 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyReq.Header = r.Header.Clone()
 
+	// Timed around the application's own answer, not the cold start before
+	// it: waiting for a container to start is a scale event (FR-056), not
+	// the application being slow.
+	started := time.Now()
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
+		h.traffic.Record(resolved.ApplicationID, resolved.ServiceName, resolved.Environment, http.StatusBadGateway, time.Since(started))
 		writeError(w, http.StatusBadGateway, "upstream_unreachable", "the application did not respond")
 		return
 	}
+	h.traffic.Record(resolved.ApplicationID, resolved.ServiceName, resolved.Environment, resp.StatusCode, time.Since(started))
 	defer resp.Body.Close()
 
 	for k, vv := range resp.Header {

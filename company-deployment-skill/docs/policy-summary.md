@@ -65,9 +65,10 @@ oversight beyond that.
 - **Logging and metrics.** `get_application_logs` returns an
   application's own output to its owners only, with the secret values
   the platform injected redacted, and every read recorded in the
-  platform's audit log. `get_application_metrics` always returns an
-  error explaining that metrics don't exist yet — see
-  `troubleshooting.md`.
+  platform's audit log. `get_application_metrics` returns what the
+  platform measured about the application — container CPU and memory, and
+  proxy-side request, error and latency counts — to its owners on the same
+  terms. Neither is available for an application the employee doesn't own.
 
 ## Idempotency
 

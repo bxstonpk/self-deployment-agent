@@ -6,7 +6,8 @@ at a time. Currently covers **Draft**, **Validated**, **Build**,
 application), **Suspend/Resume/Restart**, **Rollback**, **Archive/Delete**
 — every Application Lifecycle state reachable without Module P (Domain
 Management), which doesn't exist yet — together with **Modules N and O**
-(Database and Secret Management) and **Module S (Logging)**, plus
+(Database and Secret Management), **Module S (Logging)** and **Module T
+(Monitoring)**, plus
 **Module W (Audit Log)**, an append-only, hash-chained record of every
 state-changing action across all of the above; **Module X
 (Notification)**, an in-app notification inbox for deployment status and
@@ -34,7 +35,8 @@ Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
 `FR-108` (Module X — Notification — see below); `FR-016`, `FR-017`
 (Module E — Co-Owner/Contributor Management and Transfer Ownership — see
 below); `FR-127`, `FR-128` (Module AB — Reporting — see below); and
-`FR-086`, `FR-087`, `FR-089` (Module S — Logging — see below). See
+`FR-086`, `FR-087`, `FR-089` (Module S — Logging — see below); and
+`FR-090`, `FR-091` (Module T — Monitoring — see below). See
 [`../../docs/13_API_Requirements.md`](../../docs/13_API_Requirements.md) for
 the Business API this implements, and
 [`../../docs/10_System_Architecture.md`](../../docs/10_System_Architecture.md)
@@ -76,6 +78,7 @@ for how it fits the Control Plane.
 | `DELETE /applications/{id}/secrets/{name}` | FR-066 | Removes an owner-set secret; a platform-managed one is refused with `409`. Owner-only |
 | `POST /applications/{id}/secrets/{name}/rotate` | FR-068 | Rotates a platform-generated secret — today, the database password: a new one is set on the database (the old one stops authenticating), stored, and running instances are restarted onto it. `409 secret_not_rotatable` for an owner-set secret. Owner-only — see **Rotating the database password** |
 | `GET /applications/{id}/logs` | FR-086, FR-087, FR-089 | What the application's containers printed, newest first, with every secret the platform injected redacted. Filter by `service`/`environment`/`contains`/`since`/`until`/`limit`; a full page carries a `next_cursor`. Owner-only, and a non-owner gets the same `404` as a nonexistent application; every read is audited — see **How Logging works** |
+| `GET /applications/{id}/metrics` | FR-090, FR-091 | CPU and memory sampled from the application's containers, plus requests, errors and latency counted at the proxy. Filter by `service`/`environment`/`from`/`to` (default: the last hour). Always says whether collection is keeping up. Owner-only, with the same `404` as a nonexistent application — see **How Monitoring works** |
 | `GET /audit-log` | FR-104 | Filter by `actor_user_id`/`resource_type`/`resource_id`/`action`/`from`/`to`/`limit`; scoped to entries the caller performed or that concern an application they own |
 | `GET /audit-log/export` | FR-105 | Same filters, CSV response; the export itself is recorded as a new audit entry |
 | `GET /audit-log/integrity` | FR-106 | Recomputes the hash chain end-to-end; reports the first `seq` where it breaks, if any |
@@ -1400,6 +1403,141 @@ output has no gap and no repeat, the lines written during the outage
 included. And it deploys an application that crashes on start, confirming
 the deploy fails, the container is removed, and the reason it printed on
 stderr can still be read.
+
+## How Monitoring works (Module T, FR-090/091)
+
+Every application gets CPU, memory, request rate, error rate and latency
+without instrumenting anything, because both sources are things the
+platform already sees:
+
+- **Resource use** is read from the container runtime itself
+  (`internal/runtimeengine/stats.go`), on an interval, for every container
+  the platform started — found by the same labels Module S puts on them,
+  so the platform's own database containers are never sampled. CPU is the
+  figure `docker stats` prints: 100% means one core's worth, not one
+  machine's. Memory subtracts reclaimable page cache, or every application
+  would look like it leaks.
+- **Traffic** is counted at the platform's own proxy
+  (`internal/httpapi/handlers_proxy.go`), which every request to a
+  deployed application already passes through (Module L's
+  `/run/{app}/{service}` address). Counting is in memory on the request's
+  own goroutine — one row per service per minute, not one per request —
+  and the sampler flushes it.
+
+```
+GET /applications/{id}/metrics?service=&environment=&from=&to=
+→ {"from","to","collection":{...},"instances":[...],"last_scale_event":{...},
+   "resource":[...],"traffic":[...],"summary":{...}}
+```
+
+The window defaults to the last hour and is capped at seven days; both are
+implementation limits that keep one call from pulling an unbounded result,
+not a retention policy. `summary` is what most callers want: requests,
+errors, error rate, mean and max latency, and the latest CPU and memory.
+
+### What the numbers mean, exactly
+
+- **An error is the application failing**: a 5xx, or no answer at all
+  (the proxy's own 502). A 4xx is the caller asking for something wrong,
+  so it counts as a request and not as an error.
+- **Latency is the application's own response time.** Waiting for a
+  scaled-to-zero container to start is a scale event (FR-056), already
+  recorded as one, and is not counted against the application's speed.
+- **Latency is a mean and a max per minute.** There are no percentiles:
+  computing a P95 needs the distribution, and storing one per minute per
+  service is a real cost nobody has asked for yet.
+- **Instances are 0 or 1.** FR-054's horizontal scaling above one
+  instance doesn't exist, so "instance count" is "is it running".
+
+### A gap stays a gap
+
+FR-090's exception flow says a failed collection must be visible rather
+than interpolated. A container whose reading fails is left out of that
+sweep — no row, no zero — and every answer carries a `collection` block
+saying whether sampling is keeping up, when it last succeeded, and why
+there may be nothing to show. An application scaled to zero has no
+samples, and says so; a sampler that has fallen behind says that instead.
+Without it, "no data" and "no traffic" would look identical
+(docs/13_API_Requirements.md §5.5 asks for exactly this distinction).
+
+Traffic counted but not yet stored is kept in memory and added to the next
+flush, so a brief database outage costs no counts and double-counts none.
+
+### Access (FR-091)
+
+Owners only, and anyone else gets exactly the `404` a nonexistent
+application gets — FR-091's business rule is that metrics access follows
+log access (FR-089) exactly.
+
+Reading metrics is **not** audited, where reading logs is. FR-089 asks for
+an audit trail over logs, which carry whatever an application printed;
+nothing asks it of CPU numbers and request counts, and auditing every
+dashboard refresh would bury the entries that matter. FR-093's
+cross-application administrator view would be audited — it doesn't exist.
+
+### Known gaps
+
+- **FR-092 (threshold alerting) is not implemented.** FR-092 defers the
+  thresholds to the non-functional requirements, which set none for
+  metrics, so building it would mean inventing the numbers that decide
+  when someone gets woken up. The pieces it would need are here: the
+  metrics, and Module X's notifications.
+- **FR-093 (platform-wide dashboard) is not implemented** — it is
+  explicitly an administrator and auditor view, and those roles don't
+  exist (DEC-001).
+- **NFR-032 retention is not implemented.** Its durations are TBD, so
+  nothing is purged: one row per container per interval, plus one per
+  service per minute of traffic, accumulate. Same standing gap as Module
+  S's FR-088.
+- **No custom application metrics.** FR-090's alternative flow allows an
+  application to expose its own metrics endpoint for collection; only the
+  platform's own baseline is collected.
+- **Only traffic through the platform's own address is counted.** A
+  request reaching a container some other way — a background job, one
+  service calling another over the application's private network, or a
+  browser using the container's published port — is invisible here,
+  because the proxy never sees it. That last one is easy to hit by
+  accident, and this module's verification hit it: a deployment's
+  `containers[].url`, which `get_application_status` reports to an agent,
+  is `http://localhost:<hostPort>` — the container's own port, not Module
+  L's stable `/run/{app}/{service}` address — so requests made to it are
+  counted nowhere. The URL also stops working the moment the container is
+  replaced, which is why `/run/...` exists; reporting it instead is worth
+  fixing on its own, beyond metrics.
+- **Sampling is a platform-wide interval** (`METRICS_SAMPLE_INTERVAL_SECONDS`,
+  default 15s), not per application or tier, and it is an engineering
+  default rather than a ratified policy value.
+- **The Admin Portal doesn't chart any of this yet.** The API and the MCP
+  server's `get_application_metrics` are the two ways to read it today.
+
+### Verifying it
+
+`scripts/verify_module_t.py` runs against a live stack, no mocks:
+
+```bash
+docker compose up -d --build   # from the repo root, METRICS_SAMPLE_INTERVAL_SECONDS=5 in .env to watch it move
+python services/platform-api/scripts/verify_module_t.py
+```
+
+It deploys an application that burns CPU, allocates memory, fails and
+stalls on demand, so every number checked is one the platform measured
+about real work rather than a value read back from configuration. In the
+run that verified this module: a reading appeared within 25 seconds of the
+deploy, attributed to the right service and container; CPU went from 0%
+idle to 97.7% while the application burned a core, and memory from 1.6 MB
+to 103 MB after it allocated 96 MiB; the proxy counted 11 requests and
+exactly the 2 the application failed — an error rate of 0.18, with the
+application's own 404 counted as a request and not an error — and the
+slowest request it really served showed up as a 6,016 ms maximum against a
+600 ms mean.
+
+It then checks the query itself: filters by service and environment, a
+window from before the application existed coming back empty, a malformed
+time and a backwards window refused, and a non-owner getting a 404
+byte-identical to a random id's. Finally it suspends the application and
+confirms that the answer then contains no samples at all — not zeros —
+and says why, that no audit entry is written for a metrics read, and that
+deleting the application leaves no container behind.
 
 ## What's deliberately NOT here yet
 

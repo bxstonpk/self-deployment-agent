@@ -223,7 +223,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
             deployment.restart_application(client, idempotency, application_id, idempotency_key),
         )
 
-    # --- 13.9-13.10: observability (logs via Module S; metrics not implemented — see module doc) --
+    # --- 13.9-13.10: observability (logs via Module S, metrics via Module T) --
 
     @mcp.tool()
     async def get_application_logs(
@@ -266,7 +266,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
         }
         return await _run_tool(
             audit("get_application_metrics", params, application_id),
-            observability.get_application_metrics(application_id, environment, time_range, metric_types),
+            observability.get_application_metrics(client, application_id, environment, time_range, metric_types),
         )
 
     # --- 13.13: deletion --------------------------------------------------

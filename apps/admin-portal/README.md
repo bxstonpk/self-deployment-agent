@@ -181,9 +181,10 @@ enforcing anything.
   `confirm: true` boolean is still what actually gates the irreversible
   action server-side; this is a materially weaker confirmation UX than the
   MCP path has, worth tightening in a follow-up.
-- **No metric views** — metrics don't exist anywhere: there is no
-  Monitoring module (the same gap `mcp-server`'s
-  `get_application_metrics` documents). Logs do have a view now (see
+- **No metric views** — `platform-api` has measured CPU, memory, requests,
+  errors and latency since Module T (`GET /applications/{id}/metrics`,
+  also behind `mcp-server`'s `get_application_metrics`), but this Portal
+  doesn't chart any of it yet. Logs do have a view (see
   **Logs UI** below), with the limits that view carries: no live
   tail/follow, no download, and a text search only — the endpoint's
   `since`/`until` and `environment` filters aren't exposed here.

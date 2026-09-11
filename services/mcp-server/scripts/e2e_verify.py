@@ -342,11 +342,35 @@ async def main() -> None:
             _check(logs["status"] == "success" and any("mcptest v1 listening" in m for m in logged),
                    f"get_application_logs returns what the running application printed ({len(logged)} line(s))")
 
-            metrics = _print_result(
-                "get_application_metrics (expected honest not-implemented error)",
-                await session.call_tool("get_application_metrics", {"application_id": app_id, "environment": "dev"}),
+            # Traffic is counted where the platform can see it: Module L's
+            # stable /run address. get_application_status reports the
+            # container's own published port instead, which bypasses the
+            # proxy entirely — so ask for the platform's address here.
+            async with httpx.AsyncClient(timeout=30) as traffic_http:
+                for _ in range(3):
+                    await traffic_http.get(f"{PLATFORM_API_BASE_URL}/run/{APP_NAME}/api/")
+            metrics_result = None
+            for _ in range(20):  # the platform flushes what it counted on its own sampling interval
+                metrics_result = await session.call_tool(
+                    "get_application_metrics", {"application_id": app_id, "environment": "dev"}
+                )
+                counted = ((metrics_result.structured_content or {}).get("data") or {}).get("summary", {})
+                if counted.get("requests", 0) >= 1:
+                    break
+                await asyncio.sleep(2)
+            metrics = _print_result("get_application_metrics (Module T)", metrics_result)
+            metric_data = metrics.get("data") or {}
+            _check(metrics["status"] == "success" and "cpu_percent" in (metric_data.get("series") or {}),
+                   "get_application_metrics returns the platform's own series for this application")
+            _check(metric_data.get("summary", {}).get("requests", 0) >= 1,
+                   f"including the requests this run made through the proxy ({metric_data.get('summary', {}).get('requests')})")
+            bad_type = _print_result(
+                "get_application_metrics (unknown metric type)",
+                await session.call_tool("get_application_metrics",
+                                        {"application_id": app_id, "environment": "dev", "metric_types": ["disk"]}),
             )
-            _check(metrics["status"] == "error" and "Module T" in metrics["error"]["message"], "metrics tool honestly reports Module T doesn't exist")
+            _check(bad_type["status"] == "error" and bad_type["error"]["code"] == "VALIDATION_ERROR",
+                   "an unsupported metric type is refused rather than silently ignored")
 
             print("--- deploying v2: REBUILD of an already-`running` application via the SAME MCP call shape ---")
             print("--- (this used to be entirely impossible - Build required Validated - now fixed at the source) ---")
