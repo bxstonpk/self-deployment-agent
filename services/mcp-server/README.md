@@ -30,7 +30,7 @@ something this server works around by dropping one):
 | `create_application` | 13.4 | `GET /departments`, `POST /applications`, `PUT .../deployment-yaml` | Resolves a department **name** to the UUID `POST /applications` needs |
 | `validate_application` | 13.5 | `PUT .../deployment-yaml` (optional), `POST .../validate` | A failed validation is `status: success` with `passed: false` findings — not a transport error |
 | `deploy_application` | 13.6 | `POST .../build` (if `source_archive_base64` given), `POST .../deploy` | Builds first when given source — see **How deploy_application closes the build gap** |
-| `get_application_status` | 13.7 | `GET /applications/{id}`, `GET .../deployments/latest` | |
+| `get_application_status` | 13.7 | `GET /applications/{id}`, `GET .../deployments/latest`, `GET .../secrets` | Includes the application's **secret names**, never values — 13.7's "secret references"; see **Why no MCP tool accepts a secret value** |
 | `get_deployment_status` | 13.8 | `GET /deployments/{id}` | New Platform API endpoint added in this PR — see below |
 | `get_application_logs` | 13.9 | *(none)* | Always a clear `INTERNAL_ERROR` — Module S doesn't exist |
 | `get_application_metrics` | 13.10 | *(none)* | Always a clear `INTERNAL_ERROR` — Module T doesn't exist |
@@ -80,20 +80,37 @@ to field. This is the same discipline Section 13.13 applies to deletion
 via its explicit-confirmation rule, pointed at accountability instead of
 destruction.
 
-#### Why Module O (Secret Management) has no tools here
+#### Why no MCP tool accepts a secret value
 
-The Platform API stores application secrets (`GET`/`PUT`/`DELETE
-/applications/{id}/secrets`), and none of it is exposed over MCP — on
-purpose. `docs/11_Security_Requirements.md` SEC-SECRET-3 says a secret
-value must never transit "the Company Deployment MCP, the Claude Code
-agent process, or any conversational/agent transcript", and limits the
-agent to declaring *that* a secret is needed and *which* name to use. A
-`set_application_secret` tool would put the value in exactly those
-places: the tool call's arguments, the transcript, and this server's own
+The agent gets exactly one view of an application's secrets (Module O):
+their **names**, in `get_application_status`'s `secrets` field — what
+Section 13.7's "secret references" anticipates, and what an agent needs to
+tell an employee which ones to set before a deploy. It never gets a value,
+and there is deliberately no tool that accepts one.
+`docs/11_Security_Requirements.md` SEC-SECRET-3 says a secret value must
+never transit "the Company Deployment MCP, the Claude Code agent process,
+or any conversational/agent transcript", and limits the agent to declaring
+*that* a secret is needed and *which* name to use. A
+`set_application_secret` tool would put the value in exactly those places:
+the tool call's arguments, the transcript, and this server's own
 structured audit stream. `company-deployment-skill/SKILL.md` instead tells
-the agent to name the secret and have the employee set its value
-directly on the platform. A names-only listing tool would not break that
-rule; it has not been added.
+the agent to name the secret and have the employee set its value in the
+Admin Portal.
+
+Two details in how the names are relayed. They pass through an explicit
+allowlist of fields (`name`, `managed_by`, `version`, `updated_at`), so a
+value could not ride along even if the Platform API one day returned one.
+And for a caller who can't see them, they come back as `secrets: null`
+with a `secrets_note` — never `[]`, which would tell the agent there are
+none.
+
+Verified over the real stdio protocol by `scripts/e2e_verify.py`: no
+tool's input schema has a parameter that could carry a secret (`secret`,
+`password`, `token`, `value`); a secret the employee set on the platform
+directly shows up in `get_application_status` by name while its value
+appears nowhere in the MCP response; a second MCP session, signed in as
+an employee who isn't an owner, gets `secrets: null` with the note; and
+once the application is deleted, its status lists no secrets at all.
 
 ### Two small Platform API additions this PR needed
 
@@ -303,6 +320,14 @@ can paper over them.
   guarantee** — same gap as `platform-api`'s `DecideApproval`: the
   approver isn't required to be a different person than the requester,
   which needs real RBAC that doesn't exist.
+- **`get_application_status` answers for any signed-in employee, not just
+  owners.** Section 13.7 limits it to owners and contributors, but the
+  Platform API endpoints it reads (`GET /applications/{id}`,
+  `.../deployments/latest`) aren't owner-gated — the same catalog-wide
+  visibility the Admin Portal has. Only the secret names are owner-only,
+  which is why a non-owner gets `secrets: null` rather than an error.
+  Closing this properly means deciding what employees may see of each
+  other's applications, which is RBAC (`DEC-001`/`DEC-002`) territory.
 - **No transport beyond stdio.** Section 2's "exact transport binding...
   is an implementation decision" is left as stdio only (the most common
   local Claude Code integration) — `mcp.run(transport="stdio")` in
@@ -380,6 +405,11 @@ session, against a REAL running Platform API:
 cd services/mcp-server
 python scripts/e2e_verify.py
 ```
+
+It registers its application under a fresh name each run
+(`mcptest<random>`): a deleted application keeps its name, so the
+original fixed `mcptest` made the script single-use against any one
+database — found when re-running it for Module O.
 
 This is what was actually run to verify this server for real, not just
 unit-tested against fakes. What it covers, in order, all through the real

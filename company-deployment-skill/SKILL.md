@@ -187,6 +187,18 @@ silently, or silently skipping this step.
 
 ### 8. Deploy
 
+**First, check the secrets it needs.** If Step 1 found the application
+reading credentials from environment variables — an API key, a token,
+anything other than `DATABASE_*`, which the platform provides itself —
+call `get_application_status(application_id)` and compare against
+`data.secrets`, which lists the names already registered (never values).
+For any that are missing, tell the employee the exact names to set in the
+Admin Portal's **Secrets** section *before* you deploy: an application
+started without a credential it needs usually fails at its first request,
+not at deploy time. If `data.secrets` is `null`, the employee can't see
+this application's secrets (`data.secrets_note` says why) — say so; don't
+report them as missing.
+
 Once validated, call:
 
 ```

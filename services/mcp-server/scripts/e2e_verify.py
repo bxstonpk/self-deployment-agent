@@ -11,7 +11,9 @@ run manually:
 Exercises deploy_application's source_archive_base64 path end to end,
 including a REBUILD of a running application (a real gap that used to make
 this impossible through the MCP, closed alongside this script) — not a
-workaround, this is the actual intended path now.
+workaround, this is the actual intended path now. Also checks Module O's
+boundary: secret names are visible through get_application_status, a
+value never is, and no tool takes a parameter that could carry one.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import os
 import sys
 import tarfile
 import tempfile
+import uuid
 from pathlib import Path
 
 import httpx
@@ -31,6 +34,11 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 PLATFORM_API_BASE_URL = os.environ.get("PLATFORM_API_BASE_URL", "http://localhost:8090")
 EMPLOYEE_EMAIL = "mcp-e2e@sti-th.com"
+# Signs in to the platform but owns nothing: what a non-owner's agent sees.
+OTHER_EMPLOYEE_EMAIL = "mcp-e2e-other@sti-th.com"
+# Unique per run: a deleted application keeps its name, so a fixed name
+# made this script single-use against any one database.
+APP_NAME = f"mcptest{uuid.uuid4().hex[:6]}"
 
 
 def _fail(msg: str) -> None:
@@ -78,19 +86,23 @@ def _print_result(label: str, result) -> dict:
     return payload
 
 
-async def main() -> None:
-    server_params = StdioServerParameters(
+def _server_params(employee_email: str) -> StdioServerParameters:
+    return StdioServerParameters(
         command=sys.executable,
         args=["-m", "mcp_server.server"],
         env={
             **os.environ,
             "MCP_ENV": "dev",
             "PLATFORM_API_BASE_URL": PLATFORM_API_BASE_URL,
-            "MCP_EMPLOYEE_EMAIL": EMPLOYEE_EMAIL,
+            "MCP_EMPLOYEE_EMAIL": employee_email,
             "MCP_EMPLOYEE_NAME": "MCP E2E Tester",
             "MCP_EMPLOYEE_DEPARTMENT": "Engineering",
         },
     )
+
+
+async def main() -> None:
+    server_params = _server_params(EMPLOYEE_EMAIL)
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -120,7 +132,7 @@ async def main() -> None:
                 "create_application (unknown department -> VALIDATION_ERROR)",
                 await session.call_tool(
                     "create_application",
-                    {"name": "mcptest", "description": "MCP e2e test app", "department": "Nonexistent"},
+                    {"name": APP_NAME, "description": "MCP e2e test app", "department": "Nonexistent"},
                 ),
             )
             _check(created["status"] == "error" and created["error"]["code"] == "VALIDATION_ERROR", "unknown department rejected")
@@ -130,11 +142,11 @@ async def main() -> None:
                 await session.call_tool(
                     "create_application",
                     {
-                        "name": "mcptest",
+                        "name": APP_NAME,
                         "description": "MCP e2e test app",
                         "department": "Engineering",
                         "deployment_yaml": (
-                            "app:\n  name: mcptest\n  owner: Engineering\n"
+                            "app:\n  name: " + APP_NAME + "\n  owner: Engineering\n"
                             "services:\n  api:\n    runtime: go\n    port: 8080\n"
                         ),
                     },
@@ -172,6 +184,38 @@ async def main() -> None:
             async with httpx.AsyncClient(timeout=10) as http:
                 live_v1 = await http.get(status["data"]["url"])
             _check("v1" in live_v1.text, f"live traffic serves v1's response: {live_v1.text.strip()!r}")
+
+            print("--- Module O: the agent sees secret NAMES, never values, and cannot send one ---")
+            params = [p for t in tools.tools for p in (t.input_schema or {}).get("properties", {})]
+            risky = [p for p in params if any(w in p.lower() for w in ("secret", "password", "token", "value"))]
+            _check(not risky, f"no tool takes a parameter that could carry a secret value (SEC-SECRET-3) {risky}")
+            secret_value = f"sk-mcp-e2e-{uuid.uuid4().hex}"
+            # Set the way SKILL.md sends the employee to: on the platform
+            # directly, never through this MCP session.
+            async with httpx.AsyncClient(timeout=30) as http:
+                put = await http.put(
+                    f"{PLATFORM_API_BASE_URL}/applications/{app_id}/secrets/PAYMENTS_API_KEY",
+                    json={"value": secret_value},
+                    headers={"X-Dev-User-Email": EMPLOYEE_EMAIL, "X-Dev-User-Name": "MCP E2E Tester",
+                             "X-Dev-Department": "Engineering"},
+                )
+            _check(put.status_code == 200, f"the employee set PAYMENTS_API_KEY on the platform directly (HTTP {put.status_code})")
+            raw = await session.call_tool("get_application_status", {"application_id": app_id})
+            with_secret = _print_result("get_application_status (a secret registered)", raw)
+            names = [s["name"] for s in with_secret["data"]["secrets"] or []]
+            _check(names == ["PAYMENTS_API_KEY"], f"get_application_status lists the secret's name {names}")
+            _check(secret_value not in json.dumps(raw.structured_content) and secret_value not in str(raw.content),
+                   "...and its value appears nowhere in the MCP response")
+            async with stdio_client(_server_params(OTHER_EMPLOYEE_EMAIL)) as (other_read, other_write):
+                async with ClientSession(other_read, other_write) as other:
+                    await other.initialize()
+                    theirs = _print_result(
+                        "get_application_status (an employee who isn't an owner)",
+                        await other.call_tool("get_application_status", {"application_id": app_id}),
+                    )
+            _check(theirs["status"] == "success" and theirs["data"]["secrets"] is None
+                   and bool(theirs["data"]["secrets_note"]),
+                   "a non-owner's agent is told the names aren't visible to them - not that there are none")
 
             print("--- query_audit_log / list_notifications: beyond Section 13's original catalog ---")
             app_audit_entries = _print_result(
@@ -376,7 +420,7 @@ async def main() -> None:
             deleted = _print_result(
                 "delete_application",
                 await session.call_tool(
-                    "delete_application", {"application_id": app_id, "confirmation": "mcptest"}
+                    "delete_application", {"application_id": app_id, "confirmation": APP_NAME}
                 ),
             )
             _check(deleted["status"] == "success" and deleted["data"]["status"] == "DELETED", "delete_application succeeded (archived then deleted)")
@@ -386,6 +430,7 @@ async def main() -> None:
                 await session.call_tool("get_application_status", {"application_id": app_id}),
             )
             _check(final_status["data"]["current_lifecycle_state"] == "deleted", "application is terminally deleted")
+            _check(final_status["data"]["secrets"] == [], "its secrets were purged with it - status lists none")
 
     print("\nALL CHECKS PASSED")
 

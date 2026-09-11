@@ -113,9 +113,11 @@ README for exactly what was tested and how):
   into another application's database row gets that application a failed
   start, not the secret; and restarting the platform with a different key
   makes applications fail closed — without stopping the ones already
-  running — until the key is restored. Deliberately not exposed over MCP:
-  the security requirements forbid a secret value ever passing through the
-  agent or its transcript.
+  running — until the key is restored. Over MCP, an agent sees secret
+  *names* only (in `get_application_status`, so it can tell an employee
+  which ones to set before a deploy) — never a value, and no tool accepts
+  one: the security requirements forbid a secret value ever passing
+  through the agent or its transcript.
 
 **What doesn't exist at all yet**: real authentication/RBAC (every
 authorization check today is "are you a registered owner of this

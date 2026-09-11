@@ -1,4 +1,5 @@
 import base64
+import json
 
 import pytest
 
@@ -126,6 +127,56 @@ async def test_get_application_status_no_deployment_yet_does_not_error():
     result = await deployment.get_application_status(client, app["id"])
     assert result["status"] == "success"
     assert result["data"]["latest_deployment_id"] is None
+
+
+async def test_get_application_status_lists_secret_names_never_values():
+    client = FakePlatformClient()
+    app = await _registered_app(client)
+    # A "value" field the real API never sends — standing in for a future
+    # regression there. The tool's field allowlist must not pass it on.
+    client.secrets[app["id"]] = [
+        {"name": "PAYMENTS_API_KEY", "managed_by": "employee", "version": 2, "updated_at": "2026-01-02T00:00:00Z",
+         "updated_by": "user-1", "value": "sk-must-never-reach-the-agent"},
+        {"name": "DATABASE_PASSWORD", "managed_by": "platform", "version": 1, "updated_at": "2026-01-01T00:00:00Z"},
+    ]
+    result = await deployment.get_application_status(client, app["id"])
+    assert [s["name"] for s in result["data"]["secrets"]] == ["PAYMENTS_API_KEY", "DATABASE_PASSWORD"]
+    assert result["data"]["secrets"][0] == {
+        "name": "PAYMENTS_API_KEY", "managed_by": "employee", "version": 2, "updated_at": "2026-01-02T00:00:00Z",
+    }
+    assert "sk-must-never-reach-the-agent" not in json.dumps(result)
+    assert result["data"]["secrets_note"] is None
+
+
+async def test_get_application_status_no_secrets_is_an_empty_list():
+    client = FakePlatformClient()
+    app = await _registered_app(client)
+    result = await deployment.get_application_status(client, app["id"])
+    assert result["data"]["secrets"] == []
+
+
+async def test_get_application_status_secrets_hidden_from_a_non_owner_are_unknown_not_empty():
+    client = FakePlatformClient()
+    app = await _registered_app(client)
+    client.secrets[app["id"]] = [{"name": "PAYMENTS_API_KEY", "managed_by": "employee", "version": 1, "updated_at": "x"}]
+    client.secrets_forbidden.add(app["id"])
+    result = await deployment.get_application_status(client, app["id"])
+    assert result["status"] == "success"
+    assert result["data"]["secrets"] is None  # not [] — that would claim there are none
+    assert "owners" in result["data"]["secrets_note"]
+
+
+async def test_get_application_status_other_secret_errors_still_surface():
+    client = FakePlatformClient()
+    app = await _registered_app(client)
+
+    async def unavailable(application_id):
+        raise ToolError(ErrorCode.INTERNAL_ERROR, "platform unavailable")
+
+    client.list_secrets = unavailable  # type: ignore[method-assign]
+    with pytest.raises(ToolError) as exc_info:
+        await deployment.get_application_status(client, app["id"])
+    assert exc_info.value.code == ErrorCode.INTERNAL_ERROR
 
 
 async def test_get_deployment_status_maps_platform_status_to_mcp_phase():
