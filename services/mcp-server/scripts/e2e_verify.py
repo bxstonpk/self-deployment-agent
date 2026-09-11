@@ -342,10 +342,11 @@ async def main() -> None:
             _check(logs["status"] == "success" and any("mcptest v1 listening" in m for m in logged),
                    f"get_application_logs returns what the running application printed ({len(logged)} line(s))")
 
-            # Traffic is counted where the platform can see it: Module L's
-            # stable /run address. get_application_status reports the
-            # container's own published port instead, which bypasses the
-            # proxy entirely — so ask for the platform's address here.
+            # A few requests so the metrics below have something to
+            # count. They go to Module L's stable /run address, which is
+            # what get_application_status reports — it used to report the
+            # container's own published port, which went around the proxy
+            # that does the counting.
             async with httpx.AsyncClient(timeout=30) as traffic_http:
                 for _ in range(3):
                     await traffic_http.get(f"{PLATFORM_API_BASE_URL}/run/{APP_NAME}/api/")

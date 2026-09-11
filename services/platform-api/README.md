@@ -292,6 +292,48 @@ well beyond this state's scope). `scaling.max` isn't enforced as a real
 ceiling above 1 for the same reason. This is a known simplification, not an
 oversight.
 
+## How an application's URL works (FR-053)
+
+An application is served on the platform's own address:
+
+```
+{PLATFORM_PUBLIC_BASE_URL}/run/{application}/{service}
+```
+
+That is what every endpoint reporting a deployment returns as each
+service's `url`, and what the MCP server hands an agent to pass on to an
+employee. It is the one address that survives the container behind it
+being replaced — a restart, a redeploy, a scale-to-zero cold start —
+because the platform resolves it to whatever container is current, and
+starts one if none is (see **How Scale-to-Zero works**).
+
+Until this was fixed, the platform reported `http://localhost:<hostPort>`
+instead: the port Docker published for one particular container. It broke
+the moment that container was replaced, and it routed traffic around the
+proxy — so a scaled-to-zero service never cold-started for it, and Module
+T counted none of it. The published port is still reported, as
+`host_port`, because it is genuinely useful when debugging from the host
+machine itself. It just isn't what the platform calls the application's
+URL.
+
+`PLATFORM_PUBLIC_BASE_URL` is how this API is reached from outside its own
+container. It can't be derived from the port the API listens on, since
+Docker publishes it on a different one; it defaults to
+`http://localhost:<PORT>`, and docker-compose sets it from
+`PLATFORM_API_HOST_PORT`.
+
+### Verifying it
+
+`scripts/verify_stable_url.py` deploys an application, reads the URL the
+platform reports, and fetches it: the response names the container that
+answered. It then restarts the application — a new container, on a new
+published port — and fetches the same URL again, which answers from the
+new container, while the address the platform used to report is dead. It
+also confirms the deploy response, the latest-deployment endpoint and the
+deployment history all report the same URL, and that requests to it are
+counted by Module T, which is what going through the platform rather than
+around it buys.
+
 ## How Suspend/Resume/Restart works (Module K)
 
 Reuses the `deployments` table rather than a parallel one — `suspended` is
@@ -1493,17 +1535,13 @@ cross-application administrator view would be audited — it doesn't exist.
   application to expose its own metrics endpoint for collection; only the
   platform's own baseline is collected.
 - **Only traffic through the platform's own address is counted.** A
-  request reaching a container some other way — a background job, one
-  service calling another over the application's private network, or a
-  browser using the container's published port — is invisible here,
-  because the proxy never sees it. That last one is easy to hit by
-  accident, and this module's verification hit it: a deployment's
-  `containers[].url`, which `get_application_status` reports to an agent,
-  is `http://localhost:<hostPort>` — the container's own port, not Module
-  L's stable `/run/{app}/{service}` address — so requests made to it are
-  counted nowhere. The URL also stops working the moment the container is
-  replaced, which is why `/run/...` exists; reporting it instead is worth
-  fixing on its own, beyond metrics.
+  request reaching a container some other way — a background job, or one
+  service calling another over the application's private network — is
+  invisible here, because the proxy never sees it. Until recently that
+  included the URL the platform itself reported: `containers[].url` was
+  the container's published port, which went around the proxy and broke
+  whenever the container was replaced. Found while verifying this module,
+  and fixed — see **How an application's URL works**.
 - **Sampling is a platform-wide interval** (`METRICS_SAMPLE_INTERVAL_SECONDS`,
   default 15s), not per application or tier, and it is an engineering
   default rather than a ratified policy value.
