@@ -1,14 +1,13 @@
-// Package runtimeengine is a stand-in Runtime Platform / Deployment
-// Controller (MOD-06) implementation using the Docker daemon directly.
-// Production runs on self-hosted K3s + Knative (DEC-004,
-// docs/17_Decision_Log.md) — this package exists so the Deploying state's
-// pipeline (deploy, health-check, traffic-activate) is real and testable
-// today without that infrastructure being set up yet. The shape it returns
-// (container id, host port, reachable URL) is deliberately what a
-// Kubernetes-backed implementation would also need to report, per NFR-046
-// ("replaceable container-platform implementation") — callers in
-// service.DeploymentService don't know or care which one is behind the
-// RuntimeEngine interface.
+// Package runtimeengine is the Runtime Platform / Deployment Controller
+// (MOD-06) implementation, using the Docker daemon directly. This is not a
+// stand-in for a future Kubernetes migration: per DEC-004's 2026-09-11
+// revision (docs/17_Decision_Log.md), production runs on Docker + Docker
+// Compose on a single existing on-prem host — this package IS the
+// production implementation, not a placeholder for one. It's still built
+// behind the RuntimeEngine interface (NFR-046, "replaceable
+// container-platform implementation") so it could be swapped later if the
+// deployment context ever changes; service.DeploymentService doesn't know
+// or care which implementation is behind it.
 package runtimeengine
 
 import (

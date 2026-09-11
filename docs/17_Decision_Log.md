@@ -9,6 +9,7 @@
 | Version | 0.1 (Draft) |
 | Status | Draft — Pending Review |
 | Date | 2026-08-28 |
+| Last Revised | 2026-09-11 — DEC-001/002/003 decided, DEC-004 revised, DEC-005/009 decided, DEC-007 deferred; see each entry |
 | Prepared By | Business Analysis / Risk Management (admin@sti-th.com) |
 | Project | Company AI Application Deployment Platform |
 | Related Documents | 01_BRD.md, 09_SDLC.md, 10_System_Architecture.md, 11_Security_Requirements.md, 12_Data_Requirements.md, 16_Risk_Register.md |
@@ -33,15 +34,15 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 
 | DEC ID | Group | Topic | Decision Owner | Target Phase | Status |
 |---|---|---|---|---|---|
-| DEC-001 | Identity & Access | Identity Provider / SSO integration | IT Administrator + Security Administrator | Before Technical Design | Open |
-| DEC-002 | Identity & Access | RBAC/permission model source of truth | Platform Administrator + Security Administrator | Before Technical Design | Open |
-| DEC-003 | Identity & Access | MCP/AI-agent authentication mechanism | Security Administrator + Platform Administrator | Before Technical Design | Open |
-| DEC-004 | Infrastructure & Hosting | Final infrastructure implementation choice | Platform Administrator + IT Administrator (sign-off: Management) | Before Solution Architecture sign-off | **Decided** |
-| DEC-005 | Infrastructure & Hosting | Container registry & image vulnerability scanning tooling | IT Administrator + Security Administrator | Before Technical Design | Open |
+| DEC-001 | Identity & Access | Identity Provider / SSO integration | IT Administrator + Security Administrator | Before Technical Design | **Decided** |
+| DEC-002 | Identity & Access | RBAC/permission model source of truth | Platform Administrator + Security Administrator | Before Technical Design | **Decided** |
+| DEC-003 | Identity & Access | MCP/AI-agent authentication mechanism | Security Administrator + Platform Administrator | Before Technical Design | **Decided** |
+| DEC-004 | Infrastructure & Hosting | Final infrastructure implementation choice | Platform Administrator + IT Administrator (sign-off: Management) | Before Solution Architecture sign-off | **Decided (revised)** |
+| DEC-005 | Infrastructure & Hosting | Container registry & image vulnerability scanning tooling | IT Administrator + Security Administrator | Before Technical Design | **Decided** |
 | DEC-006 | Infrastructure & Hosting | Secret management backend | Security Administrator + IT Administrator | Before Technical Design | Open |
-| DEC-007 | Infrastructure & Hosting | Domain naming, DNS zone ownership, TLS certificate authority | IT Administrator | Before Technical Design | Open |
+| DEC-007 | Infrastructure & Hosting | Domain naming, DNS zone ownership, TLS certificate authority | IT Administrator | Before Technical Design | **Deferred** |
 | DEC-008 | Infrastructure & Hosting | Environment topology beyond dev/staging/production | Platform Administrator | Before Solution Architecture sign-off | Open |
-| DEC-009 | Infrastructure & Hosting | Multi-region / cross-datacenter high availability requirement | IT Administrator + Management / Auditor | Before Solution Architecture sign-off | Open |
+| DEC-009 | Infrastructure & Hosting | Multi-region / cross-datacenter high availability requirement | IT Administrator + Management / Auditor | Before Solution Architecture sign-off | **Decided** |
 | DEC-010 | Compliance & Data | Applicable regulatory/compliance framework(s) and audit-log retention | Management / Auditor + Security Administrator | Before Solution Architecture sign-off | Open |
 | DEC-011 | Compliance & Data | Data residency / hosting location constraints | IT Administrator + Management / Auditor | Before Solution Architecture sign-off | Open |
 | DEC-012 | Compliance & Data | Data classification policy for platform-hosted apps | Security Administrator + Management / Auditor | Before Production Go-Live | Open |
@@ -74,7 +75,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Integrate with the company's existing corporate IdP via SAML/OIDC; (b) stand up a dedicated IdP instance for the platform; (c) federate multiple IdPs (corporate AD for employees + a separate issuer for machine/MCP service accounts). |
 | Recommendation | (a) — integrate with the existing corporate IdP via OIDC/SAML to avoid duplicating identity and inherit existing MFA/lifecycle management. Pending confirmation of which IdP the company currently operates. |
 | Decision Owner | IT Administrator + Security Administrator |
-| Status | Open |
+| Status | **Decided (2026-09-11)** |
+| Resolution | **No enterprise IdP integration.** The platform is internal-only, self-hosted on a single existing on-prem Linux host, reachable only from the company LAN — not internet-facing, and no cloud. Since network-level access is already the trust boundary, employees self-declare their name/email/department at sign-in (the platform's existing header-based identity mechanism); this is the **permanent** identity model, not a stopgap pending SSO integration. Accepted risk, recorded not hidden: anyone with LAN access can self-declare any email, including impersonating another employee — accepted given the small, trusted internal user base (Claude accounts are already shared among some staff). Revisit if the platform is ever exposed beyond the LAN or the user base grows past a size where this trust assumption holds. |
 | Target Phase | Before Technical Design |
 
 #### DEC-002 — RBAC/Permission Model Source of Truth
@@ -87,7 +89,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) IdP-group-driven (platform maps IdP groups to platform roles); (b) platform-native RBAC with periodic IdP sync for identity only; (c) hybrid — coarse roles from IdP, fine-grained app-level permissions native to the platform. |
 | Recommendation | (c) hybrid approach, pending confirmation of the chosen IdP's group/claims capabilities under DEC-001. |
 | Decision Owner | Platform Administrator + Security Administrator |
-| Status | Open |
+| Status | **Decided (2026-09-11)** |
+| Resolution | **No role/permission hierarchy beyond application ownership.** There is no Platform/Security/IT Administrator role anywhere in the data model. Every application owner has full control over their own application (deploy, suspend, archive, delete, manage secrets, grant co-owner access) and no one has elevated visibility or control over another owner's application or the platform as a whole — including production approval, which an application's own owner grants rather than a distinct approver (see DEC-017). Deliberate permanent simplification for a small internal LAN-only deployment, following directly from DEC-001 (no identity provider to source roles from). It also removes Module AA (Administration) and platform-wide administrator views (e.g. FR-093) from scope entirely, not just defers them. |
 | Target Phase | Before Technical Design |
 
 #### DEC-003 — MCP/AI-Agent Authentication Mechanism
@@ -100,7 +103,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Delegated OAuth2 token scoped to the employee's session; (b) long-lived personal API key stored locally by Claude Code; (c) broker service issuing short-lived, just-in-time credentials per MCP call. |
 | Recommendation | (a) or (c) — short-lived, employee-attributable, revocable credentials. Long-lived personal API keys (b) are discouraged as higher risk. Final mechanism to be finalized jointly with 11_Security_Requirements.md. |
 | Decision Owner | Security Administrator + Platform Administrator |
-| Status | Open |
+| Status | **Decided (2026-09-11)** |
+| Resolution | **Same mechanism as DEC-001, passed through unchanged.** Claude Code (as the MCP client) sends the same self-declared identity headers the employee already provided when signing in; the MCP server and Platform API trust them for the same reason DEC-001 does — the LAN is the trust boundary, not a per-call credential. No delegated OAuth token, personal API key, or broker service — those options assumed a real IdP existed to issue against, which DEC-001 rules out for this deployment. |
 | Target Phase | Before Technical Design |
 
 ## 5. Infrastructure & Hosting
@@ -115,8 +119,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | Docker + Docker Compose; K3s + Kubernetes; K3s + Knative; Managed Container Platform. A full weighted comparison (scale-to-zero support, operational complexity, cost, security, self-hosting, maintainability, developer experience, AI deployment compatibility, future scalability, IT workload) is provided in 10_System_Architecture.md. |
 | Recommendation | Defer to the reasoned recommendation in 10_System_Architecture.md. This entry exists precisely because final sign-off is a Platform Administrator/IT/Management decision, not something the documentation baseline can unilaterally finalize. |
 | Decision Owner | Platform Administrator + IT Administrator (final sign-off: Management) |
-| Status | **Decided (2026-08-28)** |
-| Resolution | **Option C — K3s + Knative.** Self-hosted rather than the primary Managed Container Platform recommendation in 10_System_Architecture.md; chosen to keep the platform fully self-hosted while still natively satisfying the scale-to-zero requirement (Knative) on a lighter-weight Kubernetes distribution (K3s) than full upstream Kubernetes. This narrows DEC-005 (registry/scanning), DEC-006 (secret backend), DEC-007 (DNS/TLS), DEC-008 (environment topology), and DEC-009 (multi-region HA) to Kubernetes-native tooling options — those entries should be revisited with this constraint in mind. |
+| Status | **Decided (2026-08-28); revised (2026-09-11)** |
+| Resolution | **Superseded.** The 2026-08-28 resolution (Option C — K3s + Knative) assumed a cluster would eventually be stood up for this platform. That is no longer the plan: the platform is internal-only, no cloud, and runs on a **single existing on-prem Linux host** the company already has, reachable only from the company LAN. The actual implementation choice is **Docker + Docker Compose on that single host** — which is also what has actually been built and verified throughout this project (scale-to-zero, continuous health monitoring, and everything else run against a local Docker daemon today; this was never a stand-in for a future Kubernetes migration). The K3s+Knative migration implied by the 2026-08-28 resolution will not happen. This substantially narrows or eliminates DEC-005 (no separate registry needed for one host — see its own resolution), DEC-007 (no public DNS/CA needed for LAN-only access — see its own resolution), and DEC-009 (a single host is inherently single-site — see its own resolution). DEC-006 (secret backend) and DEC-008 (environment topology) remain genuinely open but should be revisited against Docker Compose, not Kubernetes-native tooling. |
 | Target Phase | Before Solution Architecture sign-off / before Technical Design |
 
 #### DEC-005 — Container Registry & Image Vulnerability Scanning Tooling
@@ -129,7 +133,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Self-hosted registry + open-source scanner (e.g., Trivy); (b) managed cloud registry with built-in scanning; (c) an existing company-standard registry, if one already exists. |
 | Recommendation | Confirm whether the company already operates a container registry/scanner before evaluating new tooling; reuse existing investment if so. |
 | Decision Owner | IT Administrator + Security Administrator |
-| Status | Open |
+| Status | **Decided (2026-09-11)** |
+| Resolution | **No separate registry.** Following DEC-004's revision to a single Docker host, images are built and run directly from that host's local Docker image store — there is nothing to push to or pull from, and no second host that would need one. **Trivy** (already integrated, `services/platform-api/internal/imagescan`) remains the vulnerability scanner, run against every locally-built image before deploy, exactly as already implemented — that half of this decision was already resolved by existing code, not newly decided here. Revisit only if the platform is ever spread across more than one host. |
 | Target Phase | Before Technical Design |
 
 #### DEC-006 — Secret Management Backend
@@ -143,6 +148,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Recommendation | No default recommended without knowing whether the company already standardizes on a secrets tool; flag as a joint decision with the Security Administrator once DEC-004 narrows the infrastructure options. |
 | Decision Owner | Security Administrator + IT Administrator |
 | Status | Open |
+| Note (2026-09-11) | DEC-004 revised to a single, LAN-only, physically-controlled host, which likely reduces the urgency here (the current single-static-key encryption already in place — see Module O's README — may be an acceptable permanent posture for this deployment rather than an MVP stopgap). Not decided, only noted: this still needs an explicit answer from Security, the same as before. |
 | Target Phase | Before Technical Design |
 
 #### DEC-007 — Domain Naming, DNS Zone Ownership, TLS Certificate Authority
@@ -155,7 +161,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Internal-only DNS zone + internal CA; (b) public DNS subdomain + public CA (e.g., Let's Encrypt) even for internal-visibility apps; (c) split — internal CA for internal-visibility apps, public CA for external-visibility apps. |
 | Recommendation | (c), the common enterprise pattern; final DNS zone ownership must be confirmed with IT regardless of which option is chosen. |
 | Decision Owner | IT Administrator |
-| Status | Open |
+| Status | **Deferred (2026-09-11)** |
+| Resolution | Module P (Domain Management) is not needed for v1: the platform is LAN-only, reached through the existing stable proxy address (`{host}:{port}/run/{application}/{service}`, Module L) rather than a per-application DNS-managed domain. No DNS zone, TLS certificate authority, or naming-convention decision is currently needed, and none of Module P's FRs (072–075) are in scope for this deployment. Revisit only if the platform is ever exposed beyond the LAN, or per-application internal hostnames become a real ask. |
 | Target Phase | Before Technical Design |
 
 #### DEC-008 — Environment Topology Beyond Dev/Staging/Production
@@ -163,7 +170,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Field | Detail |
 |---|---|
 | Topic | Whether additional environments are needed beyond dev/staging/production |
-| Question | Does the platform need additional environments (e.g., QA, per-feature ephemeral preview environments, a sandbox/training environment) beyond dev/staging/production, and how do they map to infrastructure (shared cluster with namespace isolation vs. fully separate clusters)? |
+| Question | Does the platform need additional environments (e.g., QA, per-feature ephemeral preview environments, a sandbox/training environment) beyond dev/staging/production, and how do they map to infrastructure (a single Docker host with per-environment isolation vs. fully separate hosts — see DEC-004's revision away from a Kubernetes cluster)? |
 | Why It Matters | Affects the Environment Management module's design, cost, and the deployment lifecycle's environment-promotion rules. |
 | Options Considered | (a) Dev/staging/production only (minimum viable); (b) add ephemeral per-branch preview environments; (c) add a dedicated sandbox/training environment. |
 | Recommendation | (a) for MVP; revisit (b)/(c) in Phase 2 once real adoption data exists. |
@@ -181,7 +188,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Single-site for v1 with a documented risk acceptance; (b) active/passive DR site; (c) active/active multi-site. |
 | Recommendation | (a) for MVP, consistent with the stated objective of minimizing operational complexity, with (b) evaluated for Phase 2 once critical/production-tier applications are identified. |
 | Decision Owner | IT Administrator + Management / Auditor |
-| Status | Open |
+| Status | **Decided (2026-09-11)** |
+| Resolution | **(a) Single-site, no multi-region/cross-datacenter HA.** Following DEC-004's revision, the platform runs on one existing on-prem Linux host — there is no second site to fail over to, and none is planned. Accepted for this internal, LAN-only tool; revisit only if availability requirements change materially. |
 | Target Phase | Before Solution Architecture sign-off |
 
 ## 6. Compliance & Data
@@ -428,28 +436,30 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 
 This log should be treated as a **standing agenda** for Management/IT/Security review meetings during Discovery and Requirements Analysis. No item should still be `Open` when its Target Phase's gate review occurs; an item still open at its gate should either block the gate or be explicitly risk-accepted by its Decision Owner with the acceptance recorded in this document.
 
+**As of 2026-09-11**, DEC-001, DEC-002, DEC-003, DEC-004 (revised), DEC-005, and DEC-009 are Decided, and DEC-007 is Deferred (not needed for v1) — see each entry above. The remaining items listed as blocking "Before Technical Design"/"Before Solution Architecture sign-off" above (DEC-006, DEC-008, DEC-010, DEC-011, DEC-013, DEC-015) are still genuinely Open.
+
 ---
 
-## 11. Confirmed Technology Stack (Resolved 2026-08-28)
+## 11. Confirmed Technology Stack (Resolved 2026-08-28; revised 2026-09-11)
 
-Following the resolution of **DEC-004** (Option C — K3s + Knative, self-hosted), the following implementation-language decisions were confirmed. These are Technical Design–phase decisions (`09_SDLC.md`), recorded here for traceability rather than as new `DEC-xxx` entries since they follow directly from DEC-004 and do not require further Management/IT sign-off.
+Originally following the resolution of **DEC-004** (Option C — K3s + Knative, self-hosted), the implementation-language decisions below were confirmed. **DEC-004 was revised 2026-09-11** (see §5) to a single existing on-prem Linux host running Docker + Docker Compose, not a Kubernetes cluster — the rows below marked *(revised)* reflect that change; the language choices (Go/Python/TypeScript) are unaffected and stand as originally confirmed. These remain Technical Design–phase decisions (`09_SDLC.md`), recorded here for traceability rather than as new `DEC-xxx` entries since they follow directly from DEC-004 and do not require further Management/IT sign-off.
 
 | Component | Technology | Rationale |
 |---|---|---|
 | Company Deployment Skill | Markdown | Instruction set read directly by Claude Code — not executable code (`08_Company_Deployment_Skill.md`) |
 | Company Deployment MCP (MOD-16) | Python | Fast to build; strong fit for AI/tool-orchestration workloads and the MCP ecosystem's reference tooling |
 | Platform API (MOD-17) | Go | Infrastructure-facing control-plane service; concurrency and reliability under many simultaneous deployment requests |
-| Deployment Controller (MOD-06) | Go | Cloud-native; aligns with the Kubernetes/Knative controller ecosystem (client-go, controller-runtime patterns) selected in DEC-004 |
+| Deployment Controller (MOD-06) *(revised)* | Go, implemented as part of Platform API | Not a separate Kubernetes-controller-pattern service as originally envisioned — deploys, health-checks, and scales containers directly via the Docker Engine API (`internal/runtimeengine`), called in-process from the same Go binary as the rest of the control plane. Simpler than a standalone controller and appropriate for a single-host deployment. |
 | Frontend Admin Portal (MOD-18) | React + TypeScript | Matches the platform's own supported frontend stack; existing team proficiency |
 | Database | PostgreSQL | Already the platform's designated supported database (`12_Data_Requirements.md`) — reused for the platform's own control-plane data, not only hosted applications |
-| Container format | Docker | Standard image format; compatible with K3s |
-| Orchestration | K3s | Lighter-weight than full upstream Kubernetes; consistent with the "minimize IT operational workload" objective (`01_BRD.md` §6) |
-| Scale-to-zero | Knative | Purpose-built serverless/scale-to-zero layer for Kubernetes; directly satisfies `NFR-004`/`NFR-008` (`03_Non_Functional_Requirements.md`) |
+| Container format | Docker | Standard image format |
+| Orchestration *(revised)* | Docker Compose, on a single existing on-prem host | Not K3s — see DEC-004's 2026-09-11 revision: no cluster is being stood up for this platform. |
+| Scale-to-zero *(revised)* | Platform-native (Go), implemented directly in the Platform API | Not Knative — see DEC-004's revision. Idle detection, cold-start-on-request through a stable proxy address, and continuous health monitoring/remediation are all implemented directly against the Docker Engine API (Modules L and R) rather than delegated to a Kubernetes-native serverless layer. Satisfies `NFR-004`/`NFR-008` (`03_Non_Functional_Requirements.md`) the same as the original plan intended, by a different mechanism. |
 
 **Explicitly confirmed constraints this stack must satisfy** (per direct instruction):
-- **Self-hosted on Docker/K3s, not a public cloud–managed platform.** This is stricter than 10_System_Architecture.md's primary recommendation (Option D, Managed Container Platform) — the platform will run on the self-hosted fallback (Option C) instead. `10_System_Architecture.md` §5 should be read with this override in mind.
-- **Backend replaceable without impacting the frontend.** The Platform API (Go), MCP Server (Python), and Deployment Controller (Go) may change implementation independently of the React/TS Admin Portal, as long as the versioned Business API contract (`13_API_Requirements.md`) is preserved. Formalized as `NFR-051` in `03_Non_Functional_Requirements.md` §3.13.
+- **Self-hosted on Docker, not a public cloud–managed platform and not a Kubernetes cluster.** *(Revised 2026-09-11.)* Stricter than both 10_System_Architecture.md's primary recommendation (Option D, Managed Container Platform) and the original DEC-004 resolution (Option C, K3s+Knative) — the platform runs on Docker Compose, on a single existing on-prem host, per DEC-004's revision. `10_System_Architecture.md` §5 should be read with this override in mind.
+- **Backend replaceable without impacting the frontend.** The Platform API (Go) and MCP Server (Python) may change implementation independently of the React/TS Admin Portal, as long as the versioned Business API contract (`13_API_Requirements.md`) is preserved. Formalized as `NFR-051` in `03_Non_Functional_Requirements.md` §3.13.
 
-Because Platform API and Deployment Controller (Go) sit behind the same Business API contract consumed by an MCP Server (Python) and a Frontend Admin Portal (React/TS), the Business API's language-agnostic contract (REST+JSON, per the recommendation in `13_API_Requirements.md`) becomes load-bearing across three different language runtimes — its versioning discipline (already required by `13_API_Requirements.md` §7) is now a harder constraint, not just good practice.
+Because the Platform API sits behind the same Business API contract consumed by an MCP Server (Python) and a Frontend Admin Portal (React/TS), the Business API's language-agnostic contract (REST+JSON, per the recommendation in `13_API_Requirements.md`) becomes load-bearing across three different language runtimes — its versioning discipline (already required by `13_API_Requirements.md` §7) is now a harder constraint, not just good practice.
 
 New decisions identified during later phases should be appended as `DEC-027`, `DEC-028`, … — existing IDs must never be renumbered or reused.
