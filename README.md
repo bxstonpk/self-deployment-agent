@@ -62,9 +62,10 @@ README for exactly what was tested and how):
   verification), a Notifications inbox (unread-count header badge,
   mark-read, unread-only filter), an Owners section for granting/
   revoking co-owner/contributor access, a Transfer primary ownership
-  flow (nominate, notify, accept), and a Reports page (a KPI row of
+  flow (nominate, notify, accept), a Reports page (a KPI row of
   deployment outcomes over a selectable range, plus the application
-  inventory) — verified with up to three genuinely
+  inventory), and a Secrets section where an owner sets write-only values
+  the page can never show again — verified with up to three genuinely
   independent signed-in identities at once (separate browser contexts),
   confirming a newly-granted co-owner gets real day-to-day access, a
   revoked one is genuinely locked out on their very next request, and a
@@ -99,7 +100,8 @@ README for exactly what was tested and how):
   its private network, reachable by every other application, and it
   passed every unit test while it was.
 - Secret Management (Module O, `FR-066`/`067`/`069`/`070`) — an owner
-  registers a secret by name; the platform stores it AES-256-GCM
+  registers a secret by name, in the Admin Portal or through the API; the
+  platform stores it AES-256-GCM
   encrypted, injects it into every container the application starts as an
   environment variable, and never returns the value again, from any
   endpoint or the audit log. Module N's database passwords moved into it,

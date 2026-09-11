@@ -143,6 +143,33 @@ form textarea {
   resize: vertical;
 }
 
+/* Name | value | save on one row, the value widest because PEM keys and
+   JSON credentials are. One column on narrow screens. */
+.secret-form {
+  display: grid;
+  grid-template-columns: minmax(10rem, 16rem) 1fr auto;
+  gap: 10px;
+  align-items: start;
+  margin: 10px 0;
+}
+
+.secret-form input,
+.secret-form textarea {
+  margin-top: 0;
+}
+
+.secret-form textarea {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+  resize: vertical;
+}
+
+@media (max-width: 640px) {
+  .secret-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .badge {
   display: inline-block;
   font-size: 12px;

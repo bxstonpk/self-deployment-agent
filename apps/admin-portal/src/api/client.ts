@@ -16,6 +16,7 @@ import {
   type OwnershipRole,
   type OwnershipTransfer,
   type ScaleEvent,
+  type SecretMetadata,
   type SupportedStack,
   type SupportedStackRaw,
 } from "./types";
@@ -219,6 +220,26 @@ export async function getPendingOwnershipTransfer(identity: Identity, id: string
 // convention as every other owner-gated action here.
 export function acceptOwnershipTransfer(identity: Identity, transferId: string): Promise<ApplicationOwner> {
   return request(identity, "POST", `/ownership-transfers/${transferId}/accept`);
+}
+
+// --- Secrets (Module O) ---------------------------------------------------
+//
+// Values travel one way only: this app sends one in setSecret and never
+// receives one back — the Platform API has no endpoint that returns a value
+// (FR-070). Nothing here keeps a copy either: no state beyond the form field
+// the value is typed into, which is cleared the moment a save succeeds, and
+// never localStorage.
+
+export function listSecrets(identity: Identity, id: string): Promise<{ secrets: SecretMetadata[] }> {
+  return request(identity, "GET", `/applications/${id}/secrets`);
+}
+
+export function setSecret(identity: Identity, id: string, name: string, value: string): Promise<SecretMetadata> {
+  return request(identity, "PUT", `/applications/${id}/secrets/${encodeURIComponent(name)}`, { json: { value } });
+}
+
+export function deleteSecret(identity: Identity, id: string, name: string): Promise<void> {
+  return request(identity, "DELETE", `/applications/${id}/secrets/${encodeURIComponent(name)}`);
 }
 
 // --- Departments / Supported Stacks (raw PascalCase — see types.ts) -------

@@ -4,6 +4,7 @@ import {
   acceptOwnershipTransfer,
   archiveApplication,
   deleteApplication,
+  deleteSecret,
   deployApplication,
   deploymentHistory,
   getApplication,
@@ -14,12 +15,14 @@ import {
   latestDeployment,
   listOwners,
   listScaleEvents,
+  listSecrets,
   queryAuditLog,
   restartApplication,
   resumeApplication,
   revokeOwner,
   rollbackApplication,
   saveDeploymentYaml,
+  setSecret,
   suspendApplication,
   triggerBuild,
   validateApplication,
@@ -34,6 +37,7 @@ import type {
   OwnershipRole,
   OwnershipTransfer,
   ScaleEvent,
+  SecretMetadata,
   ValidationReport,
 } from "../api/types";
 import { useIdentity } from "../context/IdentityContext";
@@ -54,6 +58,10 @@ export function ApplicationDetail() {
   const [grantRole, setGrantRole] = useState<OwnershipRole>("secondary");
   const [pendingTransfer, setPendingTransfer] = useState<OwnershipTransfer | null>(null);
   const [transferEmail, setTransferEmail] = useState("");
+  const [secrets, setSecrets] = useState<SecretMetadata[]>([]);
+  const [secretName, setSecretName] = useState("");
+  const [secretValue, setSecretValue] = useState("");
+  const [secretsForbidden, setSecretsForbidden] = useState(false);
   const [yamlDraft, setYamlDraft] = useState("");
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
   const [environment, setEnvironment] = useState<"dev" | "production">("dev");
@@ -87,6 +95,20 @@ export function ApplicationDetail() {
     getPendingOwnershipTransfer(identity, id)
       .then(setPendingTransfer)
       .catch(() => setPendingTransfer(null));
+
+    // Names and versions only — see the Secrets block in api/client.ts.
+    listSecrets(identity, id)
+      .then((r) => {
+        setSecrets(r.secrets ?? []);
+        setSecretsForbidden(false);
+      })
+      .catch((err) => {
+        setSecrets([]);
+        // Owner-only server-side. Treating a 403 like every other failed
+        // fetch here would tell a non-owner "No secrets yet" — which is
+        // false: there may well be secrets, they just can't see them.
+        setSecretsForbidden(err instanceof ApiError && err.status === 403);
+      });
 
     // draft and validated are BOTH states no application-service method
     // ever transitions back into after a first build/deploy (checked
@@ -174,6 +196,32 @@ export function ApplicationDetail() {
     }
   }
 
+  // Not routed through runAction, same reasoning as handleGrantOwner: a
+  // failed save keeps what was typed so it can be corrected. A successful
+  // one clears the value at once — the only copy of it this app ever holds
+  // is the form field, for exactly as long as it's being typed. The success
+  // message names the secret, never the value.
+  async function handleSetSecret(e: FormEvent) {
+    e.preventDefault();
+    if (!identity || !id) return;
+    setBusy("set-secret");
+    setMessage(null);
+    try {
+      const saved = await setSecret(identity, id, secretName, secretValue);
+      setSecretValue("");
+      setSecretName("");
+      setMessage({
+        kind: "info",
+        text: `Saved ${saved.name} (version ${saved.version}). It reaches the application at its next start — Restart applies it now.`,
+      });
+      await refresh();
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof ApiError ? `${err.code}: ${err.message}` : String(err) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   if (!identity || !id) return null;
   if (!app) return <div className="page">{message ? <div className="error-banner">{message.text}</div> : <p>Loading…</p>}</div>;
 
@@ -185,6 +233,7 @@ export function ApplicationDetail() {
   const canDeploy = app.lifecycle_status === "running" || app.lifecycle_status === "build" || app.lifecycle_status === "failed";
   const canValidate = app.lifecycle_status === "draft";
   const canBuild = app.lifecycle_status === "validated" || app.lifecycle_status === "running" || app.lifecycle_status === "failed";
+  const canSetSecret = app.lifecycle_status !== "deleted";
 
   return (
     <div className="page">
@@ -449,6 +498,94 @@ export function ApplicationDetail() {
             </button>
           </form>
         )}
+      </section>
+
+      <section className="card">
+        <h2>Secrets</h2>
+        <p className="hint">
+          API keys and tokens this application needs. Each one is injected into every container it starts, as an
+          environment variable of the same name. Values are <strong>write-only</strong>: once saved, nothing — this
+          page included — can show one again. A new or changed value reaches the application at its next start;
+          Restart applies it now.
+        </p>
+        {secretsForbidden && <p className="hint">Only this application's owners can see or change its secrets.</p>}
+        {!secretsForbidden && secrets.length === 0 && <p className="hint">No secrets yet.</p>}
+        {secrets.length > 0 && (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Managed by</th>
+                <th>Version</th>
+                <th>Last set</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {secrets.map((s) => (
+                <tr key={s.name}>
+                  <td>
+                    <code>{s.name}</code>
+                  </td>
+                  <td>{s.managed_by === "platform" ? "Platform" : "Owner"}</td>
+                  <td>{s.version}</td>
+                  <td>{new Date(s.updated_at).toLocaleString()}</td>
+                  <td>
+                    {s.managed_by === "employee" && (
+                      <button
+                        disabled={busy !== null}
+                        onClick={() => {
+                          if (!window.confirm(`Delete ${s.name}? The application loses it at its next start.`)) return;
+                          runAction("delete-secret", () => deleteSecret(identity, id, s.name), `Deleted ${s.name}.`);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {secrets.some((s) => s.managed_by === "platform") && (
+          <p className="hint">
+            Platform-managed secrets are generated by the platform itself — today, the password for this application's
+            database — and can't be changed or deleted here.
+          </p>
+        )}
+        <form className="secret-form" onSubmit={handleSetSecret}>
+          <input
+            required
+            pattern="[A-Z][A-Z0-9_]{0,63}"
+            title="Uppercase letters, digits and underscores, starting with a letter — it becomes an environment variable name"
+            placeholder="API_KEY"
+            value={secretName}
+            onChange={(e) => setSecretName(e.target.value)}
+            aria-label="Secret name"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          {/* A textarea, not a password input: plenty of credentials are
+              multi-line (PEM keys, JSON service-account files), and a
+              password field invites the browser's password manager to save
+              the value. Spell-check is off because enhanced spell-checking
+              can send what's typed to a third-party service. */}
+          <textarea
+            required
+            rows={2}
+            placeholder="Value — write-only once saved"
+            value={secretValue}
+            onChange={(e) => setSecretValue(e.target.value)}
+            aria-label="Secret value"
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+          />
+          <button type="submit" disabled={busy !== null || !canSetSecret}>
+            Save secret
+          </button>
+        </form>
       </section>
 
       <section className="card">
