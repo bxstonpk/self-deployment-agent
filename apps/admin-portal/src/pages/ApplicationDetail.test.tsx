@@ -22,9 +22,16 @@ const SECRETS = [
   { name: "DATABASE_PASSWORD", managed_by: "platform", version: 1, updated_by: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
 ];
 
+type LogLine = { timestamp: string; service: string; stream: string; message: string; deployment_id: string; instance: string };
+
+const LOG_LINES: LogLine[] = [
+  { timestamp: "2026-01-05T10:00:02Z", service: "api", stream: "stderr", message: "panic: cannot reach the database", deployment_id: "dep-1", instance: "b1c2d3e4f5a6" },
+  { timestamp: "2026-01-05T10:00:01Z", service: "api", stream: "stdout", message: "using API_KEY=[REDACTED:API_KEY]", deployment_id: "dep-1", instance: "b1c2d3e4f5a6" },
+];
+
 const SECRET_VALUE = "sk-test-0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 
-type Call = { method: string; path: string; body?: string };
+type Call = { method: string; path: string; search?: string; body?: string };
 
 // Routes by path, so the whole detail page can load. Everything this suite
 // doesn't care about 404s — which the page already treats as "none yet".
@@ -33,15 +40,18 @@ function mockPlatformApi(
     app?: object; secretsForbidden?: boolean; deployments?: object[]; build?: object;
     putError?: { status: number; code: string; message: string };
     rotateError?: { status: number; code: string; message: string };
+    logs?: LogLine[]; olderLogs?: LogLine[]; nextCursor?: string;
+    logsError?: { status: number; code: string; message: string };
   } = {},
 ) {
   const calls: Call[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn((input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(String(input)).pathname;
+      const url = new URL(String(input));
+      const path = url.pathname;
       const method = init?.method ?? "GET";
-      calls.push({ method, path, body: typeof init?.body === "string" ? init.body : undefined });
+      calls.push({ method, path, search: url.search, body: typeof init?.body === "string" ? init.body : undefined });
 
       if (method === "PUT" && path.startsWith("/applications/app-1/secrets/")) {
         if (opts.putError) {
@@ -70,6 +80,18 @@ function mockPlatformApi(
       }
       if (method === "DELETE" && path.startsWith("/applications/app-1/secrets/")) {
         return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/applications/app-1/logs") {
+        if (opts.logsError) {
+          const { status, code, message } = opts.logsError;
+          return Promise.resolve(jsonResponse({ error: { code, message } }, status));
+        }
+        // Filtering is the platform's job; the mock does it only so the page
+        // under test gets the answer a real server would give.
+        if (url.searchParams.get("cursor")) return Promise.resolve(jsonResponse({ entries: opts.olderLogs ?? [], next_cursor: null }));
+        const contains = url.searchParams.get("contains");
+        const entries = (opts.logs ?? LOG_LINES).filter((l) => !contains || l.message.includes(contains));
+        return Promise.resolve(jsonResponse({ entries, next_cursor: opts.nextCursor ?? null }));
       }
       if (path === "/applications/app-1") return Promise.resolve(jsonResponse(opts.app ?? APP));
       if (path === "/applications/app-1/secrets") {
@@ -318,5 +340,113 @@ describe("ApplicationDetail — Rotate", () => {
     await user.click(within(rowFor(section, "DATABASE_PASSWORD")).getByRole("button", { name: "Rotate" }));
     expect(await screen.findByText(/rotation_incomplete/)).toBeInTheDocument();
     expect(screen.queryByText(/Rotated DATABASE_PASSWORD/)).toBeNull();
+  });
+});
+
+describe("ApplicationDetail — Logs", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    signInAs();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  async function logsSection(): Promise<HTMLElement> {
+    await screen.findByText("panic: cannot reach the database");
+    return screen.getByRole("heading", { name: "Logs" }).closest("section") as HTMLElement;
+  }
+
+  it("shows what the containers printed, newest first, saying which stream each line came from", async () => {
+    mockPlatformApi();
+    renderDetail();
+    const section = await logsSection();
+
+    const lines = within(section).getAllByRole("listitem");
+    expect(lines[0]).toHaveTextContent("panic: cannot reach the database");
+    // In words, not colour alone.
+    expect(lines[0]).toHaveTextContent("err");
+    expect(lines[1]).toHaveTextContent("out");
+  });
+
+  it("shows a secret exactly as the platform redacted it, and never the value", async () => {
+    mockPlatformApi();
+    renderDetail();
+    const section = await logsSection();
+
+    expect(within(section).getByText("using API_KEY=[REDACTED:API_KEY]")).toBeInTheDocument();
+  });
+
+  it("asks the platform to search, rather than filtering the page it already has", async () => {
+    const calls = mockPlatformApi();
+    const user = userEvent.setup();
+    renderDetail();
+    const section = await logsSection();
+
+    await user.type(within(section).getByLabelText("Search log text"), "panic");
+    await user.click(within(section).getByRole("button", { name: "Search" }));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.path === "/applications/app-1/logs" && (c.search ?? "").includes("contains=panic"))).toBe(true),
+    );
+    expect(within(section).queryByText("using API_KEY=[REDACTED:API_KEY]")).toBeNull();
+  });
+
+  it("loads older lines with the platform's own cursor, keeping the ones already on screen", async () => {
+    const calls = mockPlatformApi({
+      nextCursor: "1757563506123456.42",
+      olderLogs: [{ timestamp: "2026-01-05T09:59:00Z", service: "api", stream: "stdout", message: "an older line", deployment_id: "dep-1", instance: "b1c2d3e4f5a6" }],
+    });
+    const user = userEvent.setup();
+    renderDetail();
+    const section = await logsSection();
+
+    await user.click(within(section).getByRole("button", { name: "Load older lines" }));
+
+    expect(await within(section).findByText("an older line")).toBeInTheDocument();
+    expect(within(section).getByText("panic: cannot reach the database")).toBeInTheDocument();
+    expect(calls.some((c) => (c.search ?? "").includes("cursor=1757563506123456.42"))).toBe(true);
+  });
+
+  it("offers no paging when the platform reports no older lines", async () => {
+    mockPlatformApi();
+    renderDetail();
+    const section = await logsSection();
+
+    expect(within(section).queryByRole("button", { name: "Load older lines" })).toBeNull();
+  });
+
+  it("says nothing has run yet for an application that never deployed, and asks the platform for nothing", async () => {
+    const calls = mockPlatformApi({ app: { ...APP, lifecycle_status: "draft" } });
+    renderDetail();
+
+    await screen.findByRole("heading", { name: "Logs" });
+    expect(screen.getByText(/Nothing has run yet/)).toBeInTheDocument();
+    expect(calls.some((c) => c.path === "/applications/app-1/logs")).toBe(false);
+  });
+
+  // The platform answers 404 for "no such application" and "not yours"
+  // alike, so it never tells a stranger an application exists. Here the
+  // application is already on screen, so repeating "not found" would only
+  // confuse the person reading it.
+  it("tells a non-owner the logs are owners-only, not that the application is missing", async () => {
+    mockPlatformApi({ logsError: { status: 404, code: "not_found", message: "application not found" } });
+    renderDetail();
+
+    const heading = await screen.findByRole("heading", { name: "Logs" });
+    const section = heading.closest("section") as HTMLElement;
+    expect(await within(section).findByText("Only this application's owners can read its logs.")).toBeInTheDocument();
+    expect(within(section).queryByText("application not found")).toBeNull();
+  });
+
+  it("reports the platform's own reason for any other failure", async () => {
+    mockPlatformApi({ logsError: { status: 500, code: "internal_error", message: "failed to read logs" } });
+    renderDetail();
+
+    const heading = await screen.findByRole("heading", { name: "Logs" });
+    const section = heading.closest("section") as HTMLElement;
+    expect(await within(section).findByText("failed to read logs")).toBeInTheDocument();
   });
 });

@@ -64,8 +64,10 @@ README for exactly what was tested and how):
   revoking co-owner/contributor access, a Transfer primary ownership
   flow (nominate, notify, accept), a Reports page (a KPI row of
   deployment outcomes over a selectable range, plus the application
-  inventory), and a Secrets section where an owner sets write-only values
-  the page can never show again — verified with up to three genuinely
+  inventory), a Secrets section where an owner sets write-only values
+  the page can never show again, and a Logs section showing what an
+  application's containers printed, secrets already redacted and
+  owners-only — verified with up to three genuinely
   independent signed-in identities at once (separate browser contexts),
   confirming a newly-granted co-owner gets real day-to-day access, a
   revoked one is genuinely locked out on their very next request, and a
@@ -260,9 +262,10 @@ These block real production use, not just missing polish:
 - **No Monitoring** (Module T) — the MCP server's metrics tool returns an
   honest "not implemented" error rather than fabricating data. Logging
   (Module S) exists without retention: `FR-088`'s period is TBD, so
-  nothing is purged yet; log levels aren't parsed; and the Admin Portal
-  has no log view — see `services/platform-api/README.md`'s "How Logging
-  works". (Modules W, X and AB — Audit Log, Notification and
+  nothing is purged yet; log levels aren't parsed; and nothing streams —
+  reading logs is a page-at-a-time query in the Portal and over MCP alike.
+  See `services/platform-api/README.md`'s "How Logging works". (Modules W,
+  X and AB — Audit Log, Notification and
   Reporting — are implemented; see `services/platform-api/README.md`'s
   "How Audit Logging works", "How Notifications work" and "How Reporting
   works" sections for what each does and doesn't cover. Notably Module X

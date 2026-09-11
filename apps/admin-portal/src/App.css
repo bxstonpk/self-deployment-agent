@@ -347,3 +347,59 @@ form textarea {
 .breakdown-table {
   margin-bottom: 20px;
 }
+
+/* Module S log lines. A log reads better as lines than as a table, but each
+   line still has to say which stream it came from in words — the colour
+   alone wouldn't reach everyone. */
+.log-lines {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 6.5rem 2.5rem minmax(4rem, 8rem) 1fr;
+  gap: 10px;
+  padding: 4px 10px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-line:last-child {
+  border-bottom: none;
+}
+
+.log-line time,
+.log-service,
+.log-stream {
+  color: var(--text-muted);
+}
+
+.log-stream {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.log-stderr .log-stream {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.log-message {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 640px) {
+  .log-line {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

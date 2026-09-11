@@ -1369,8 +1369,10 @@ every state.
   containers still there. A line longer than 64 KiB is stored in pieces,
   and beyond 20,000 lines held for one container while the store is
   unreachable, the oldest are dropped (and that is logged).
-- **The Admin Portal has no log view yet.** The API and the MCP server's
-  `get_application_logs` are the two ways to read logs today.
+- **Nothing streams.** Reading logs is a query, not a follow: the Admin
+  Portal's Logs section and the MCP server's `get_application_logs` both
+  fetch a page at a time, and neither tails a container's output as it is
+  written.
 
 ### Verifying it
 
