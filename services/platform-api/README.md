@@ -30,8 +30,9 @@ start/health-check/traffic-activation); `FR-051`–`FR-056` (Module L —
 Scale-to-Zero: real idle detection, real cold-start-on-request through a
 stable proxy URL, real event logging); `FR-045`, `FR-047`, `FR-048`,
 `FR-049`, `FR-050` (Module K — the full Application Lifecycle model, plus
-Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-100`,
-`FR-101` (Module V — Rollback — see below); `FR-103`, `FR-104`,
+Suspend/Resume/Restart and Archive/Delete); `FR-095`, `FR-098`, `FR-099`,
+`FR-100`, `FR-101` (Module V — Rollback, both the requester-initiated and
+the automatic path — see below); `FR-103`, `FR-104`,
 `FR-105`, `FR-106` (Module W — Audit Log — see below); `FR-107`,
 `FR-108` (Module X — Notification — see below); `FR-016`, `FR-017`
 (Module E — Co-Owner/Contributor Management and Transfer Ownership — see
@@ -228,12 +229,12 @@ never touches that previous version — the application's `lifecycle_status`
 only moves to `failed` when there was no prior good version to protect. This
 was unit-tested explicitly (`TestInitiateDeploy_HealthCheckFailure_Redeploy_LeavesAppRunning`).
 An *automatic* rollback triggered by a post-activation health regression
-(FR-099, Module V) is still not wired up: the background health-monitoring
-infrastructure it would need now exists (Module R, below), but FR-099 needs
-its own scoping on top of it — distinguishing "a freshly activated version
-regressed" from "an instance flaked" — that isn't built. The deliberate,
-requester-initiated rollback path (FR-098) is implemented — see **How
-Rollback works** below.
+(FR-099) is now wired up too: when Module R's continuous health monitoring
+(below) exhausts remediation on a deployment still within its own
+post-activation window, `DeploymentService.TriggerAutomaticRollback` rolls
+back to the last known-good version with no human involved — see **How
+Rollback works** below for both the deliberate, requester-initiated path
+(FR-098) and this automatic one.
 
 **A subtle networking fix worth knowing about:** health checks happen
 *from inside* the `platform-api` container, so `http://localhost:<port>`
@@ -449,27 +450,67 @@ already transient for a forward deploy).
   needs policy-tier modeling this platform doesn't have — same
   `DEC-001`/`DEC-002` decision (Decided 2026-09-11) as the approval gate's
   approver-independence point above.
-- **FR-099** (fully *automatic* rollback triggered by a post-activation
-  health regression) still isn't wired to any trigger. Module R (below) now
-  gives the platform continuous runtime health monitoring, so the
-  infrastructure gap is closed — what's still open is FR-099's own logic:
-  distinguishing "a freshly activated version regressed" (roll back) from
-  "one instance of an otherwise-fine version flaked" (Module R's own
-  restart-in-place, FR-085, already handles that). What's already true
-  without any Module V code at all: FR-044's existing pre-activation failure
-  handling means a failed forward-deploy attempt never touches an
-  already-`running` previous version in the first place (see **How Deploy
-  works**). FR-098 (this feature) covers the deliberate,
-  requester-initiated path; FR-099's fully-automatic trigger remains a
-  documented gap.
 - FR-102 (rollback notification) is now partially real: since `Rollback`
   shares `deployAndActivate`/`markDeploymentFailedFrom` with a forward
   deploy (see above), it automatically triggers the same Module X
   notification on both success and failure — an owner genuinely gets
-  notified. What's missing is FR-102's specific content requirements: the
-  notification text is the generic "deployment succeeded/failed" wording,
-  not rollback-specific ("rolled back to version X", trigger reason, prior
-  vs. new active version) — see **How Notifications work** below.
+  notified. What's missing is FR-102's specific content requirements for
+  the *manual* path: the notification text is the generic "deployment
+  succeeded/failed" wording, not rollback-specific ("rolled back to version
+  X", trigger reason, prior vs. new active version). `TriggerAutomaticRollback`
+  below does write rollback-specific content — a manual rollback still
+  doesn't.
+
+### FR-099 — automatic rollback, triggered by Module R
+
+`DeploymentService.TriggerAutomaticRollback` (called from
+`health_service.go`, not from any HTTP endpoint — there's no "trigger a
+rollback for me automatically" request to make) closes what used to be a
+documented gap: when Module R's continuous health monitoring (below)
+exhausts remediation (its own restart-in-place fails, or its circuit
+breaker opens) on a deployment still within its own post-activation window
+(`POST_ACTIVATION_ROLLBACK_WINDOW_SECONDS`, default 300s — an engineering
+default, nothing in the requirements sets it), it rolls back to the last
+known-good version with no human involved. Verified for real against a
+live Docker daemon (`scripts/verify_fr099_rollback.py`): a version that
+passes its own pre-activation health check but then fails every
+subsequent one — even from a freshly restarted container, so Module R's
+own fix can never actually fix it — gets automatically rolled back to the
+previous version, which resumes serving at the application's stable URL,
+with the regressed version left `superseded` like any other rollback.
+
+An established (not recently activated) deployment that degrades does
+**not** trigger this — only Module R's existing restart-in-place/escalate
+handling applies there, per FR-099's own business rule that automatic
+rollback is specifically about a version regression, not routine instance
+flakiness the platform already knows how to fix in place.
+
+**Scope adaptations, same spirit as the manual path above:**
+- **Attribution.** `requested_by` is a real, required foreign key to a
+  user — there's no "system" account in this platform's identity model
+  (`DEC-001`/`DEC-002`). An automatic rollback is attributed to the
+  application's own primary owner, the only accountable party this
+  platform's ownership-only permission model has.
+- **No prior version to roll back to** (FR-099's alternative flow): the
+  application is marked `Failed` and the owner is notified why, rather
+  than pretending a rollback happened. Same outcome if the only
+  otherwise-eligible prior version's build artifact isn't usable (FR-100).
+- **The rollback itself failing** (FR-099's exception flow): escalated
+  immediately to the owner — there's no Platform Administrator to also
+  escalate to (`DEC-002`).
+- **A known, narrow gap, not hidden:** `deployAndActivate` decides whether
+  a *failed* attempt leaves the application `Running` or `Failed` based on
+  `app.LifecycleStatus` at the moment it's called — but Module R's own
+  remediation never updates that field when it gives up on a service. In
+  the rare case where Module R had already silently taken the previous
+  deployment's containers down before this fires, *and* the rollback
+  attempt's own health check also fails, the application can end up
+  reporting `Running` with nothing actually running. The same latent gap
+  already existed on the manual `Rollback` path whenever its target also
+  fails; automating the trigger makes it reachable without a human in the
+  loop, not new. Closing it fully needs `LifecycleStatus` to reflect live
+  container state directly — see `TriggerAutomaticRollback`'s own doc
+  comment in `deploy_service.go`.
 
 **A real bug found via the new unit tests, not just manual testing:**
 `deployAndActivate`'s final `apps.UpdateLifecycleStatus` call (the one that
@@ -1642,9 +1683,11 @@ eligible, but it still gets checked here.
 
 ### Known gaps
 
-- **FR-099 (automatic rollback on a post-activation health regression)
-  still isn't wired up** — see **How Rollback works** above for exactly
-  what's missing now that the monitoring infrastructure itself exists.
+(FR-099, automatic rollback on a post-activation health regression, used
+to be listed here — it's implemented now; see **How Rollback works**
+above, the "FR-099" section, for what it does and the one narrow gap it
+carries over from the manual Rollback path.)
+
 - **The failure/remediation-count bookkeeping is in-memory**, not
   persisted — a platform-api restart forgets how many times a service was
   recently remediated (the circuit breaker resets) and forgets any
@@ -1683,10 +1726,20 @@ the application kept serving throughout at its stable `/run/{app}/{service}`
 URL; and the owner had a `health_remediation` notification explaining what
 happened. The exception flow (a replacement that's also unhealthy) and the
 circuit-breaker alternative flow are covered by
-`internal/service/health_service_test.go`'s unit tests instead — a live
-container can't easily be scripted into staying broken across a restart on
-demand, and those tests can exercise exact failure sequences a real one
-can't be made to reproduce reliably.
+`internal/service/health_service_test.go`'s unit tests instead, for speed
+and precision — those tests can script an exact sequence of failures in
+milliseconds that would take real sweep intervals to reproduce live.
+
+A live container *can* be scripted into staying broken across a restart
+on demand, though — `scripts/verify_fr099_rollback.py` (see the FR-099
+section under **How Rollback works** above) does exactly that, by making
+the application answer healthy for its first request ever and unhealthy
+from the second request onward, deterministically, regardless of which
+container instance is asked. That end-to-end run is what verified FR-099
+itself: the platform failed to fix it via restart-in-place a few times,
+tripped its own circuit breaker, and automatically rolled back — with the
+application still reachable at its stable URL throughout, serving the
+prior version again once the rollback landed.
 
 ## What's deliberately NOT here yet
 
@@ -1717,13 +1770,6 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   than being queued asynchronously, which is fine for small internal-tool
   builds/deploys but won't scale to slow ones without a background
   job/worker model.
-- Fully-automatic rollback triggered by a post-activation health regression
-  (FR-099) — the continuous background health monitoring it would build on
-  now exists (Module R, below), but FR-099 itself needs its own scoping on
-  top of it (telling "a freshly activated version regressed" apart from "one
-  instance flaked", which Module R's own restart-in-place already handles).
-  The deliberate, requester-initiated rollback path (FR-098) is implemented
-  — see **How Rollback works** above.
 - Image-scan severity threshold is hardcoded to "any CRITICAL blocks" —
   FR-041 says this should be Security Administrator policy; no such policy
   exists yet to read from (worth a `DEC-xxx` entry).

@@ -576,11 +576,12 @@ func (s *DeploymentService) DeploymentHistory(ctx context.Context, applicationID
 //     doesn't have yet (same RBAC/policy gap as DecideApproval's
 //     approver-independence gap, blocked on DEC-001/DEC-002).
 //   - FR-099 (fully automatic rollback triggered by a post-activation health
-//     regression) isn't wired to a trigger: that needs continuous runtime
-//     health monitoring (Module T), which isn't built. What IS already true
-//     without any new code: FR-044's existing pre-activation failure
-//     handling means a failed forward deploy attempt never touches an
-//     already-Running previous version in the first place — see
+//     regression) is now wired — see TriggerAutomaticRollback below, called
+//     from health_service.go's continuous monitoring (Module R) once it
+//     exhausts remediation on a recently-activated deployment. What was
+//     already true without any new code: FR-044's existing pre-activation
+//     failure handling means a failed forward deploy attempt never touches
+//     an already-Running previous version in the first place — see
 //     markDeploymentFailedFrom. FR-098 (this method) covers the deliberate,
 //     requester-initiated rollback path.
 func (s *DeploymentService) Rollback(ctx context.Context, applicationID, requesterID, targetDeploymentID string) (deployment domain.Deployment, err error) {
@@ -641,6 +642,149 @@ func (s *DeploymentService) Rollback(ctx context.Context, applicationID, request
 		return domain.Deployment{}, err
 	}
 	return s.deployAndActivate(ctx, app, build, deployment, domain.StatusRolledBack)
+}
+
+// lastKnownGoodDeployment picks FR-099's automatic-rollback target: the
+// most recent OTHER deployment for the application that was itself a
+// completed, successful one (Running or Superseded — never Failed,
+// Rejected, or still in flight) — the same FR-100 eligibility rule
+// Rollback enforces above, just resolved automatically instead of a human
+// picking from history. history is expected newest-first, per
+// ListForApplication's own contract.
+func lastKnownGoodDeployment(history []domain.Deployment, excludeDeploymentID string) (domain.Deployment, bool) {
+	for _, d := range history {
+		if d.ID == excludeDeploymentID {
+			continue
+		}
+		if d.Status == domain.DeploymentRunning || d.Status == domain.DeploymentSuperseded {
+			return d, true
+		}
+	}
+	return domain.Deployment{}, false
+}
+
+// primaryOwnerID resolves who a system-triggered deployment (FR-099's
+// automatic rollback) is attributed to: the application's own primary
+// owner — the only accountable party this platform's ownership-only
+// permission model has (DEC-002) — since there is no "system" user
+// account and `requested_by` is a real, required foreign key to one.
+func primaryOwnerID(owners []domain.ApplicationOwner) (string, bool) {
+	for _, o := range owners {
+		if o.OwnershipRole == domain.OwnerRolePrimary && o.Status == "active" {
+			return o.UserID, true
+		}
+	}
+	return "", false
+}
+
+// TriggerAutomaticRollback implements FR-099: when Module R's continuous
+// health monitoring (FR-084/FR-085, health_service.go) exhausts
+// remediation on a deployment within its own post-activation window, roll
+// back to the last known-good version automatically — the same mechanics
+// as the requester-initiated Rollback above (FR-098), just system-
+// triggered, and picking its own target rather than one a human
+// specified. reason is a complete sentence describing what was observed,
+// used verbatim in the owner notification.
+//
+// Scope, documented not hidden: deployAndActivate decides whether a
+// FAILED attempt here leaves the application Running or Failed based on
+// app.LifecycleStatus at the moment this is called — but Module R's own
+// remediation never updates that field when it gives up on a service. In
+// the narrow case where Module R had already silently taken the previous
+// deployment's containers down before this fires, AND this rollback
+// attempt's own health check also fails, the application can end up
+// reporting Running with nothing actually running. The same latent gap
+// already exists on the manual Rollback path above whenever its target
+// also fails; automating the trigger makes it reachable without a human
+// in the loop, not new. Closing it fully needs LifecycleStatus to reflect
+// live container state directly, a larger change than this one.
+func (s *DeploymentService) TriggerAutomaticRollback(ctx context.Context, applicationID, reason string) (deployment domain.Deployment, err error) {
+	app, err := s.apps.GetByID(ctx, applicationID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if app.LifecycleStatus != domain.StatusRunning {
+		return domain.Deployment{}, domain.ErrInvalidLifecycleTransition
+	}
+
+	current, err := s.deployments.LatestForApplication(ctx, applicationID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if isInFlight(current.Status) {
+		return domain.Deployment{}, domain.ErrDeploymentAlreadyInFlight
+	}
+
+	owners, err := s.owners.ListForApplication(ctx, applicationID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	requestedBy, ok := primaryOwnerID(owners)
+	if !ok {
+		return domain.Deployment{}, fmt.Errorf("application %s has no active primary owner to attribute an automatic rollback to", applicationID)
+	}
+
+	history, err := s.deployments.ListForApplication(ctx, applicationID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	target, ok := lastKnownGoodDeployment(history, current.ID)
+	var build domain.Build
+	if ok {
+		build, err = s.builds.GetByID(ctx, target.BuildID)
+		if err != nil {
+			return domain.Deployment{}, err
+		}
+		// FR-100: the target's build artifact must still be available, not
+		// purged by retention policy (FR-097).
+		if build.Status != domain.BuildSucceeded {
+			ok = false
+		}
+	}
+	if !ok {
+		// FR-099 alternative flow: no prior known-good version to roll back
+		// to — mark the application Failed rather than pretend a rollback
+		// happened.
+		if _, err := s.deployments.SetFailed(ctx, current.ID, reason); err != nil {
+			return domain.Deployment{}, err
+		}
+		if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, domain.StatusRunning, domain.StatusFailed, false); err != nil {
+			return domain.Deployment{}, err
+		}
+		s.notifications.NotifyOwners(ctx, app.ID, domain.NotificationHealthRemediation,
+			fmt.Sprintf("%s: no prior version to roll back to", app.Name),
+			fmt.Sprintf("%s There is no earlier successful deployment to automatically roll back to, so the platform marked the application Failed instead. Please investigate and redeploy.", reason),
+			"deployment", current.ID)
+		return domain.Deployment{}, domain.ErrInvalidRollbackTarget
+	}
+
+	deployment, err = s.deployments.Create(ctx, applicationID, build.ID, requestedBy, target.Environment)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	s.notifications.NotifyOwners(ctx, app.ID, domain.NotificationHealthRemediation,
+		fmt.Sprintf("%s: automatically rolling back", app.Name),
+		fmt.Sprintf("%s The platform is automatically rolling back to the last known-good version (deployment %s).", reason, target.ID),
+		"deployment", deployment.ID)
+
+	deployment, err = s.deployAndActivate(ctx, app, build, deployment, domain.StatusRolledBack)
+	if err != nil {
+		// FR-099 exception flow: the automatic rollback itself failed to
+		// restore a healthy state — escalated immediately, same as Module
+		// R's own escalation notifications (no Platform Administrator role
+		// exists to also escalate to, per DEC-002).
+		s.notifications.NotifyOwners(ctx, app.ID, domain.NotificationHealthRemediation,
+			fmt.Sprintf("%s: automatic rollback failed", app.Name),
+			fmt.Sprintf("%s The platform's automatic rollback attempt itself failed too — this needs manual attention.", reason),
+			"deployment", deployment.ID)
+		return deployment, err
+	}
+
+	s.notifications.NotifyOwners(ctx, app.ID, domain.NotificationHealthRemediation,
+		fmt.Sprintf("%s: automatic rollback succeeded", app.Name),
+		fmt.Sprintf("%s The platform automatically rolled back to the last known-good version, which is healthy again.", reason),
+		"deployment", deployment.ID)
+	return deployment, nil
 }
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

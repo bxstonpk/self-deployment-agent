@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -85,8 +86,45 @@ func (f *fakeHealthRuntime) startedSpecs() []domain.ContainerSpec {
 	return out
 }
 
+// fakeAutomaticRollbackTrigger implements service.AutomaticRollbackTrigger
+// — these tests only need to know whether/why a rollback was triggered,
+// not exercise TriggerAutomaticRollback's own logic (that's
+// deploy_service_test.go's job).
+type fakeAutomaticRollbackTrigger struct {
+	mu    sync.Mutex
+	calls []automaticRollbackCall
+	err   error
+}
+
+type automaticRollbackCall struct {
+	ApplicationID string
+	Reason        string
+}
+
+func (f *fakeAutomaticRollbackTrigger) TriggerAutomaticRollback(ctx context.Context, applicationID, reason string) (domain.Deployment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, automaticRollbackCall{ApplicationID: applicationID, Reason: reason})
+	return domain.Deployment{}, f.err
+}
+
+func (f *fakeAutomaticRollbackTrigger) all() []automaticRollbackCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]automaticRollbackCall, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+// defaultPostActivationRollbackWindow is used via newHealthMonitorService
+// by every test that doesn't care about FR-099's rollback trigger. The
+// FR-099-specific tests near the end of this file construct their own
+// HealthMonitorService directly, to control the window (and the
+// deployment's CompletedAt) precisely.
+const defaultPostActivationRollbackWindow = 5 * time.Minute
+
 func newHealthMonitorService() (
-	*service.HealthMonitorService, *fakeServiceRuntimeStateRepo, *fakeHealthRuntime, *fakeNotificationRecorder,
+	*service.HealthMonitorService, *fakeServiceRuntimeStateRepo, *fakeHealthRuntime, *fakeNotificationRecorder, *fakeAutomaticRollbackTrigger,
 ) {
 	states := newFakeServiceRuntimeStateRepo()
 	deployments := &fakeRunningDeploymentLookup{
@@ -97,8 +135,9 @@ func newHealthMonitorService() (
 	notify := newFakeNotificationRecorder()
 	apps := &fakeApplicationRepo{byID: map[string]domain.Application{"app-1": {ID: "app-1", Name: "overtime"}}}
 	resources := newFakeDatabaseService()
-	svc := service.NewHealthMonitorService(apps, deployments, states, resources, runtime, notify)
-	return svc, states, runtime, notify
+	rollback := &fakeAutomaticRollbackTrigger{}
+	svc := service.NewHealthMonitorService(apps, deployments, states, resources, runtime, notify, rollback, defaultPostActivationRollbackWindow)
+	return svc, states, runtime, notify, rollback
 }
 
 func seedActiveState(states *fakeServiceRuntimeStateRepo, containerID string, hostPort int) {
@@ -109,7 +148,7 @@ func seedActiveState(states *fakeServiceRuntimeStateRepo, containerID string, ho
 }
 
 func TestHealthSweep_HealthyInstance_NoAction(t *testing.T) {
-	svc, states, runtime, notify := newHealthMonitorService()
+	svc, states, runtime, notify, _ := newHealthMonitorService()
 	seedActiveState(states, "container-1", 9001)
 
 	checked, remediated, err := svc.Sweep(context.Background())
@@ -128,7 +167,7 @@ func TestHealthSweep_HealthyInstance_NoAction(t *testing.T) {
 }
 
 func TestHealthSweep_ScaledToZero_NotPolled(t *testing.T) {
-	svc, states, runtime, _ := newHealthMonitorService()
+	svc, states, runtime, _, _ := newHealthMonitorService()
 	// No live container — mirrors an idle, scaled-to-zero service.
 	_ = states.Upsert(context.Background(), domain.ServiceRuntimeState{
 		DeploymentID: "dep-1", ServiceName: "api", ImageRef: "img-api", ContainerPort: 8080, Eligible: true,
@@ -147,7 +186,7 @@ func TestHealthSweep_ScaledToZero_NotPolled(t *testing.T) {
 }
 
 func TestHealthSweep_SingleFailure_DoesNotRemediate(t *testing.T) {
-	svc, states, runtime, notify := newHealthMonitorService()
+	svc, states, runtime, notify, _ := newHealthMonitorService()
 	seedActiveState(states, "container-1", 9001)
 	runtime.fail(9001)
 
@@ -163,7 +202,7 @@ func TestHealthSweep_SingleFailure_DoesNotRemediate(t *testing.T) {
 }
 
 func TestHealthSweep_SustainedFailure_RemediatesAndNotifies(t *testing.T) {
-	svc, states, runtime, notify := newHealthMonitorService()
+	svc, states, runtime, notify, _ := newHealthMonitorService()
 	seedActiveState(states, "container-1", 9001)
 	runtime.fail(9001)
 
@@ -213,7 +252,7 @@ func TestHealthSweep_SustainedFailure_RemediatesAndNotifies(t *testing.T) {
 }
 
 func TestHealthSweep_ReplacementAlsoUnhealthy_LeavesServiceDownAndEscalates(t *testing.T) {
-	svc, states, runtime, notify := newHealthMonitorService()
+	svc, states, runtime, notify, _ := newHealthMonitorService()
 	seedActiveState(states, "container-1", 9001)
 	runtime.fail(9001)
 	runtime.fail(30001) // the replacement StartContainer will assign this port next
@@ -246,7 +285,7 @@ func TestHealthSweep_ReplacementAlsoUnhealthy_LeavesServiceDownAndEscalates(t *t
 }
 
 func TestHealthSweep_CircuitBreaker_PausesAfterRepeatedRemediation(t *testing.T) {
-	svc, states, runtime, notify := newHealthMonitorService()
+	svc, states, runtime, notify, _ := newHealthMonitorService()
 	seedActiveState(states, "container-1", 9001)
 	runtime.fail(9001)
 
@@ -308,7 +347,7 @@ func TestHealthSweep_CircuitBreaker_PausesAfterRepeatedRemediation(t *testing.T)
 // redeploy or a manual restart racing the sweeper) must not carry that
 // count over to the new, unrelated instance and wrongly remediate it.
 func TestHealthSweep_InstanceReplacedMidCount_DoesNotCarryFailureOver(t *testing.T) {
-	svc, states, runtime, notify := newHealthMonitorService()
+	svc, states, runtime, notify, _ := newHealthMonitorService()
 	seedActiveState(states, "container-1", 9001)
 	runtime.fail(9001)
 	if _, remediated, _ := svc.Sweep(context.Background()); remediated != 0 {
@@ -327,5 +366,118 @@ func TestHealthSweep_InstanceReplacedMidCount_DoesNotCarryFailureOver(t *testing
 	}
 	if len(notify.all()) != 0 {
 		t.Error("no notification when nothing was actually remediated")
+	}
+}
+
+// newHealthMonitorServiceWithActivation is the FR-099 variant of
+// newHealthMonitorService: it exposes both the post-activation rollback
+// window and the deployment's CompletedAt (Traffic Activation timestamp),
+// which the shared helper above fixes to "healthy defaults that never
+// trigger a rollback" for every other test in this file.
+func newHealthMonitorServiceWithActivation(window time.Duration, completedAt *time.Time) (
+	*service.HealthMonitorService, *fakeServiceRuntimeStateRepo, *fakeHealthRuntime, *fakeNotificationRecorder, *fakeAutomaticRollbackTrigger,
+) {
+	states := newFakeServiceRuntimeStateRepo()
+	deployments := &fakeRunningDeploymentLookup{
+		byApp: map[string]domain.Deployment{},
+		byID:  map[string]domain.Deployment{"dep-1": {ID: "dep-1", ApplicationID: "app-1", CompletedAt: completedAt}},
+	}
+	runtime := newFakeHealthRuntime()
+	notify := newFakeNotificationRecorder()
+	apps := &fakeApplicationRepo{byID: map[string]domain.Application{"app-1": {ID: "app-1", Name: "overtime"}}}
+	resources := newFakeDatabaseService()
+	rollback := &fakeAutomaticRollbackTrigger{}
+	svc := service.NewHealthMonitorService(apps, deployments, states, resources, runtime, notify, rollback, window)
+	return svc, states, runtime, notify, rollback
+}
+
+func TestHealthSweep_WithinPostActivationWindow_TriggersAutomaticRollback(t *testing.T) {
+	recentlyActivated := time.Now()
+	svc, states, runtime, notify, rollback := newHealthMonitorServiceWithActivation(10*time.Minute, &recentlyActivated)
+	seedActiveState(states, "container-1", 9001)
+	runtime.fail(9001)
+	runtime.fail(30001) // the replacement StartContainer will assign this port next
+
+	svc.Sweep(context.Background())
+	if _, remediated, err := svc.Sweep(context.Background()); err != nil || remediated != 0 {
+		t.Fatalf("a replacement that also fails must not count as remediated, got remediated=%d err=%v", remediated, err)
+	}
+
+	calls := rollback.all()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one automatic-rollback trigger for a recently activated deployment, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].ApplicationID != "app-1" {
+		t.Errorf("triggered rollback for application %q, want app-1", calls[0].ApplicationID)
+	}
+	if calls[0].Reason == "" {
+		t.Error("expected a non-empty reason explaining what was observed, for the owner notification TriggerAutomaticRollback sends")
+	}
+	for _, n := range notify.all() {
+		if n.Title == "overtime: Automatic remediation failed" {
+			t.Error("must not ALSO send the plain escalation notification once a rollback was triggered — that would double-notify the owner")
+		}
+	}
+}
+
+func TestHealthSweep_OutsidePostActivationWindow_StillEscalatesPlainly(t *testing.T) {
+	longEstablished := time.Now().Add(-1 * time.Hour)
+	svc, states, runtime, notify, rollback := newHealthMonitorServiceWithActivation(5*time.Minute, &longEstablished)
+	seedActiveState(states, "container-1", 9001)
+	runtime.fail(9001)
+	runtime.fail(30001)
+
+	svc.Sweep(context.Background())
+	svc.Sweep(context.Background())
+
+	if len(rollback.all()) != 0 {
+		t.Error("an established deployment's failure must not trigger an automatic rollback — only a recently activated one (FR-099's business rule)")
+	}
+	found := false
+	for _, n := range notify.all() {
+		if n.Category == domain.NotificationHealthRemediation && n.Title == "overtime: Automatic remediation failed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected the plain 'automatic remediation failed' escalation, unchanged from Module R's own behavior before FR-099")
+	}
+}
+
+func TestHealthSweep_NeverRecordedActivation_FallsBackToEscalate(t *testing.T) {
+	svc, states, runtime, notify, rollback := newHealthMonitorServiceWithActivation(10*time.Minute, nil)
+	seedActiveState(states, "container-1", 9001)
+	runtime.fail(9001)
+	runtime.fail(30001)
+
+	svc.Sweep(context.Background())
+	svc.Sweep(context.Background())
+
+	if len(rollback.all()) != 0 {
+		t.Error("a deployment with no recorded activation time must not trigger an automatic rollback")
+	}
+	if len(notify.all()) == 0 {
+		t.Error("expected the plain escalation notification")
+	}
+}
+
+func TestHealthSweep_RollbackTriggerErrors_DoesNotAlsoEscalate(t *testing.T) {
+	recentlyActivated := time.Now()
+	svc, states, runtime, notify, rollback := newHealthMonitorServiceWithActivation(10*time.Minute, &recentlyActivated)
+	rollback.err = errors.New("boom")
+	seedActiveState(states, "container-1", 9001)
+	runtime.fail(9001)
+	runtime.fail(30001)
+
+	svc.Sweep(context.Background())
+	svc.Sweep(context.Background())
+
+	if len(rollback.all()) != 1 {
+		t.Fatalf("expected the rollback trigger to still be called once despite erroring, got %d", len(rollback.all()))
+	}
+	for _, n := range notify.all() {
+		if n.Category == domain.NotificationHealthRemediation {
+			t.Errorf("HealthMonitorService itself must not notify when delegating to TriggerAutomaticRollback, which owns its own notifications — got %+v", n)
+		}
 	}
 }

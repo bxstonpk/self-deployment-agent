@@ -188,6 +188,20 @@ README for exactly what was tested and how):
   go, silently rejected by a database check constraint that predated it —
   found because the "owner was notified" check failed even though
   remediation itself worked, and fixed with a migration.
+- Automatic Rollback on Failed Health Check (`FR-099`) — closes what had
+  been a documented gap since Module V (Rollback) first shipped: a
+  recently-activated version that Module R's own restart-in-place can
+  never fix (its circuit breaker keeps tripping, or a replacement instance
+  never comes up healthy) is now automatically rolled back to the last
+  known-good version, no human involved. Verified against a real Docker
+  daemon (see `services/platform-api/scripts/verify_fr099_rollback.py`):
+  a version engineered to pass its own pre-activation health check but
+  fail every one after — deterministically, even from a freshly restarted
+  container, so restarting it can never actually fix it — got detected,
+  had its restart-in-place fail three times in a row, tripped Module R's
+  circuit breaker, and was automatically rolled back to the prior version,
+  which resumed serving at the application's stable URL with no request
+  from the verification script.
 
 **What doesn't exist, by decision, not because it's unfinished**: real
 authentication and RBAC. This platform is internal-only, self-hosted on a

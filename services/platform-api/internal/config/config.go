@@ -48,6 +48,15 @@ type Config struct {
 	// requirements specify.
 	HealthSweepInterval time.Duration
 
+	// PostActivationRollbackWindow is FR-099's "shortly after Traffic
+	// Activation" — how long after a deployment reaches Running its own
+	// health-check exhaustion is treated as "this version regressed"
+	// (triggering an automatic rollback) rather than "an established
+	// instance flaked" (Module R's existing restart-in-place/escalate
+	// handling). Same engineering-default status as the other timeouts
+	// above.
+	PostActivationRollbackWindow time.Duration
+
 	// OwnershipTransferWindow implements FR-016's "policy window" for a
 	// nominated new owner to accept a transfer before it expires — exact
 	// value TBD (docs/17_Decision_Log.md), same "starting point, not a
@@ -94,19 +103,24 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	postActivationRollbackWindow, err := getEnvSeconds("POST_ACTIVATION_ROLLBACK_WINDOW_SECONDS", 300) // 5 minutes
+	if err != nil {
+		return Config{}, err
+	}
 	port := getEnv("PORT", "8080")
 	return Config{
-		DatabaseURL:             databaseURL,
-		Port:                    port,
-		PublicBaseURL:           strings.TrimRight(getEnv("PLATFORM_PUBLIC_BASE_URL", "http://localhost:"+port), "/"),
-		PlatformEnv:             getEnv("PLATFORM_ENV", "dev"),
-		CORSAllowedOrigins:      getEnvList("CORS_ALLOWED_ORIGINS", "http://localhost:5173"),
-		ScaleToZeroIdleTimeout:  idleTimeout,
-		ScaleSweepInterval:      sweepInterval,
-		MetricsSampleInterval:   metricsInterval,
-		HealthSweepInterval:     healthSweepInterval,
-		OwnershipTransferWindow: transferWindow,
-		SecretKey:               secretKey,
+		DatabaseURL:                  databaseURL,
+		Port:                         port,
+		PublicBaseURL:                strings.TrimRight(getEnv("PLATFORM_PUBLIC_BASE_URL", "http://localhost:"+port), "/"),
+		PlatformEnv:                  getEnv("PLATFORM_ENV", "dev"),
+		CORSAllowedOrigins:           getEnvList("CORS_ALLOWED_ORIGINS", "http://localhost:5173"),
+		ScaleToZeroIdleTimeout:       idleTimeout,
+		ScaleSweepInterval:           sweepInterval,
+		MetricsSampleInterval:        metricsInterval,
+		HealthSweepInterval:          healthSweepInterval,
+		PostActivationRollbackWindow: postActivationRollbackWindow,
+		OwnershipTransferWindow:      transferWindow,
+		SecretKey:                    secretKey,
 	}, nil
 }
 
