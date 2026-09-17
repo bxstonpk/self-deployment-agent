@@ -197,16 +197,18 @@ successful build, and runs:
    `production` pauses with `status: "pending_approval"` and creates a
    `deployment_approvals` row; `POST /deployments/{id}/approve` with
    `{"decision": "approve"|"reject", "reason": "..."}` resumes or rejects it.
-   **Known gap, documented not hidden:** this does not require the approver
-   to be a different person than the requester — genuinely guaranteeing an
-   independent approver needs the RBAC/Platform Administrator role modeling
-   Module A/B doesn't have yet (blocked on `DEC-001`/`DEC-002`). Requiring a
-   *different* owner today would make single-owner applications undeployable
-   to production, a worse outcome than an honest gap.
-3. **Deploy** — `internal/runtimeengine` (real Docker Engine API, a stand-in
-   for the eventual K3s+Knative Runtime Platform per `DEC-004` — same shape,
-   swappable later per `NFR-046`) starts one container per service, port
-   published dynamically.
+   **By decision, not a gap awaiting one:** this does not require the
+   approver to be a different person than the requester. Module A/B's
+   RBAC/Platform Administrator role modeling would be needed to guarantee a
+   genuinely independent approver, and per `DEC-001`/`DEC-002` (Decided
+   2026-09-11) this platform will not have one — requiring a *different*
+   owner would make single-owner applications undeployable to production,
+   a worse outcome for this LAN-only, ownership-only permission model.
+3. **Deploy** — `internal/runtimeengine` (real Docker Engine API — the
+   platform's actual, permanent runtime per `DEC-004`'s 2026-09-11
+   revision, a single existing on-prem Docker host rather than a future
+   Kubernetes migration; still swappable later per `NFR-046` if that ever
+   changes) starts one container per service, port published dynamically.
 4. **Health Check** — polls the container until it responds or a 15s
    timeout elapses (`FR-083`'s pre-activation gate; a simplified stand-in
    for `FR-082`'s configurable check — it always polls `/`). Failure here
@@ -395,12 +397,12 @@ app returns a 404, it does not cold-start.
    which no longer existed. Fixed by adding `UpdateContainers` and calling
    it from all three operations.
 
-**Known gap, documented not hidden:** FR-047 names a Security Administrator
-force-suspend path (bypassing the owner-initiated flow, e.g. on a policy
-violation) as an alternative flow. There's no distinct Security
-Administrator role to check yet — same recurring RBAC gap as the
-production approval gate, blocked on `DEC-001`/`DEC-002`. Only
-owner-initiated suspend is implemented.
+**By decision, not a gap awaiting one:** FR-047 names a Security
+Administrator force-suspend path (bypassing the owner-initiated flow, e.g.
+on a policy violation) as an alternative flow. There is no distinct
+Security Administrator role, by the same `DEC-001`/`DEC-002` decision
+(Decided 2026-09-11) as the production approval gate above — this
+platform will not have one. Only owner-initiated suspend is implemented.
 
 ## How Rollback works (Module V)
 
@@ -444,9 +446,9 @@ already transient for a forward deploy).
   previously-`running` deployment, so it passed both gates the first time.
   FR-098's alternative flow allows requiring the same approval gate for a
   production rollback depending on policy severity classification, which
-  needs policy-tier modeling this platform doesn't have (same RBAC/policy
-  gap as the approval gate's approver-independence gap, blocked on
-  `DEC-001`/`DEC-002`).
+  needs policy-tier modeling this platform doesn't have — same
+  `DEC-001`/`DEC-002` decision (Decided 2026-09-11) as the approval gate's
+  approver-independence point above.
 - **FR-099** (fully *automatic* rollback triggered by a post-activation
   health regression) still isn't wired to any trigger. Module R (below) now
   gives the platform continuous runtime health monitoring, so the
@@ -548,8 +550,11 @@ to refuse an archived application either.
 yet" is most visible, because FR-050 in particular is *mostly* about
 deprovisioning resources that don't exist yet:**
 - Domain release (Module P) is still a no-op on both Archive and Delete —
-  that module isn't built. Databases and secrets are no longer in that
-  list: Delete really does tear down the application's database (see
+  not because it isn't built yet, but because `DEC-007` (Deferred
+  2026-09-11) is that Module P isn't needed at all for this LAN-only
+  deployment (see **Self-declared identity** below). Databases and
+  secrets are no longer in that list: Delete really does tear down the
+  application's database (see
   **How Database Management works**) and purge its secrets (see **How
   Secret Management works**). Archive does neither, by design — it
   retains configuration (FR-049). What Delete DOES do for real:
@@ -614,8 +619,8 @@ framing.
 
 **Query/export (`FR-104`/`FR-105`), scoped down from the spec.** FR-104
 names an Auditor/Security Administrator/Platform Administrator role that
-doesn't exist (same `DEC-001`/`DEC-002` RBAC gap as everywhere else in this
-platform) — `AuditService.Query` substitutes the same owner-based scoping
+doesn't exist, by the same `DEC-001`/`DEC-002` decision as everywhere else
+in this platform — `AuditService.Query` substitutes the same owner-based scoping
 used throughout: a requester sees an entry if they performed the action
 themselves, or it concerns an application they own. `GET /audit-log/export`
 (CSV) implements FR-105's main flow, including step 4 — the export itself
@@ -663,10 +668,12 @@ that round-trips through the database are byte-for-byte identical.
 An in-app, per-recipient notification inbox for `FR-107` (Deployment
 Status Notifications) and `FR-108` (Approval Request Notifications).
 `FR-109` (Security and Policy Violation Notifications) is a documented
-gap — it needs a Security Administrator role this platform doesn't have
-(`DEC-002`) and a proactive detection sweep (e.g. periodically re-running
-Module W's `VerifyChain`) this platform doesn't run in the background,
-unlike the scale-to-zero sweeper.
+gap for two different reasons: it names a Security Administrator
+recipient, and by decision (`DEC-002`) this platform doesn't have one —
+that part isn't coming. Separately, and still a genuine buildable gap
+regardless of that decision, nothing here proactively re-checks for
+violations in the background (e.g. periodically re-running Module W's
+`VerifyChain`), unlike the scale-to-zero sweeper.
 
 **Delivery is in-app only** — a queryable list, not email/Slack/webhook.
 There is no outbound delivery channel configured anywhere in this
@@ -867,9 +874,9 @@ nomination while one is outstanding is rejected
 **Scope adaptation**: only the owner-initiated, nominee-accepted main flow
 is implemented. FR-016's alternative flow ("Administrator performs a
 forced transfer without new-owner acceptance during offboarding") needs
-the Platform Administrator role this platform doesn't have — blocked on
-`DEC-002`, the same gap every other admin-only flow in this codebase
-already documents.
+the Platform Administrator role this platform doesn't have — by
+`DEC-002`'s decision (Decided 2026-09-11), the same basis every other
+admin-only flow in this codebase already documents.
 
 **Verified for real** against a running Postgres instance, including the
 one thing that's easy to get wrong testing an expiry mechanism: actually
@@ -1536,9 +1543,10 @@ cross-application administrator view would be audited — it doesn't exist.
   metrics, so building it would mean inventing the numbers that decide
   when someone gets woken up. The pieces it would need are here: the
   metrics, and Module X's notifications.
-- **FR-093 (platform-wide dashboard) is not implemented** — it is
-  explicitly an administrator and auditor view, and those roles don't
-  exist (DEC-001).
+- **FR-093 (platform-wide dashboard) is not implemented** — not a gap, a
+  decision: it is explicitly an administrator and auditor view, and by
+  `DEC-002` (Decided 2026-09-11) those roles don't exist, permanently, for
+  this deployment.
 - **NFR-032 retention is not implemented.** Its durations are TBD, so
   nothing is purged: one row per container per interval, plus one per
   service per minute of traffic, accumulate. Same standing gap as Module
@@ -1684,15 +1692,21 @@ can't be made to reproduce reliably.
 
 Each will land as its own feature branch/PR, per the Application Lifecycle:
 
-- Registry push — there's no real container registry yet (`DEC-005` is
-  still Open); built images live in the local Docker daemon that both the
-  Build Engine and Deployment step talk to. Fine for one-daemon local dev;
-  won't work once the platform runs across more than one host.
-- Real authentication — see **Dev-mode auth** below.
+- Registry push — not a gap, a decision: `DEC-005` (Decided 2026-09-11) is
+  that no separate registry is needed. Built images live in the local
+  Docker daemon on the single on-prem host both the Build Engine and
+  Deployment step talk to — that's the intended permanent shape, per
+  `DEC-004`'s revision, not a stand-in for a multi-host setup that isn't
+  planned.
+- Real authentication — not a gap, a decision: see **Self-declared
+  identity** below (`DEC-001`, Decided).
 - Resource quota enforcement (FR-032) — depends on Module M, not built yet.
-- Full RBAC / Role / Permission tables (Module A/B) — blocked on `DEC-001`.
-  This is also why the production approval gate can't yet require an
-  approver distinct from the requester — see **How Deploy works** above.
+- Full RBAC / Role / Permission tables (Module A/B) — not a gap, a
+  decision: `DEC-002` (Decided 2026-09-11) is that there is no role beyond
+  application ownership. This is also why the production approval gate
+  doesn't require an approver distinct from the requester — it isn't
+  going to, by design, not pending Module A/B — see **How Deploy works**
+  above.
 - Stack version governance (FR-022, deprecated/blocked versions) — the
   catalog only tracks active/deprecated/blocked per whole runtime name, not
   per version range yet.
@@ -1729,26 +1743,34 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   platform-wide constant; real tuning needs Module M (Resource Manager),
   not built yet.
 - Security Administrator force-suspend, bypassing owner-initiated Suspend
-  — see **How Suspend/Resume/Restart works**'s known gap.
-- Real deprovisioning on Archive/Delete for domains (Module P) — see
-  **How Archive/Delete work**. Databases (Module N) and secrets (Module O)
-  *are* removed for real. Every Application
-  Lifecycle state reachable without those modules existing (`Draft` →
+  — not a gap, a decision: `DEC-002` means there is no Security
+  Administrator role to perform it. Only owner-initiated Suspend exists,
+  and that's the permanent model.
+- Real deprovisioning on Archive/Delete for domains (Module P) — not a
+  gap, a decision: `DEC-007` (Deferred 2026-09-11) is that Module P isn't
+  needed for this LAN-only deployment at all (see **Self-declared
+  identity** below), so there is nothing for Archive/Delete to deprovision
+  there. Databases (Module N) and secrets (Module O) *are* removed for
+  real. Every Application Lifecycle state this deployment needs (`Draft` →
   `Validated` → `Build` → `Deploying`/`Running`, `Suspended`, `Rolled Back`
   as a transient step back to `Running`, `Archived`, `Deleted`) is now
   implemented.
 - Un-archive / reactivation of an `Archived` application — see **How
   Archive/Delete work**'s known gap.
 - Production de-registration approval gate (FR-050, "mirrors FR-014") —
-  needs Module C, not built; same category of gap as the production-deploy
-  approver-independence limitation.
+  not a gap, a decision: same `DEC-002` basis as the production-deploy
+  approver-independence point above — there is no distinct approver role
+  to gate on.
 
-## Dev-mode auth (temporary — see DEC-001)
+## Self-declared identity (permanent — see DEC-001)
 
-There is no Identity Provider integration yet (`DEC-001` in
-[`17_Decision_Log.md`](../../docs/17_Decision_Log.md) is still **Open**). All
-`/applications` routes require these headers, and the service refuses to
-start this path at all unless `PLATFORM_ENV=dev`:
+There is no Identity Provider integration, and per
+[`17_Decision_Log.md`](../../docs/17_Decision_Log.md)'s `DEC-001` (**Decided
+2026-09-11**), there won't be one: this platform is internal-only, runs on a
+single existing on-prem Linux host, and is reachable only from the company
+LAN — not internet-facing, no cloud. With network access to the platform
+already the trust boundary, an employee identifies themselves with these
+headers rather than a password:
 
 ```
 X-Dev-User-Email: alice@example.com
@@ -1756,9 +1778,26 @@ X-Dev-User-Name:  Alice Employee      # optional
 X-Dev-Department: Engineering         # optional, defaults to "Unassigned"
 ```
 
-The user/department are upserted on first use. This entire mechanism
-(`internal/httpapi/devauth.go`) sits behind the `Authenticator` interface so
-it can be swapped for real SSO without touching any handler — see `NFR-051`.
+The user/department are upserted on first use. This mechanism
+(`internal/httpapi/devauth.go`) sits behind the `Authenticator` interface,
+same as before — so it *could* still be swapped for real SSO later if the
+deployment context ever changes (`NFR-051`), but that is no longer an
+expected near-term step, just a door left open.
+
+**Accepted risk, recorded not hidden:** anyone with LAN access can type any
+email in these headers, including impersonating another employee — nothing
+here verifies the claim. Per `DEC-001`, `DEC-002`, and `DEC-003`
+(all Decided 2026-09-11), this is accepted for a small, trusted internal
+user base, together with **no RBAC beyond application ownership** — no
+Platform/Security/IT Administrator role exists anywhere, by design, not
+because it's unfinished. See those three entries in the Decision Log for
+the full reasoning.
+
+The `PLATFORM_ENV=dev` config value that gates this code path is a name
+left over from when it was assumed temporary — it is still the correct
+value to run with even though this is now the platform's permanent,
+intended mode, not a stopgap. Nothing reads that name as a promise that a
+different value is coming.
 
 ## Running locally
 

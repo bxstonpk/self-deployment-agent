@@ -8,6 +8,16 @@ case and requirements: [`docs/01_BRD.md`](docs/01_BRD.md).
 This README orients a new contributor/maintainer picking up the project:
 what exists, what doesn't, how the pieces fit together, and where to start.
 
+**Deployment context (confirmed 2026-09-11, see `docs/17_Decision_Log.md`):**
+this platform is internal-only, for one company's own employees, and runs
+on a single existing on-prem Linux host — no cloud, no Kubernetes cluster,
+reachable only from the company LAN. Several things documented elsewhere
+as "not yet built" (real SSO/IdP integration, RBAC/administrator roles,
+Domain management, a container registry, a Kubernetes migration) are, for
+this deployment, **decided against, permanently** — not gaps waiting on
+more work. Each is called out explicitly where it comes up below and in
+`docs/17_Decision_Log.md`'s `DEC-001` through `DEC-009`.
+
 ## Status: early-stage, ~35–40% of the full documented scope
 
 **What's real and tested** (every claim below has been verified against a
@@ -179,11 +189,20 @@ README for exactly what was tested and how):
   found because the "owner was notified" check failed even though
   remediation itself worked, and fixed with a migration.
 
-**What doesn't exist at all yet**: real authentication/RBAC (every
-authorization check today is "are you a registered owner of this
-application," full stop — no IT/Platform/Security Administrator roles),
-Domain/Network management, Resource quotas.
-See "Known gaps" below and each
+**What doesn't exist, by decision, not because it's unfinished**: real
+authentication and RBAC. This platform is internal-only, self-hosted on a
+single existing on-prem Linux host, reachable only from the company LAN —
+not internet-facing, no cloud. Given that, `docs/17_Decision_Log.md`'s
+`DEC-001`/`DEC-002`/`DEC-003` (Decided 2026-09-11) are that employees
+self-declare their identity at sign-in (no password, no SSO) and every
+authorization check is "are you a registered owner of this application,"
+full stop — there are no IT/Platform/Security Administrator roles, and
+none are planned. Domain management (Module P) is similarly deferred
+(`DEC-007`) — apps are reached via the platform's own `/run/{app}/{service}`
+address on the LAN, not a per-application DNS name. **What's still
+genuinely unfinished, not decided against**: Network management (Module Q,
+beyond the per-application Docker network isolation Module N already
+provides) and Resource quotas (Module M). See "Known gaps" below and each
 component's own README for the honest, itemized list — nothing here claims
 these exist when they don't. Note in particular that Module O above ships
 with a real limitation of its own, listed there — a module being
@@ -268,15 +287,36 @@ Requires Docker, Go 1.25+, Python 3.11+, and Node 20+.
 
 ## Known gaps (the honest, load-bearing ones)
 
-These block real production use, not just missing polish:
+Two categories here: decisions already made for this platform's actual
+deployment context (internal-only, self-hosted on a single existing
+on-prem Linux host, LAN-only access — see `docs/17_Decision_Log.md`), and
+gaps that genuinely still block real production use regardless of that
+context.
 
-- **No real authentication.** Every service uses a dev-mode header stub
-  (`X-Dev-User-Email`) that trusts whatever identity it's given. Blocked
-  on `DEC-001`/`DEC-003` (`docs/17_Decision_Log.md`) — choosing a real
-  IdP/SSO integration is a decision for whoever owns this platform next,
-  not something this implementation could resolve on its own.
+**Decided, not pending** — worth knowing, not something more building
+will change:
+- **No real authentication.** Every service uses a header-based identity
+  stub (`X-Dev-User-Email`) that trusts whatever it's given — self-declared
+  by each employee at sign-in, not verified against a password or an IdP.
+  Per `DEC-001`/`DEC-003` (Decided 2026-09-11), this is the platform's
+  **permanent** model: the LAN is the trust boundary, not a login. Accepted
+  risk, recorded not hidden: anyone with LAN access can self-declare any
+  email, including impersonating another employee — accepted for the
+  small, trusted internal user base this platform serves (some of whom
+  already share Claude accounts).
 - **No RBAC beyond application ownership.** No IT/Platform/Security
-  Administrator role exists anywhere. Blocked on `DEC-002`.
+  Administrator role exists anywhere, by decision (`DEC-002`, Decided
+  2026-09-11) — every owner has full control over their own application
+  and none over anyone else's or the platform as a whole. This is also
+  why there's no distinct production-approval role and no platform-wide
+  admin dashboard (`FR-093`).
+- **No Domain management** (Module P). Deferred (`DEC-007`) — apps are
+  reached via the platform's own `/run/{app}/{service}` address on the
+  LAN, not a per-application DNS name; there's no DNS zone or TLS CA to
+  decide on for a deployment that never leaves the LAN.
+
+**Still genuinely open** — these would need real work regardless of the
+decisions above:
 - **`deploy_application`/the admin portal's Deploy runs synchronously**,
   not as a real queued/async job — fine at today's scale, a real gap
   before this could serve many concurrent deployments.
@@ -285,16 +325,18 @@ These block real production use, not just missing polish:
   from `PLATFORM_SECRET_KEY`. There is no key rotation or re-encryption
   tool, and anyone who can read platform-api's environment can read the
   key and, with it, every secret. The platform database alone no longer
-  yields anything, which is what the requirements ask of the store;
-  taking the key off the host is what a real backend chosen under
-  `DEC-006` (still Open) would do. See `services/platform-api/README.md`'s
+  yields anything, which is what the requirements ask of the store; a
+  managed backend chosen under `DEC-006` (still Open, though its urgency
+  is lower now that the host is single, LAN-only, and physically
+  controlled) would go further. See `services/platform-api/README.md`'s
   "How Secret Management works" for this and Module O's other gaps
   (rotation covers only what the platform itself issues, on demand;
   production-secret approval and injection auditing are missing).
-- **No Domain or Network management** (Modules P/Q). Module Q's absence
-  means `FR-062`'s *detection* half is missing: a cross-application
-  database connection attempt is prevented, but not detected or logged as
-  a policy violation. `FR-064` (database backups) is not implemented
+- **No Network management** (Module Q, beyond the per-application Docker
+  network isolation Module N already provides). Its absence means
+  `FR-062`'s *detection* half is missing: a cross-application database
+  connection attempt is prevented, but not detected or logged as a
+  policy violation. `FR-064` (database backups) is not implemented
   either — it needs a scheduler this platform doesn't have and a retention
   policy the requirement itself marks TBD. See
   `services/platform-api/README.md`'s "How Database Management works" for
@@ -319,9 +361,9 @@ These block real production use, not just missing polish:
   always reports this check as `skipped`, never a fake pass.
 - **The Admin Portal is intentionally scoped to MOD-19 (Application
   Catalog), not the full MOD-18 (Administration Portal)** the original
-  tech-stack decision named — MOD-18 needs the RBAC that doesn't exist.
-  See `apps/admin-portal/README.md`'s "Scope" section for the full
-  reasoning.
+  tech-stack decision named — MOD-18 needs the RBAC that, per `DEC-002`,
+  this platform will not have. See `apps/admin-portal/README.md`'s
+  "Scope" section for the full reasoning.
 
 ## Contributing / continuing this work
 

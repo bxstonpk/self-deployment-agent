@@ -14,11 +14,13 @@ The confirmed tech stack names this deliverable "Frontend Admin Portal
 (MOD-18)." This app deliberately does **not** build MOD-18 as specified —
 MOD-18 is the privileged surface for IT/Platform/Security Administrators to
 manage roles, policy, quotas, and approval workflow configuration, and none
-of that has a real backend yet (no distinct administrator roles exist
-anywhere in `platform-api` — every authorization check today is "are you an
-owner of this application," full stop; see `platform-api`'s own README).
-Building MOD-18's actual screens now would mean shipping buttons that call
-nothing real.
+of that has a real backend, by decision rather than by omission: per
+`docs/17_Decision_Log.md`'s `DEC-002` (Decided 2026-09-11), this internal,
+LAN-only platform has no distinct administrator roles anywhere in
+`platform-api`, and none are planned — every authorization check today is
+"are you an owner of this application," full stop; see `platform-api`'s
+own README. Building MOD-18's actual screens would mean shipping buttons
+that call nothing real, and nothing real is coming for them to call.
 
 Instead, this app is shaped like **MOD-19 (Application Catalog)** — the
 self-service, human-readable directory of applications and their status —
@@ -169,14 +171,16 @@ enforcing anything.
 
 ## Known gaps (documented, not hidden)
 
-- **Dev-mode identity only, not a real session.** Mirrors `platform-api`'s
-  own `DEC-001`-blocked auth stub — any email works, nothing is actually
-  authenticated. This app adds no security of its own; every real check
-  still happens server-side.
-- **No real RBAC-aware UI.** Every signed-in identity sees the exact same
-  screens and the exact same enabled/disabled buttons — there's no
-  Administrator-only view because there's no Administrator role to check
-  server-side yet (see **Scope** above).
+- **Self-declared identity only, not a real session — by decision, not a
+  gap.** Mirrors `platform-api`'s own `DEC-001` (Decided 2026-09-11): this
+  is an internal, LAN-only platform, so any email typed at sign-in is
+  trusted, nothing is password-checked. This app adds no security of its
+  own; every real check still happens server-side.
+- **No RBAC-aware UI, permanently.** Every signed-in identity sees the
+  exact same screens and the exact same enabled/disabled buttons — there's
+  no Administrator-only view because `DEC-002` (Decided 2026-09-11) is
+  that there is no Administrator role to check server-side, and none is
+  planned (see **Scope** above).
 - **`deployment.yaml` is a plain textarea**, not a real YAML editor with
   syntax highlighting, inline schema validation, or autocomplete from
   `company-deployment-skill/schemas/deployment.schema.json`. The server-side

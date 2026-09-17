@@ -207,7 +207,7 @@ Ranked by Overall Risk Rating and by how early in the SDLC each risk must be add
 | Mitigation | Validate the chosen implementation against a realistic pilot workload (at least one multi-service, database-backed app) before broad rollout; explicitly weight "IT operational workload" and "maintainability" in the architecture decision, per the stated business objective. |
 | Contingency | The architecture separates deployment.yaml (application contract) from the Deployment Controller implementation, so a future migration should be contained to the controller/infrastructure layers without changing the employee-facing contract; budget and timeline for this contingency should still be pre-acknowledged. |
 | Owner | IT Administrator |
-| Status | Open |
+| Status | **Mitigated (2026-09-11)** — `DEC-004`'s revision replaced the K3s+Knative candidate this risk was written about with the simplest option available: Docker Compose on a single existing on-prem host, already running and pilot-validated (the platform's own multi-service, database-backed applications have deployed against it throughout development). Residual risk is materially lower than the K3s+Knative scenario this entry described; not marked Closed only because "a poor operational fit" is never fully impossible. |
 
 #### RISK-007 — Cost Overrun on Always-On Control-Plane Infrastructure
 
@@ -237,7 +237,7 @@ Ranked by Overall Risk Rating and by how early in the SDLC each risk must be add
 | Mitigation | Factor current team skill level explicitly into the infrastructure decision (DEC-004) rather than treating it as a purely technical choice; budget for training or hiring before committing to a Kubernetes-family implementation; evaluate the Managed Container Platform option as a way to offload this skill requirement. |
 | Contingency | Engage a short-term specialized contractor or managed-service support contract to bridge the skills gap during initial rollout. |
 | Owner | IT Administrator |
-| Status | Open |
+| Status | **Closed (2026-09-11)** — `DEC-004` was revised: the final infrastructure choice does not involve K3s, Kubernetes, or Knative at all. The platform runs on Docker + Docker Compose on a single existing on-prem host, which this risk's own premise ("if the final infrastructure choice involves K3s, Kubernetes, or Knative") no longer applies to. |
 
 #### RISK-009 — Claude Code / AI Agent Behavior Change Breaks Skill Assumptions
 
@@ -267,7 +267,7 @@ Ranked by Overall Risk Rating and by how early in the SDLC each risk must be add
 | Mitigation | Keep the deployment.yaml contract and Platform API vendor-neutral even if the underlying Deployment Controller targets one implementation initially; document the abstraction boundary so the Deployment Controller can be swapped without changing the employee-facing contract. |
 | Contingency | Budget a defined migration project if lock-in becomes commercially unfavorable; the layered architecture (MCP → Platform API → Deployment Controller → Infrastructure) is specifically designed to make this contained. |
 | Owner | IT Administrator |
-| Status | Open |
+| Status | **Mitigated (2026-09-11)** — `DEC-004`'s revision landed on the least lock-in-prone option available: Docker on a single existing on-prem host, with no cloud provider, managed platform, or proprietary tooling in the picture at all. The abstraction boundary (`RuntimeEngine` interface in `internal/runtimeengine`) is already built and in production use, not just planned. |
 
 #### RISK-011 — Unclear Application Ownership When an Employee Departs
 

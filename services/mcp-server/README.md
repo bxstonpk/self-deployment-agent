@@ -283,19 +283,22 @@ Several of these mirror gaps already documented in
 logging, and monitoring don't exist on the Go side either, so nothing here
 can paper over them.
 
-- **Dev-mode identity, not real MCP session tokens** (`config.py`,
-  `platform_client.py`). Section 3 wants a short-lived, per-call,
-  revocable, IdP-backed token; `DEC-003` (the mechanism) is still Open, the
-  same way `DEC-001` blocks `platform-api`'s own dev-mode auth. This
-  server binds ONE employee identity to the whole process lifetime instead
-  — refuses to start unless `MCP_ENV=dev`, exactly mirroring
-  `platform-api`'s `DevOnlyGuard`.
-- **No real RBAC beyond ownership** (Section 4, Section 6's permission
-  matrix). There is no IT/Platform/Security Administrator or
-  Management/Auditor role anywhere in this platform — every tool call is
-  authorized exactly the way `platform-api`'s console path is: ownership
-  only, via `ApplicationOwner` rows. Section 6's matrix rows for elevated
-  roles are simply not enforceable yet (`DEC-001`/`DEC-002`).
+- **Self-declared identity, not real MCP session tokens — by decision**
+  (`config.py`, `platform_client.py`). Section 3 wants a short-lived,
+  per-call, revocable, IdP-backed token; `DEC-003` (Decided 2026-09-11) is
+  that this platform, being internal-only and LAN-only, won't have one —
+  same basis as `DEC-001` for `platform-api`'s own identity mechanism.
+  This server binds ONE employee identity to the whole process lifetime
+  instead — refuses to start unless `MCP_ENV=dev`, exactly mirroring
+  `platform-api`'s `DevOnlyGuard` (a name left over from when this was
+  assumed temporary; it's the permanent value to run with).
+- **No real RBAC beyond ownership, permanently** (Section 4, Section 6's
+  permission matrix). There is no IT/Platform/Security Administrator or
+  Management/Auditor role anywhere in this platform, by decision
+  (`DEC-002`, Decided 2026-09-11) — every tool call is authorized exactly
+  the way `platform-api`'s console path is: ownership only, via
+  `ApplicationOwner` rows. Section 6's matrix rows for elevated roles are
+  not enforceable, and none are planned.
 - **Idempotency is best-effort and non-durable** (`idempotency.py`). An
   in-process dict with a TTL, scoped to this one server instance's
   lifetime — protects the single most common agentic-retry scenario (a
@@ -332,24 +335,29 @@ can paper over them.
   the validation engine's rules change, this description can silently
   drift out of sync until someone updates it here too.
 - **Production approval (Section 12) has no independent-approver
-  guarantee** — same gap as `platform-api`'s `DecideApproval`: the
+  guarantee** — same basis as `platform-api`'s `DecideApproval`: the
   approver isn't required to be a different person than the requester,
-  which needs real RBAC that doesn't exist.
+  which would need the RBAC that `DEC-002` decides this platform will not
+  have.
 - **`get_application_status` answers for any signed-in employee, not just
   owners.** Section 13.7 limits it to owners and contributors, but the
   Platform API endpoints it reads (`GET /applications/{id}`,
   `.../deployments/latest`) aren't owner-gated — the same catalog-wide
   visibility the Admin Portal has. Only the secret names are owner-only,
-  which is why a non-owner gets `secrets: null` rather than an error.
-  Closing this properly means deciding what employees may see of each
-  other's applications, which is RBAC (`DEC-001`/`DEC-002`) territory.
+  which is why a non-owner gets `secrets: null` rather than an error. This
+  specific endpoint not being owner-gated is a genuine, still-open
+  implementation gap — unlike the broader question of RBAC-tiered
+  visibility, which `DEC-001`/`DEC-002` already settled (no
+  administrator-tier visibility is coming); this is only about whether
+  `get_application_status` should use the same ownership check other
+  endpoints already have.
 - **No transport beyond stdio.** Section 2's "exact transport binding...
   is an implementation decision" is left as stdio only (the most common
   local Claude Code integration) — `mcp.run(transport="stdio")` in
   `server.py`. Remote HTTP/SSE transport, and the hosting-topology
   decision that goes with it, is future work, not designed against here.
 
-## Dev-mode identity (temporary — see DEC-003)
+## Self-declared identity (permanent — see DEC-003)
 
 ```
 MCP_ENV=dev
@@ -359,11 +367,14 @@ MCP_EMPLOYEE_DEPARTMENT=Engineering     # optional
 ```
 
 Every tool call in this server process acts as this one employee — there
-is no per-call identity, because there is no real MCP session-token
-mechanism yet (Section 3, `DEC-003`). This is a process-startup binding,
-not a security boundary of its own; the Platform API's dev-mode auth stub
-(`platform-api`'s own `DEC-001` gap) is what actually authenticates every
-downstream call.
+is no per-call identity, because per `DEC-003` (Decided 2026-09-11) there
+won't be a real MCP session-token mechanism (Section 3): this platform is
+internal-only and LAN-only, so a process-startup binding is the permanent
+model, not a stopgap. This is not a security boundary of its own; the
+Platform API's own identity mechanism (`platform-api`'s `DEC-001`,
+likewise Decided) is what actually authenticates every downstream call.
+`MCP_ENV=dev` is, as in `platform-api`, a name left over from when this
+was assumed temporary — still the correct value to run with.
 
 ## Running locally
 
