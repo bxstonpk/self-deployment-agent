@@ -115,7 +115,8 @@ func main() {
 	// Module R: continuously re-check every already-Running instance's
 	// health (FR-084) and restart one that starts failing it (FR-085) —
 	// on top of the checks deploy/resume/restart/cold-start already run.
-	healthService := service.NewHealthMonitorService(applicationRepo, deploymentRepo, serviceStateRepo, resources, runtime, notificationService)
+	healthService := service.NewHealthMonitorService(applicationRepo, deploymentRepo, serviceStateRepo, resources, runtime, notificationService,
+		deployService, cfg.PostActivationRollbackWindow)
 	// Module T: the proxy counts every request it forwards, and the
 	// sampler below reads each running container's CPU and memory.
 	trafficRecorder := service.NewTrafficRecorder()

@@ -940,3 +940,157 @@ func TestInitiateDeploy_AServiceFailingToStart_StopsTheOnesAlreadyStarted(t *tes
 		t.Errorf("expected the deployment Failed, got %q", d.Status)
 	}
 }
+
+// newDeployServiceForAutoRollback is the fixture for
+// TriggerAutomaticRollback's own tests: unlike newDeployService, it also
+// wires a real fakeNotificationRecorder so those tests can assert on
+// FR-099's owner notifications, the same way
+// newDeployServiceWithNotifications does for the forward-deploy path.
+func newDeployServiceForAutoRollback(app domain.Application, build domain.Build, ownerID string) (
+	*service.DeploymentService, *fakeLifecycleRepo, *fakeDeploymentRepo, *fakeRuntime, *fakeBuildRepo, *fakeNotificationRecorder,
+) {
+	apps := newFakeLifecycleRepo(app)
+	owners := newFakeOwnerRepo()
+	owners.owners[app.ID] = []domain.ApplicationOwner{{
+		ApplicationID: app.ID, UserID: ownerID, OwnershipRole: domain.OwnerRolePrimary, Status: "active",
+	}}
+	builds := newFakeBuildRepo()
+	builds.byID[build.ID] = build
+	builds.byApp[app.ID] = build.ID
+	deployments := newFakeDeploymentRepo()
+	approvals := newFakeApprovalRepo()
+	scanner := newPassingScanner()
+	runtime := newHealthyRuntime()
+	scale := &fakeScaleInitializer{}
+	notifications := newFakeNotificationRecorder()
+
+	svc := service.NewDeploymentService(apps, owners, builds, deployments, approvals, scanner, runtime, scale, newFakeAuditRecorder(), notifications, newFakeDatabaseService())
+	return svc, apps, deployments, runtime, builds, notifications
+}
+
+func TestTriggerAutomaticRollback_Success_RollsBackToLastKnownGood(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, lifecycle, deployments, runtime, builds, notifications := newDeployServiceForAutoRollback(app, build, "owner-1")
+
+	v1, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup (first deploy): %v", err)
+	}
+	v2 := deployASecondVersion(t, svc, builds, "app-1", "owner-1")
+	v2ContainerID := v2.Containers["api"].ContainerID
+
+	rolledBack, err := svc.TriggerAutomaticRollback(context.Background(), "app-1", "The api instance kept failing its health check.")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rolledBack.Status != domain.DeploymentRunning {
+		t.Errorf("expected the automatic rollback Running, got %q (failure=%v)", rolledBack.Status, rolledBack.FailureReason)
+	}
+	if rolledBack.BuildID != v1.BuildID {
+		t.Errorf("expected the automatic rollback to redeploy v1's build %q, got %q", v1.BuildID, rolledBack.BuildID)
+	}
+	if rolledBack.ID == v1.ID || rolledBack.ID == v2.ID {
+		t.Errorf("expected a NEW deployment record, not a reused one, for auditability")
+	}
+	if rolledBack.RequestedBy != "owner-1" {
+		t.Errorf("expected the automatic rollback attributed to the application's primary owner, got %q", rolledBack.RequestedBy)
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusRunning {
+		t.Errorf("expected application Running after a successful automatic rollback, got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+	if deployments.byID[v2.ID].Status != domain.DeploymentSuperseded {
+		t.Errorf("expected v2 (the version that regressed) marked Superseded, got %q", deployments.byID[v2.ID].Status)
+	}
+	found := false
+	for _, stopped := range runtime.stopped {
+		if stopped == v2ContainerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected v2's container to be stopped on rollback cutover, stopped=%v", runtime.stopped)
+	}
+
+	var sawRollingBack, sawSucceeded bool
+	for _, c := range notifications.all() {
+		if c.Category != domain.NotificationHealthRemediation {
+			continue // deployAndActivate's own generic "deployment succeeded" notification is expected too — not what this asserts on
+		}
+		if strings.Contains(c.Title, "automatically rolling back") {
+			sawRollingBack = true
+		}
+		if strings.Contains(c.Title, "automatic rollback succeeded") {
+			sawSucceeded = true
+		}
+	}
+	if !sawRollingBack || !sawSucceeded {
+		t.Errorf("expected both a 'rolling back' and a 'succeeded' owner notification, got %+v", notifications.all())
+	}
+}
+
+func TestTriggerAutomaticRollback_NoPriorVersion_MarksApplicationFailed(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, lifecycle, deployments, _, _, notifications := newDeployServiceForAutoRollback(app, build, "owner-1")
+
+	v1, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err = svc.TriggerAutomaticRollback(context.Background(), "app-1", "The api instance kept failing its health check.")
+	if !errors.Is(err, domain.ErrInvalidRollbackTarget) {
+		t.Fatalf("expected ErrInvalidRollbackTarget, got %v", err)
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusFailed {
+		t.Errorf("expected application marked Failed when there is no prior version to roll back to (FR-099's alternative flow), got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+	if deployments.byID[v1.ID].Status != domain.DeploymentFailed {
+		t.Errorf("expected the application's only deployment marked Failed, got %q", deployments.byID[v1.ID].Status)
+	}
+	found := false
+	for _, c := range notifications.all() {
+		if c.Category == domain.NotificationHealthRemediation {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected an owner notification explaining there was nothing to automatically roll back to")
+	}
+}
+
+func TestTriggerAutomaticRollback_OnlyPriorBuildPurged_MarksApplicationFailed(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, lifecycle, _, _, builds, _ := newDeployServiceForAutoRollback(app, build, "owner-1")
+
+	v1, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatalf("setup (first deploy): %v", err)
+	}
+	deployASecondVersion(t, svc, builds, "app-1", "owner-1")
+
+	// Simulate v1's build artifact having been purged by retention (FR-097)
+	// after it was superseded — the same FR-100 eligibility check the
+	// manual Rollback path applies.
+	v1Build := builds.byID[v1.BuildID]
+	v1Build.Status = domain.BuildFailed
+	builds.byID[v1.BuildID] = v1Build
+
+	_, err = svc.TriggerAutomaticRollback(context.Background(), "app-1", "The api instance kept failing its health check.")
+	if !errors.Is(err, domain.ErrInvalidRollbackTarget) {
+		t.Fatalf("expected ErrInvalidRollbackTarget, got %v", err)
+	}
+	if lifecycle.apps["app-1"].LifecycleStatus != domain.StatusFailed {
+		t.Errorf("expected application marked Failed when the only otherwise-eligible version's build isn't usable, got %q", lifecycle.apps["app-1"].LifecycleStatus)
+	}
+}
+
+func TestTriggerAutomaticRollback_ApplicationNotRunning_Rejected(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, _, _, _, _ := newDeployServiceForAutoRollback(app, build, "owner-1")
+	// Never deployed — builtApp's fixture starts at StatusBuild, never reaches Running.
+
+	_, err := svc.TriggerAutomaticRollback(context.Background(), "app-1", "reason")
+	if !errors.Is(err, domain.ErrInvalidLifecycleTransition) {
+		t.Fatalf("expected ErrInvalidLifecycleTransition, got %v", err)
+	}
+}

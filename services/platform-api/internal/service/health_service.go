@@ -12,12 +12,14 @@
 // one instance that actually failed.
 //
 // Scope, documented not hidden:
-//   - FR-099 (automatic rollback triggered by a health regression) builds
-//     on this but isn't included here: distinguishing "a freshly activated
-//     version regressed" from "an instance flaked" needs its own scoping
-//     (a time window since Traffic Activation, and picking the rollback
-//     target), and isn't required by FR-084/FR-085's own acceptance
-//     criteria. See DeploymentService.Rollback's doc comment for this gap.
+//   - FR-099 (automatic rollback triggered by a health regression) is now
+//     wired: when remediation on a deployment still within its own
+//     postActivationRollbackWindow is exhausted (the exception and
+//     alternative flows below), this calls
+//     DeploymentService.TriggerAutomaticRollback instead of only
+//     escalating — distinguishing "a freshly activated version regressed"
+//     from "an established one's instance flaked", which keeps the
+//     existing restart-in-place/escalate behavior for the latter.
 //   - "Remediation event is logged (Module S)" (FR-085 step 4) is
 //     satisfied by Module S continuing to capture the replacement
 //     container's output the same as any other — every StartContainer
@@ -72,6 +74,14 @@ type ApplicationNamer interface {
 	GetByID(ctx context.Context, id string) (domain.Application, error)
 }
 
+// AutomaticRollbackTrigger is FR-099's entry point into Module V's
+// existing rollback mechanics — see
+// DeploymentService.TriggerAutomaticRollback's own doc comment for what
+// it does and the one gap it's carried over from the manual Rollback path.
+type AutomaticRollbackTrigger interface {
+	TriggerAutomaticRollback(ctx context.Context, applicationID, reason string) (domain.Deployment, error)
+}
+
 type HealthMonitorService struct {
 	apps        ApplicationNamer
 	deployments RunningDeploymentLookup
@@ -79,6 +89,12 @@ type HealthMonitorService struct {
 	resources   RuntimeWirer
 	runtime     RuntimeEngine
 	notify      NotificationRecorder
+	rollback    AutomaticRollbackTrigger
+
+	// postActivationRollbackWindow is FR-099's "shortly after Traffic
+	// Activation" — an engineering default, same status as the other
+	// timeouts in this file: nothing in the requirements specifies it.
+	postActivationRollbackWindow time.Duration
 
 	mu           sync.Mutex
 	failures     map[string]int         // deploymentID+"/"+serviceName -> consecutive failed sweeps
@@ -88,10 +104,12 @@ type HealthMonitorService struct {
 
 func NewHealthMonitorService(
 	apps ApplicationNamer, deployments RunningDeploymentLookup, states ServiceRuntimeStateRepository,
-	resources RuntimeWirer, runtime RuntimeEngine, notify NotificationRecorder,
+	resources RuntimeWirer, runtime RuntimeEngine, notify NotificationRecorder, rollback AutomaticRollbackTrigger,
+	postActivationRollbackWindow time.Duration,
 ) *HealthMonitorService {
 	return &HealthMonitorService{
 		apps: apps, deployments: deployments, states: states, resources: resources, runtime: runtime, notify: notify,
+		rollback: rollback, postActivationRollbackWindow: postActivationRollbackWindow,
 		failures: make(map[string]int), remediations: make(map[string][]time.Time), paused: make(map[string]bool),
 	}
 }
@@ -173,10 +191,12 @@ func (s *HealthMonitorService) remediate(ctx context.Context, st domain.ServiceR
 		log.Printf("health: %s/%s has been remediated %d times in the last %s; pausing further automatic remediation",
 			st.DeploymentID, st.ServiceName, remediationCircuitLimit, remediationCircuitWindow)
 		if !alreadyNotified {
-			s.escalate(ctx, deployment.ApplicationID, "Automatic remediation paused",
-				fmt.Sprintf("%s has failed health checks and been automatically restarted %d times in the last %s. "+
-					"To avoid masking a deeper problem, the platform stopped it rather than restarting it again — it currently has no running instance. Please investigate, then restart or redeploy.",
-					st.ServiceName, remediationCircuitLimit, remediationCircuitWindow))
+			reason := fmt.Sprintf("The %s instance has failed health checks and been automatically restarted %d times in the last %s.",
+				st.ServiceName, remediationCircuitLimit, remediationCircuitWindow)
+			if !s.tryAutomaticRollback(ctx, deployment, reason) {
+				s.escalate(ctx, deployment.ApplicationID, "Automatic remediation paused",
+					reason+" To avoid masking a deeper problem, the platform stopped it rather than restarting it again — it currently has no running instance. Please investigate, then restart or redeploy.")
+			}
 		}
 		return false
 	}
@@ -194,16 +214,22 @@ func (s *HealthMonitorService) remediate(ctx context.Context, st domain.ServiceR
 	})
 	if err != nil {
 		log.Printf("health: failed to start replacement instance of %s/%s: %v", st.DeploymentID, st.ServiceName, err)
-		s.escalate(ctx, deployment.ApplicationID, "Automatic remediation failed",
-			fmt.Sprintf("%s failed its health check, and the platform could not start a replacement instance. It currently has no running instance — please investigate and restart or redeploy.", st.ServiceName))
+		reason := fmt.Sprintf("The %s instance failed its health check, and the platform could not start a replacement instance.", st.ServiceName)
+		if !s.tryAutomaticRollback(ctx, deployment, reason) {
+			s.escalate(ctx, deployment.ApplicationID, "Automatic remediation failed",
+				reason+" It currently has no running instance — please investigate and restart or redeploy.")
+		}
 		return false
 	}
 	checkURL := fmt.Sprintf("http://host.docker.internal:%d", running.HostPort)
 	if err := s.runtime.HealthCheck(ctx, checkURL, remediationHealthCheckTimeout); err != nil {
 		log.Printf("health: replacement instance of %s/%s also failed its health check: %v", st.DeploymentID, st.ServiceName, err)
 		_ = s.runtime.Stop(ctx, running.ContainerID)
-		s.escalate(ctx, deployment.ApplicationID, "Automatic remediation failed",
-			fmt.Sprintf("%s failed its health check, and the replacement instance also failed to become healthy. It currently has no running instance — please investigate and restart or redeploy.", st.ServiceName))
+		reason := fmt.Sprintf("The %s instance failed its health check, and the replacement instance also failed to become healthy.", st.ServiceName)
+		if !s.tryAutomaticRollback(ctx, deployment, reason) {
+			s.escalate(ctx, deployment.ApplicationID, "Automatic remediation failed",
+				reason+" It currently has no running instance — please investigate and restart or redeploy.")
+		}
 		return false
 	}
 	if err := s.states.SetContainer(ctx, st.DeploymentID, st.ServiceName, running.ContainerID, running.HostPort); err != nil {
@@ -217,6 +243,25 @@ func (s *HealthMonitorService) remediate(ctx context.Context, st domain.ServiceR
 		fmt.Sprintf("The %s instance stopped responding to health checks and was automatically replaced. It is healthy again.", st.ServiceName),
 		"application", deployment.ApplicationID)
 	log.Printf("health: replaced unhealthy instance of %s/%s", st.DeploymentID, st.ServiceName)
+	return true
+}
+
+// tryAutomaticRollback implements FR-099's trigger condition: only a
+// deployment still within its own postActivationRollbackWindow is treated
+// as "the newly activated version regressed" rather than "an established
+// one's instance flaked" — the latter has no well-defined "last
+// known-good version" to roll back to and gets the caller's own
+// escalate() treatment instead. Returns true if it handled things itself
+// (attempted, successfully or not), so the caller must not also escalate.
+func (s *HealthMonitorService) tryAutomaticRollback(ctx context.Context, deployment domain.Deployment, reason string) bool {
+	if deployment.CompletedAt == nil || time.Since(*deployment.CompletedAt) >= s.postActivationRollbackWindow {
+		return false
+	}
+	log.Printf("health: deployment %s (application %s) activated %s ago and still failing; triggering FR-099 automatic rollback",
+		deployment.ID, deployment.ApplicationID, time.Since(*deployment.CompletedAt).Round(time.Second))
+	if _, err := s.rollback.TriggerAutomaticRollback(ctx, deployment.ApplicationID, reason); err != nil {
+		log.Printf("health: automatic rollback for application %s: %v", deployment.ApplicationID, err)
+	}
 	return true
 }
 
