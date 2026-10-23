@@ -331,7 +331,18 @@ func (r *DockerRuntime) StartDatabase(ctx context.Context, spec domain.DatabaseS
 		return "", err
 	}
 	cfg := &container.Config{Image: spec.ImageRef, Env: env}
-	hostCfg := &container.HostConfig{NetworkMode: container.NetworkMode(spec.NetworkID)}
+	// unless-stopped: Docker starts it again when the host reboots. Nothing
+	// else would — the health sweeper replaces application containers, not
+	// databases — so after the first reboot of a real host every application
+	// came back healthy but disconnected from its stopped database, and its
+	// backups failed. A database is only ever stopped by being removed, so
+	// this never revives one on purpose. Application containers get no policy:
+	// restarted, they'd come up on a new host port the platform doesn't
+	// route to, and the health sweeper already replaces them.
+	hostCfg := &container.HostConfig{
+		NetworkMode:   container.NetworkMode(spec.NetworkID),
+		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
+	}
 	netCfg := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
 			spec.NetworkID: {NetworkID: spec.NetworkID},

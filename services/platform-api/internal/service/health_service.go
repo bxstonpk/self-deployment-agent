@@ -64,6 +64,13 @@ const (
 	// systemic issue."
 	remediationCircuitLimit  = 3
 	remediationCircuitWindow = 5 * time.Minute
+
+	// defaultConcurrentStartWait is how long a remediation whose own start
+	// failed waits to see whether a concurrent cold start put an instance in
+	// place instead (see adoptedConcurrentStart). Longer than the cold
+	// start's own 15s health check, which it records its container after.
+	defaultConcurrentStartWait = 20 * time.Second
+	concurrentStartPoll        = 500 * time.Millisecond
 )
 
 // ApplicationNamer is the narrow read this service needs for a
@@ -95,6 +102,7 @@ type HealthMonitorService struct {
 	// Activation" — an engineering default, same status as the other
 	// timeouts in this file: nothing in the requirements specifies it.
 	postActivationRollbackWindow time.Duration
+	concurrentStartWait          time.Duration
 
 	mu           sync.Mutex
 	failures     map[string]int         // deploymentID+"/"+serviceName -> consecutive failed sweeps
@@ -110,9 +118,14 @@ func NewHealthMonitorService(
 	return &HealthMonitorService{
 		apps: apps, deployments: deployments, states: states, resources: resources, runtime: runtime, notify: notify,
 		rollback: rollback, postActivationRollbackWindow: postActivationRollbackWindow,
-		failures: make(map[string]int), remediations: make(map[string][]time.Time), paused: make(map[string]bool),
+		concurrentStartWait: defaultConcurrentStartWait,
+		failures:            make(map[string]int), remediations: make(map[string][]time.Time), paused: make(map[string]bool),
 	}
 }
+
+// SetConcurrentStartWait overrides defaultConcurrentStartWait — for tests
+// of a start that fails with nothing else stepping in.
+func (s *HealthMonitorService) SetConcurrentStartWait(d time.Duration) { s.concurrentStartWait = d }
 
 func healthStateKey(deploymentID, serviceName string) string {
 	return deploymentID + "/" + serviceName
@@ -213,6 +226,11 @@ func (s *HealthMonitorService) remediate(ctx context.Context, st domain.ServiceR
 		Log: domain.LogSource{ApplicationID: deployment.ApplicationID, DeploymentID: st.DeploymentID, Service: st.ServiceName},
 	})
 	if err != nil {
+		if s.adoptedConcurrentStart(ctx, st) {
+			log.Printf("health: %s/%s was cold-started by a request while being replaced; keeping that instance", st.DeploymentID, st.ServiceName)
+			s.recordRemediation(key)
+			return true
+		}
 		log.Printf("health: failed to start replacement instance of %s/%s: %v", st.DeploymentID, st.ServiceName, err)
 		reason := fmt.Sprintf("The %s instance failed its health check, and the platform could not start a replacement instance.", st.ServiceName)
 		if !s.tryAutomaticRollback(ctx, deployment, reason) {
@@ -244,6 +262,34 @@ func (s *HealthMonitorService) remediate(ctx context.Context, st domain.ServiceR
 		"application", deployment.ApplicationID)
 	log.Printf("health: replaced unhealthy instance of %s/%s", st.DeploymentID, st.ServiceName)
 	return true
+}
+
+// adoptedConcurrentStart reports whether another path put a running instance
+// in place while remediation was between instances. Clearing the container
+// makes the service look scaled to zero, so a request arriving right then
+// cold-starts it (ScaleService.EnsureRunning) under the same container name,
+// and remediation's own start fails with a name conflict. Found after a real
+// host restart, with traffic arriving: the cold-started instance was serving,
+// but remediation took its own failed start as the service being down,
+// triggered FR-099's rollback, and left the application marked failed. The
+// cold start records its container only after its own health check passes,
+// so this waits for that rather than looking once.
+func (s *HealthMonitorService) adoptedConcurrentStart(ctx context.Context, st domain.ServiceRuntimeState) bool {
+	deadline := time.Now().Add(s.concurrentStartWait)
+	for {
+		cur, err := s.states.Get(ctx, st.DeploymentID, st.ServiceName)
+		if err == nil && cur.ContainerID != nil {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(concurrentStartPoll):
+		}
+	}
 }
 
 // tryAutomaticRollback implements FR-099's trigger condition: only a
