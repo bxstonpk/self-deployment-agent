@@ -199,7 +199,14 @@ func (r *DockerRuntime) Stop(ctx context.Context, containerID string) error {
 	// last lines to be stored before the container — and with it Docker's
 	// own copy of its output — is gone.
 	r.waitForLogs(containerID)
-	if err := r.cli.ContainerRemove(ctx, containerID, types.ContainerRemoveOptions{Force: true}); err != nil {
+	// RemoveVolumes: a container's anonymous volumes go with it. The MySQL
+	// and Postgres images declare their data directory a VOLUME, so without
+	// this a deleted application's database files stayed on the host for
+	// good — found on the first real LAN host as 12 orphaned volumes, 2.4 GB
+	// of deleted applications' data, while Deprovision's own comment said
+	// purged. No platform container uses a named volume; nothing here is
+	// meant to outlive its container.
+	if err := r.cli.ContainerRemove(ctx, containerID, types.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
 		return fmt.Errorf("remove container: %w", err)
 	}
 	return nil

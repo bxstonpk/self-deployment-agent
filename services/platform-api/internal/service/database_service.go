@@ -197,6 +197,12 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 	if err := s.runtime.WaitDatabaseReady(ctx, containerID, spec, databaseReadyTimeout); err != nil {
 		if stopErr := s.runtime.Stop(ctx, containerID); stopErr != nil {
 			log.Printf("database: failed to stop unready container %s for application %s: %v", containerID, app.ID, stopErr)
+		} else if netErr := s.runtime.RemoveNetwork(ctx, networkID); netErr != nil {
+			// Nothing is attached any more, so unlike the StartDatabase
+			// failure above there is no race. Left in place, the network
+			// outlived the application: nothing was ever provisioned, so
+			// Deprovision had nothing to remove it from.
+			log.Printf("database: failed to remove network %s for application %s: %v", networkID, app.ID, netErr)
 		}
 		return domain.ProvisionedDatabase{}, err
 	}
