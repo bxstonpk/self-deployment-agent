@@ -104,6 +104,15 @@ newer ones automatically. Refresh them on a schedule (FR-022):
 docker pull node:22-alpine golang:1.25-alpine python:3.12-alpine alpine:3.21 nginx:1.30-alpine mysql:8.4 aquasec/trivy:latest
 ```
 
+**Seal the encryption key with the host's TPM** (`DEC-006`). After the
+first start, follow `deploy/host/README.md`:
+1. Seal `PLATFORM_SECRET_KEY` with `tpm-seal-key.sh` and keep the escrow
+   copy offline.
+2. Enable the unseal-at-boot unit.
+3. Remove the key from `.env`.
+4. Always start with `-f docker-compose.yml -f
+   deploy/host/docker-compose.tpm.yml`.
+
 **Approving production deployments.** Production deployments wait for
 the administrator's decision, signed with a private key that never leaves
 their machine (`DEC-017`).

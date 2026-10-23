@@ -257,7 +257,9 @@ README for exactly what was tested and how):
   - **alerts:** announced on start, escalation and clear, with hourly
     reminders (`DEC-028`, `verify_alerts.py`);
   - **signed production approval:** the administrator signs with a private
-    key only they hold (`DEC-017`, `verify_signed_approval.py`).
+    key only they hold (`DEC-017`, `verify_signed_approval.py`);
+  - **the encryption key sealed with the host's TPM** (`DEC-006`,
+    `deploy/host/verify-tpm.sh`, verified against a software TPM).
 - Authentication — every Claude Code machine fetches a key before it can
   deploy (`DEC-001`/`DEC-003`, revised 2026-10-23). Employees register
   with a password and IT's enrollment code, and sign in to the Admin
@@ -419,15 +421,11 @@ decisions above:
 - **`deploy_application`/the admin portal's Deploy runs synchronously**,
   not as a real queued/async job — fine at today's scale, a real gap
   before this could serve many concurrent deployments.
-- **The secret store's key is not managed.** Module O encrypts every
-  secret — and every generated database password — with one static key
-  from `PLATFORM_SECRET_KEY`. There is no key rotation or re-encryption
-  tool, and anyone who can read platform-api's environment can read the
-  key and, with it, every secret. The platform database alone no longer
-  yields anything, which is what the requirements ask of the store; a
-  managed backend chosen under `DEC-006` (still Open, though its urgency
-  is lower now that the host is single, LAN-only, and physically
-  controlled) would go further. See `services/platform-api/README.md`'s
+- **The secret store's key is sealed with the host's TPM** (`DEC-006`,
+  `deploy/host/README.md`). It is unsealed into RAM at boot, with an
+  offline escrow copy for recovery. There is still no key rotation or
+  re-encryption tool, and root on the running host can read the unsealed
+  key. See `services/platform-api/README.md`'s
   "How Secret Management works" for this and Module O's other gaps
   (rotation covers only what the platform itself issues, on demand;
   production-secret approval and injection auditing are missing).

@@ -1463,13 +1463,15 @@ socket check would call it ready a moment too early.
 
 ### Known gaps
 
-- **The key is not managed.** One static key from an environment
-  variable: no rotation, no re-encryption tool, and anyone who can read
-  platform-api's environment (`docker inspect` on its container) can read
-  it. Changing it makes every stored secret unreadable — which fails
-  closed, as above, but is still an outage for every application with a
-  secret. Choosing a real backend is `DEC-006`, still Open;
-  `internal/secretbox` is the seam it would replace.
+- **The key is sealed with the host's TPM** (`DEC-006`, decided
+  2026-10-23). On the platform host it is unsealed into RAM at boot and
+  read from `PLATFORM_SECRET_KEY_FILE`, so it is neither in `.env` nor in
+  the container's environment. Setup, recovery and verification are in
+  `deploy/host/README.md`. Without that setup (a development machine),
+  `PLATFORM_SECRET_KEY` still works, and setting both is refused. Still
+  missing: **rotation**. There is no re-encryption tool, so changing the
+  key makes every stored secret (and every backup) unreadable. That
+  fails closed, as above, but is an outage.
 - **Anyone with access to the Docker daemon can read injected values**
   from a running container's environment. That is inherent to FR-067's
   environment-variable delivery, and Docker daemon access is

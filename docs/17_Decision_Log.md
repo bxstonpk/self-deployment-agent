@@ -39,7 +39,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-003 | Identity & Access | MCP/AI-agent authentication mechanism | Security Administrator + Platform Administrator | Before Technical Design | **Decided (revised 2026-10-23)** |
 | DEC-004 | Infrastructure & Hosting | Final infrastructure implementation choice | Platform Administrator + IT Administrator (sign-off: Management) | Before Solution Architecture sign-off | **Decided (revised)** |
 | DEC-005 | Infrastructure & Hosting | Container registry & image vulnerability scanning tooling | IT Administrator + Security Administrator | Before Technical Design | **Decided** |
-| DEC-006 | Infrastructure & Hosting | Secret management backend | Security Administrator + IT Administrator | Before Technical Design | Open |
+| DEC-006 | Infrastructure & Hosting | Secret management backend | Security Administrator + IT Administrator | Before Technical Design | **Decided (2026-10-23)** |
 | DEC-007 | Infrastructure & Hosting | Domain naming, DNS zone ownership, TLS certificate authority | IT Administrator | Before Technical Design | **Deferred** |
 | DEC-008 | Infrastructure & Hosting | Environment topology beyond dev/staging/production | Platform Administrator | Before Solution Architecture sign-off | Open |
 | DEC-009 | Infrastructure & Hosting | Multi-region / cross-datacenter high availability requirement | IT Administrator + Management / Auditor | Before Solution Architecture sign-off | **Decided** |
@@ -149,7 +149,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) HashiCorp Vault (self-hosted); (b) cloud-native secrets manager; (c) platform-native secret store scoped to the chosen container platform. |
 | Recommendation | No default recommended without knowing whether the company already standardizes on a secrets tool; flag as a joint decision with the Security Administrator once DEC-004 narrows the infrastructure options. |
 | Decision Owner | Security Administrator + IT Administrator |
-| Status | Open |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **The platform's encryption key is bound to the host's TPM.** Three options were proposed on 2026-10-23: a keyring with a key file, OpenBao/Vault, or the TPM. The platform owner chose the TPM.<br>• `PLATFORM_SECRET_KEY` is sealed with the host's TPM 2.0 (`deploy/host/tpm-seal-key.sh`, optionally also bound to PCRs).<br>• It is unsealed into RAM at boot (`company-platform-unseal.service`), and platform-api reads it from that file (`PLATFORM_SECRET_KEY_FILE`) instead of `.env`. It is then neither on disk in the clear nor in the container's environment.<br>• A passphrase-encrypted escrow copy, kept offline, is the recovery path if the TPM or mainboard is lost.<br>• Not provided: key rotation/re-encryption, and protection against root on the running host. See `deploy/host/README.md`. |
 | Note (2026-09-11) | DEC-004 revised to a single, LAN-only, physically-controlled host, which likely reduces the urgency here (the current single-static-key encryption already in place — see Module O's README — may be an acceptable permanent posture for this deployment rather than an MVP stopgap). Not decided, only noted: this still needs an explicit answer from Security, the same as before. |
 | Target Phase | Before Technical Design |
 

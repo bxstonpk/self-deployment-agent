@@ -1,0 +1,20 @@
+# Unseals the Company Platform's secret key with this machine's TPM at boot,
+# into RAM, before Docker starts the platform (DEC-006). Install:
+#   sudo install -m 755 tpm-unseal-key.sh /opt/company-platform/
+#   sudo install -m 644 company-platform-unseal.service /etc/systemd/system/
+#   sudo systemctl enable --now company-platform-unseal
+[Unit]
+Description=Unseal the Company Platform secret key with the TPM
+ConditionPathExists=/etc/company-platform/seal.pub
+After=tpm2.target
+Wants=tpm2.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/company-platform/tpm-unseal-key.sh
+ExecStop=/bin/rm -f /run/company-platform/secret-key
+
+[Install]
+WantedBy=multi-user.target

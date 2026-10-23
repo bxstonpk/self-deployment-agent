@@ -1,0 +1,14 @@
+# Use with the main file on a host whose platform secret key is sealed with
+# its TPM (DEC-006, see README.md in this directory):
+#
+#   docker compose -f docker-compose.yml -f deploy/host/docker-compose.tpm.yml up -d
+#
+# platform-api reads the key from the file the host unsealed at boot, which
+# lives only in RAM (/run is a tmpfs), instead of from .env.
+services:
+  platform-api:
+    environment:
+      PLATFORM_SECRET_KEY: ""
+      PLATFORM_SECRET_KEY_FILE: /run/secrets/platform-secret-key
+    volumes:
+      - ${PLATFORM_SECRET_KEY_PATH:-/run/company-platform/secret-key}:/run/secrets/platform-secret-key:ro
