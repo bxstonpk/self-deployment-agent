@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, Link, NavLink, useLocation } from "react-router-dom";
 import { useIdentity } from "./context/IdentityContext";
-import { listNotifications } from "./api/client";
+import { getMe, listNotifications } from "./api/client";
 import { SignIn } from "./pages/SignIn";
 import { Register } from "./pages/Register";
 import { DeviceApproval } from "./pages/DeviceApproval";
@@ -12,6 +12,7 @@ import { RegisterApplication } from "./pages/RegisterApplication";
 import { AuditLog } from "./pages/AuditLog";
 import { Notifications } from "./pages/Notifications";
 import { Reports } from "./pages/Reports";
+import { Dashboard } from "./pages/Dashboard";
 import "./App.css";
 
 // Polled rather than pushed — there's no websocket/SSE channel anywhere in
@@ -34,6 +35,27 @@ function RequireIdentity({ children }: { children: React.ReactNode }) {
 function Layout({ children }: { children: React.ReactNode }) {
   const { identity, signOut } = useIdentity();
   const [unreadCount, setUnreadCount] = useState(0);
+  // Whether to offer the administrators' dashboard. Only a hint for the
+  // menu: the Platform API refuses the dashboard to anyone else anyway.
+  // Keyed by the session it was answered for, so signing out or in as
+  // someone else never shows the previous account's menu.
+  const [adminSession, setAdminSession] = useState<string | null>(null);
+  const isAdmin = identity !== null && adminSession === identity.token;
+
+  useEffect(() => {
+    if (!identity) return;
+    let cancelled = false;
+    getMe(identity)
+      .then((me) => {
+        if (!cancelled) setAdminSession(me.is_admin ? identity.token : null);
+      })
+      .catch(() => {
+        // No menu entry is the safe answer when we can't tell.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity]);
 
   useEffect(() => {
     if (!identity) return;
@@ -81,6 +103,12 @@ function Layout({ children }: { children: React.ReactNode }) {
           </Link>
         </div>
         <nav className="side-nav">
+          {isAdmin && (
+            <NavLink to="/dashboard" className="nav-link">
+              <NavIcon d={ICONS.dashboard} />
+              <span>Dashboard</span>
+            </NavLink>
+          )}
           <NavLink to="/applications" className="nav-link">
             <NavIcon d={ICONS.applications} />
             <span>Applications</span>
@@ -126,17 +154,14 @@ function Layout({ children }: { children: React.ReactNode }) {
 // Decorative only: every icon sits next to its own text label.
 function BrandMark() {
   return (
-    <span className="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 3v12" />
-        <path d="m7 8 5-5 5 5" />
-        <path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" />
-      </svg>
+    <span className="brand-mark brand-mark-text" aria-hidden="true">
+      STI
     </span>
   );
 }
 
 const ICONS = {
+  dashboard: "M3 12h4l3-8 4 16 3-8h4",
   applications: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
   notifications: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0",
   reports: "M4 20V10M10 20V4M16 20v-7M22 20H2",
@@ -158,6 +183,14 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/applications" replace />} />
         <Route path="/sign-in" element={<SignIn />} />
+        <Route
+          path="/dashboard"
+          element={
+            <RequireIdentity>
+              <Dashboard />
+            </RequireIdentity>
+          }
+        />
         <Route path="/register" element={<Register />} />
         <Route
           path="/device"

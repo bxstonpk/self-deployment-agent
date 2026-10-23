@@ -35,10 +35,13 @@ type AuthHandler struct {
 	// portalURL is where an employee approves a device — the Admin
 	// Portal's own address, which the API can't derive.
 	portalURL string
+	// isAdmin says whether an account is a platform administrator, so the
+	// Portal knows whether to offer the dashboard. The API checks again.
+	isAdmin func(email string) bool
 }
 
-func NewAuthHandler(svc *service.AuthService, portalURL string) *AuthHandler {
-	return &AuthHandler{svc: svc, portalURL: portalURL}
+func NewAuthHandler(svc *service.AuthService, portalURL string, isAdmin func(email string) bool) *AuthHandler {
+	return &AuthHandler{svc: svc, portalURL: portalURL, isAdmin: isAdmin}
 }
 
 type authUserResponse struct {
@@ -232,7 +235,10 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": toAuthUser(user), "credential": toCredential(cred)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user": toAuthUser(user), "credential": toCredential(cred),
+		"is_admin": h.isAdmin != nil && h.isAdmin(user.Email),
+	})
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
