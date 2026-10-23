@@ -13,6 +13,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	// BACKUP_TIMEZONE needs the zone database, and the runtime image
+	// has none.
+	_ "time/tzdata"
 
 	dockerclient "github.com/docker/docker/client"
 
@@ -101,7 +104,13 @@ func main() {
 		log.Printf("secret store: moved %d legacy plaintext database password(s) into the encrypted store", moved)
 	}
 	resources := service.NewApplicationResources(databaseService, secretService)
+	backupService := service.NewBackupService(postgres.NewBackupRepo(pool), databaseRepo, applicationRepo, ownerRepo,
+		secretService, runtime, secretBox, nil, auditService, cfg.BackupDir, service.BackupSchedule{
+			Location: cfg.BackupLocation, Hour: cfg.BackupHour, FullWeekday: cfg.BackupFullWeekday,
+		})
+	resources.SetBackups(backupService)
 	notificationService := service.NewNotificationService(notificationRepo, ownerRepo)
+	backupService.SetNotifier(notificationService)
 	applicationService := service.NewApplicationService(
 		applicationRepo, ownerRepo, departmentRepo, userRepo, transferRepo, notificationService, cfg.OwnershipTransferWindow, auditService,
 	)
@@ -162,6 +171,7 @@ func main() {
 		Secrets:            httpapi.NewSecretHandler(secretService, rotationService),
 		Logs:               httpapi.NewLogHandler(logService),
 		Metrics:            httpapi.NewMetricsHandler(metricsService),
+		Backups:            httpapi.NewBackupHandler(backupService),
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,
@@ -171,6 +181,11 @@ func main() {
 	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)
 	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
 	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)
+	if cfg.BackupEnabled {
+		go runBackupScheduler(ctx, backupService, cfg.BackupSweep)
+	} else {
+		log.Printf("backups: scheduled database backups are switched off (BACKUP_ENABLED=false)")
+	}
 	go runRetentionSweeper(ctx, service.NewRetentionService(logRepo, cfg.LogRetention), time.Hour)
 
 	srv := &http.Server{
@@ -223,6 +238,31 @@ func runScaleSweeper(ctx context.Context, scaleService *service.ScaleService, in
 // runMetricsSampler implements FR-090's collection loop: one reading of
 // every running application container, and whatever traffic the proxy has
 // counted since the last sweep. Runs until ctx is cancelled.
+// runBackupScheduler takes the database backups that are due (DEC-025),
+// checking every interval. Each database is backed up once a day, so the
+// interval only bounds how long after the scheduled hour a backup starts.
+func runBackupScheduler(ctx context.Context, backups *service.BackupService, interval time.Duration) {
+	s := backups.Schedule()
+	log.Printf("backups: full every %s, differential other days, from %02d:00 %s; checked every %s",
+		s.FullWeekday, s.Hour, s.Location, interval)
+	run := func() {
+		if _, err := backups.RunScheduled(ctx); err != nil {
+			log.Printf("backups: %v", err)
+		}
+	}
+	run()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
 // runRetentionSweeper purges application logs past their retention
 // (DEC-027) once at startup and then every interval. Hourly is plenty for
 // a period measured in days.

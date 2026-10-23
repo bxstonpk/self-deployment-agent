@@ -39,6 +39,8 @@ const (
 	// automatic remediation itself failed or was paused and needs human
 	// review. See service.HealthMonitorService.
 	NotificationHealthRemediation NotificationCategory = "health_remediation"
+	// NotificationDatabaseBackup: a scheduled backup failed (FR-064).
+	NotificationDatabaseBackup NotificationCategory = "database_backup"
 )
 
 type Notification struct {

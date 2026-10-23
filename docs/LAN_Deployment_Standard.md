@@ -104,6 +104,15 @@ newer ones automatically. Refresh them on a schedule (FR-022):
 docker pull node:22-alpine golang:1.25-alpine python:3.12-alpine alpine:3.21 nginx:1.30-alpine mysql:8.4 aquasec/trivy:latest
 ```
 
+**Backups.** Every application database is backed up automatically
+(`DEC-025`): a full every Sunday and a differential every other day, from
+01:00 Asia/Bangkok. The previous week's set is deleted once a new full
+succeeds. They are sealed with `PLATFORM_SECRET_KEY` and stored in the
+`platform-backups` Docker volume. Copy that volume off the host on your
+own schedule, and keep a copy of the key somewhere else: without it the
+backups can't be opened. Owners restore from the Admin Portal
+(**Backups** section).
+
 **Rotating the enrollment code.** Change `PLATFORM_ENROLLMENT_CODE` and
 run `docker compose up -d platform-api`. Existing accounts and keys are
 unaffected.
@@ -203,8 +212,10 @@ frontend was served. See section 8.
   is reachable on the host's address directly as well as through
   `/run/...`, bypassing the platform's request metrics. Applications have
   no platform authentication either way.
-- One host, no high availability. Databases live inside their container,
-  with no scheduled backups (FR-064), so back up the host.
+- One host, no high availability. Database backups (a full every Sunday,
+  differentials Monday to Saturday, the previous week's deleted once a new
+  full succeeds) are kept in the `platform-backups` volume on that same
+  host. Copy the volume, and separately `PLATFORM_SECRET_KEY`, off the host.
 - Resource quotas (Module M) are not enforced.
 - Deploys run synchronously: the call returns when the deploy finishes.
 - Machines need PyPI (or a mirror) to install the MCP server's

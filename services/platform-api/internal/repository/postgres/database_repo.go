@@ -53,6 +53,25 @@ func (r *ProvisionedDatabaseRepo) Create(ctx context.Context, d domain.Provision
 	return out, nil
 }
 
+// ListLive returns every currently provisioned database — what the
+// backup scheduler walks.
+func (r *ProvisionedDatabaseRepo) ListLive(ctx context.Context) ([]domain.ProvisionedDatabase, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+provisionedDatabaseColumns+` FROM provisioned_databases WHERE status = 'provisioned'`)
+	if err != nil {
+		return nil, fmt.Errorf("list provisioned databases: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.ProvisionedDatabase{}
+	for rows.Next() {
+		var d domain.ProvisionedDatabase
+		if err := scanProvisionedDatabase(rows, &d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // GetLiveForApplication returns the application's currently-provisioned
 // database, or ErrDatabaseNotProvisioned — which is an ordinary answer
 // (most applications declare no database), not an exceptional one.

@@ -48,6 +48,7 @@ import type {
 } from "../api/types";
 import { useIdentity } from "../context/IdentityContext";
 import { StatusBadge } from "../components/StatusBadge";
+import { BackupsSection } from "../components/BackupsSection";
 
 // Mirrors lifecycle_service.go's requireNothingLive: deployment statuses that
 // still count as "in progress".
@@ -811,6 +812,10 @@ export function ApplicationDetail() {
           </button>
         </form>
       </section>
+
+      {identity && /^database:\s*$/m.test(app.deployment_yaml_draft ?? "") && (
+        <BackupsSection identity={identity} applicationId={app.id} applicationName={app.name} />
+      )}
 
       <section className="card">
         <h2>Deployment history</h2>
