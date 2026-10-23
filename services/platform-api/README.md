@@ -114,11 +114,25 @@ documented explicitly as a v1 convention, not a permanent design decision.
 | Runtime | Convention | Multi-stage? |
 |---|---|---|
 | `go` | `go.mod` at the service root, buildable via `go build .` | Yes — builder uses the governed image, final stage is a fixed minimal `alpine:3.21` runtime (see below for why) |
-| `nodejs` | `package.json` with a `start` script | No — node/npm are needed at runtime, not just to build |
-| `python` | `requirements.txt` (optional) + `app.py` | No — same reasoning as nodejs |
-| `react` | `package.json` with a `build` script, output in `build/` (Create React App convention) | Yes — final stage drops the project's `node_modules`/devDependencies, keeps only the static output + a fresh `serve` install |
+| `nodejs` | `package.json` with a `start` script | Yes — production dependencies on the same Node image, with npm/npx/corepack removed; the `start` script is captured at build time and run by `sh` with `node_modules/.bin` on `PATH` |
+| `typescript` | `package.json` with a `build` script (e.g. `tsc`) and a `start` script | Yes — built with devDependencies, pruned to production ones, then run like `nodejs` |
+| `python` | `requirements.txt` (optional) + `app.py` | No — the interpreter is needed at runtime anyway |
+| `react` | `package.json` with a `build` script, output in `build/` (Create React App's default; Vite with `build.outDir: 'build'`) | Yes — final stage is `nginx:1.30-alpine` holding only the static output, with an `index.html` fallback for client-side routes |
 | `vue` | `package.json` with a `build` script, output in `dist/` (Vite convention) | Yes — same as react |
-| `nextjs` | `package.json` with a `build` script, served via `next start` | No — a properly optimized build needs Next's "standalone output" mode, not implemented here (documented gap, not silent) |
+| `nextjs` | `package.json` with a `build` script, served via its `start` script (`next start`) | Yes, but only to drop npm — it still ships all of `node_modules`; a properly optimized build needs Next's "standalone output" mode, not implemented here (documented gap, not silent) |
+
+**Runtime images carry no package manager.** The first real deploy of the
+LAN starter templates (React + each API language + MySQL) was blocked by
+the Image Scan gate: every Node-based image carried a CRITICAL in npm's
+own bundled `tar` (CVE-2026-59873) — npm, a build tool, was in the runtime
+image only because the old recipes ran `npm start` / `serve`. Static
+frontends now run on nginx and Node services run their `start` script
+without npm, so a `start` script must not itself call `npm`. The same
+deploy prompted moving the Node build images from `node:20-alpine` (out
+of upstream support since April 2026) to `node:22-alpine` (migration
+0017). Builds use the base image the Docker daemon already has; nothing
+pulls a newer one automatically, so keeping them patched (`docker pull`
+on the platform host) is part of IT's FR-022 governance.
 
 **Why `go` needed fixing to multi-stage — found for real, not assumed:**
 a single-stage `golang:*-alpine` build leaves the entire Go SDK/toolchain in
@@ -129,7 +143,8 @@ irrelevant ones, since nothing in the runtime image should ever execute the
 Go compiler. Multi-stage (copy only the compiled binary into a minimal final
 image) fixed this and dropped image size from 338MB to ~24MB. The governed
 base_images catalog (FR-037) still only names the BUILD-stage image per
-runtime; the fixed minimal runtime-stage image for `go`/`react`/`vue` is a
+runtime; the fixed minimal runtime-stage image for `go`/`react`/`vue` (and
+the npm-free Node stage) is a
 platform constant, not (yet) catalog-governed — a reasonable Module F
 enhancement for later, flagged in code, not hidden.
 
@@ -1068,18 +1083,24 @@ for an over-wide range, and confirmed malformed and backwards
 Module N has **no endpoints of its own**, and that is the design, not an
 omission: FR-061's business rule is that provisioned databases are "never
 directly reachable by the employee/agent for raw admin commands". An
-employee declares `database: type: postgres` in `deployment.yaml` and
-gets a database; there is no API to poke at it with.
+employee declares `database: type: mysql` or `database: type: postgres`
+in `deployment.yaml` and gets a database; there is no API to poke at it
+with.
 
 What actually happens, on deploy:
 
 1. **`EnsureProvisioned` (FR-061).** A private Docker network is created
-   for the application, then a dedicated `postgres:16-alpine` container is
-   started on it with a platform-generated password (`crypto/rand`,
-   base64url so it can't corrupt a DSN). Idempotent: an application that
-   already has a live database keeps it, so a redeploy never silently
-   replaces the database and loses its data. A declared type other than
-   `postgres` is rejected before anything touches the runtime.
+   for the application, then a dedicated `postgres:16-alpine` or
+   `mysql:8.4` container is started on it with a platform-generated
+   password (`crypto/rand`, base64url so it can't corrupt a DSN).
+   Idempotent: an application that already has a live database keeps it,
+   so a redeploy never silently replaces the database and loses its data.
+   A declared type the runtime doesn't know how to start is rejected
+   before anything touches it. MySQL's root account gets a random
+   password nobody records and may only sign in from inside its own
+   container; the application has its own account, and rotation (FR-068)
+   has that account change its own password, signing in with the current
+   one — so the platform never needs root.
 2. **`WiringFor` (FR-062/063).** Every path that starts an application
    container asks this one helper for `{Env, NetworkID}` and passes it
    straight through. Both are zero-valued for an application with no
@@ -1156,13 +1177,18 @@ Both halves are then proved from outside the code, by connecting:
   detected and logged as a policy violation") is not implemented — that
   needs Module Q's network policy layer. Only the *prevention* half is
   real, which is the half that stops the attempt succeeding.
-- **Postgres only.** `supported_stacks` also lists `redis` under
-  `cache`, and nothing provisions one.
+- **Postgres and MySQL only.** `supported_stacks` also lists `redis`
+  under `cache`, and nothing provisions one.
 - **The database container's data lives in the container**, not a named
   volume — it survives restarts and cold starts (verified), but not a
   `docker rm` of the database container itself.
 
 ### Verifying it
+
+MySQL is covered by `scripts/verify_lan_stack.py` (see **The LAN
+development standard** below): a real MySQL per application, isolated from
+the default bridge, reached by the application through the injected
+variables, and rotated with the old password refused afterwards.
 
 `scripts/verify_module_n.py` runs the whole thing against a live stack and
 a real Docker daemon — two real applications built and deployed from
@@ -1182,6 +1208,60 @@ a real scale-to-zero first. Both phases delete their application at the
 end and confirm the container, the network *and* the platform's own record
 are gone. It needs a low `SCALE_TO_ZERO_IDLE_SECONDS` (e.g. `20`) for the
 cold-start phase, and says so rather than hanging if it isn't.
+
+## The LAN development standard (React + MySQL + Python/JavaScript/TypeScript/Go)
+
+The company's standard application shape is a React frontend, one API in
+Python, JavaScript (`nodejs`), TypeScript or Go, and a MySQL database.
+Migration 0016 adds the two catalog entries the v1 baseline lacked —
+backend `typescript` (base image `node:22-alpine`) and database `mysql` —
+and `company-deployment-skill/templates/` holds a starter for each part.
+Supporting it needed four platform changes, three of them found by
+deploying the templates rather than by reading code:
+
+- **MySQL provisioning** (Module N, above) — same isolation, secret
+  handling, deprovisioning and rotation as Postgres.
+- **`PORT` is injected** into every application container, set to the
+  port the platform routes to, so a service listens where it's told
+  instead of repeating a number from `deployment.yaml`.
+- **`/run/{app}/{service}` redirects to `/run/{app}/{service}/`** for `GET`
+  and `HEAD`. A browser resolves a page's relative links against the URL
+  up to its last slash, so without this a frontend built with relative
+  asset paths (the only kind that works under a prefix it can't know in
+  advance) loads its bundle from `/run/{app}/` and renders blank.
+- **Runtime images carry no package manager**, and the Node build images
+  moved to Node 22 — see **How Build works**. The first real deploy was
+  blocked by the image scan on exactly that.
+- **Database images are pulled when missing.** `ContainerCreate` doesn't
+  pull, so provisioning had only ever worked for Postgres, whose image the
+  platform's own database already put on the host. The first MySQL
+  deploy failed with `No such image: mysql:8.4`.
+
+### Verifying it
+
+```bash
+docker compose up -d --build      # from the repo root, with .env present
+python services/platform-api/scripts/verify_lan_stack.py
+```
+
+For each of `python`, `nodejs`, `typescript` and `go` it builds and
+deploys the templates — React + that API + MySQL — then checks, through
+the platform's own `/run/...` address:
+- the API reports its runtime and that it reached MySQL;
+- an item `POST`ed comes back from `GET /items`;
+- the bare frontend address redirects and the page's relative bundle loads;
+- the database container is `mysql:8.4`, publishes no host port, and is
+  on its application network only.
+
+For one application it then checks four more things:
+- a MySQL client on that network reads the table, and the identical client
+  on the default bridge can't reach it;
+- after `DATABASE_PASSWORD` is rotated, the old password is refused, the
+  new one works, the restarted API reconnects and the data is still there;
+- with `PLAYWRIGHT_MODULE` pointing at a Node Playwright install, a real
+  headless browser loads the page, sees the API connected, adds an item
+  through the form and sees it listed;
+- deleting each application removes its database container.
 
 ## How Secret Management works (Module O, FR-066/067/069/070)
 

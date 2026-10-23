@@ -54,12 +54,19 @@ type ContainerSpec struct {
 // DatabaseSpec is what the Runtime Platform needs to start one
 // application's dedicated database.
 type DatabaseSpec struct {
-	Name         string
+	Name string
+	// Engine is the declared `database.type` ("postgres" or "mysql"); it
+	// decides how the container is configured, probed and rotated.
+	Engine       string
 	ImageRef     string
 	NetworkID    string
 	DatabaseName string
 	Username     string
 	Password     string
+	// CurrentPassword is set only when rotating. MySQL's application
+	// account changes its own password, so it has to sign in with the
+	// current one first; Postgres doesn't need it.
+	CurrentPassword string
 }
 
 type DatabaseStatus string
@@ -75,7 +82,7 @@ const (
 type ProvisionedDatabase struct {
 	ID            string
 	ApplicationID string
-	Engine        string // "postgres" — the only supported engine today
+	Engine        string // "postgres" or "mysql"
 	ContainerID   string
 	NetworkID     string
 	// Host is the database container's name, which Docker resolves for

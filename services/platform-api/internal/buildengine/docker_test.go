@@ -178,10 +178,11 @@ func TestGenerateDockerfile_PerRuntimeConventions(t *testing.T) {
 		want    string
 	}{
 		{"go", "go build"},
-		{"nodejs", `CMD ["npm", "start"]`},
+		{"nodejs", `CMD ["sh", "/app/.platform-start.sh"]`},
+		{"typescript", "npm prune --omit=dev"},
 		{"python", `CMD ["python", "app.py"]`},
-		{"react", `CMD ["serve", "-s", "build"`},
-		{"vue", `CMD ["serve", "-s", "dist"`},
+		{"react", "COPY --from=build /app/build /usr/share/nginx/html"},
+		{"vue", "COPY --from=build /app/dist /usr/share/nginx/html"},
 		{"nextjs", "npm run build"},
 	}
 	for _, c := range cases {
@@ -207,4 +208,30 @@ func keys(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// What runs must not carry the tools that built it: the first real deploy
+// of the LAN starter templates was blocked by a CRITICAL in npm's bundled
+// tar, inside images whose applications never use npm at runtime.
+func TestGenerateDockerfile_RuntimeStagesShipNoPackageManager(t *testing.T) {
+	for _, runtime := range []string{"nodejs", "typescript", "nextjs"} {
+		out := GenerateDockerfile(runtime, "base:image", 8080)
+		final := out[strings.LastIndex(out, "FROM "):]
+		if !strings.Contains(final, "/usr/local/bin/npm") || !strings.Contains(final, "rm -rf") {
+			t.Errorf("%s: the runtime stage does not remove npm:\n%s", runtime, final)
+		}
+		if strings.Contains(final, "npm start") || strings.Contains(final, "npm run") {
+			t.Errorf("%s: the runtime stage still runs npm:\n%s", runtime, final)
+		}
+		if !strings.Contains(out, ".platform-start.sh") {
+			t.Errorf("%s: the start script is not carried over:\n%s", runtime, out)
+		}
+	}
+	for _, runtime := range []string{"react", "vue"} {
+		out := GenerateDockerfile(runtime, "base:image", 3000)
+		final := out[strings.LastIndex(out, "FROM "):]
+		if !strings.HasPrefix(final, "FROM nginx:") || !strings.Contains(final, "listen 3000;") || !strings.Contains(final, "try_files") {
+			t.Errorf("%s: expected an nginx runtime stage on the declared port with an index.html fallback:\n%s", runtime, final)
+		}
+	}
 }

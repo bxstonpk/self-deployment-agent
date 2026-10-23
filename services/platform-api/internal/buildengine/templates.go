@@ -16,14 +16,63 @@ import (
 // `.../pkg/tool/...`, none of which are the application's own code). Only
 // the compiled artifact needs to ship; the SDK that built it doesn't.
 //
+// The same lesson repeated for static frontends: a React build served by
+// `serve` on the Node image shipped npm too, and the first real deploy of
+// the LAN starter templates was blocked by a CRITICAL in npm's own bundled
+// `tar` (CVE-2026-59873) — again nothing the application wrote or ran.
+// Static output now ships on nginx alone.
+//
 // This is a real gap in FR-037's model as implemented so far: the
 // governance catalog has one image per runtime for BUILDING, but no
 // governed second entry for RUNNING a compiled/static-output runtime. These
 // are hardcoded platform constants for now rather than a catalog lookup —
 // a reasonable Module F enhancement for later, not done here.
 const (
-	goRuntimeStageImage = "alpine:3.21" // confirmed 0 CRITICAL via a real Trivy scan when this was written
+	goRuntimeStageImage     = "alpine:3.21"       // confirmed 0 CRITICAL via a real Trivy scan when this was written
+	staticRuntimeStageImage = "nginx:1.30-alpine" // confirmed 0 CRITICAL via a real Trivy scan when this was written
 )
+
+// removeNodePackageManagers strips npm, npx and corepack from a Node
+// runtime stage. Running an application needs only `node`; the package
+// managers are build tools, and they carry their own dependency trees
+// into every image — which is exactly where the CRITICAL that blocked the
+// starter templates was.
+const removeNodePackageManagers = `RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack`
+
+// writeStartScript turns package.json's "start" script into
+// /app/.platform-start.sh at build time, so the runtime stage can run it
+// without npm. `exec` makes the application the container's main process,
+// so it receives the platform's stop signal directly. A missing start
+// script fails the build — a source problem the employee can fix — rather
+// than producing an image that can't start.
+const writeStartScript = `RUN node -e "const s = (require('./package.json').scripts || {}).start; if (!s) { console.error('package.json has no start script'); process.exit(1); } require('fs').writeFileSync('.platform-start.sh', 'exec ' + s + '\n');"`
+
+// nodeRuntimeStage is the final stage every Node-run service shares:
+// the build output and production dependencies, no package manager, and
+// node_modules/.bin on PATH — what `npm start` would have provided.
+func nodeRuntimeStage(baseImage string, port int) string {
+	return fmt.Sprintf(`FROM %s
+%s
+WORKDIR /app
+COPY --from=build /app ./
+ENV NODE_ENV=production PATH=/app/node_modules/.bin:$PATH
+EXPOSE %d
+CMD ["sh", "/app/.platform-start.sh"]
+`, baseImage, removeNodePackageManagers, port)
+}
+
+// staticRuntimeStage serves a frontend's build output from nginx, falling
+// back to index.html for client-side routes. The application is served
+// under /run/{app}/{service}/, which the proxy strips, so nginx sees
+// ordinary root-relative paths.
+func staticRuntimeStage(outputDir string, port int) string {
+	return fmt.Sprintf(`FROM %s
+COPY --from=build /app/%s /usr/share/nginx/html
+RUN printf 'server {\n  listen %d;\n  root /usr/share/nginx/html;\n  location / {\n    try_files $uri $uri/ /index.html;\n  }\n}\n' > /etc/nginx/conf.d/default.conf
+EXPOSE %d
+`, staticRuntimeStageImage, outputDir, port, port)
+}
 
 // GenerateDockerfile implements FR-037: the employee/agent never supplies
 // or chooses a base image (deployment.yaml has no field for one) — it's
@@ -35,18 +84,25 @@ const (
 // those either. This mirrors common buildpack conventions:
 //   - go:      go.mod + buildable `.` package  -> `go build` (multi-stage;
 //     see runtimeStageImage doc comment for why)
-//   - nodejs:  package.json with a "start" script (single-stage: node/npm
-//     are needed at runtime to run the app, not just to build it)
-//   - python:  requirements.txt + app.py (single-stage, same reasoning as nodejs)
+//   - nodejs:  package.json with a "start" script; production dependencies
+//     only, run without npm (see nodeRuntimeStage)
+//   - typescript: package.json with a "build" script (tsc, or any compiler)
+//     and a "start" script that runs the compiled output; devDependencies
+//     are pruned after the build, and it runs without npm like nodejs
+//   - python:  requirements.txt + app.py (single-stage: the interpreter is
+//     needed at runtime anyway)
 //   - react:   package.json with a "build" script, output in build/ (Create
-//     React App convention); multi-stage — the final stage drops the
-//     project's own node_modules/devDependencies, keeping only the static
-//     build output plus a fresh `serve` install
+//     React App's default; Vite with build.outDir 'build'), served by
+//     nginx — the final stage holds the static output and nothing else
 //   - vue:     same as react, output in dist/ (Vite convention)
-//   - nextjs:  package.json with a "build" script, served via `next start`
-//     (single-stage — a properly optimized multi-stage Next.js build needs
-//     its "standalone output" mode, which isn't implemented here; a
-//     documented gap, not a silent one — see the service README)
+//   - nextjs:  package.json with a "build" script, served via its "start"
+//     script (`next start`) without npm. Ships all of node_modules — a
+//     properly optimized Next.js image needs its "standalone output" mode,
+//     which isn't implemented here; a documented gap, not a silent one —
+//     see the service README
+//
+// Every "start" script runs through sh without npm, so it must not itself
+// call npm (`npm run ...`); `node file.js` or a dependency's binary works.
 func GenerateDockerfile(runtime, baseImage string, port int) string {
 	if port <= 0 {
 		port = domain.DefaultContainerPort
@@ -65,13 +121,21 @@ EXPOSE %d
 CMD ["/app/server"]
 `, baseImage, goRuntimeStageImage, port)
 	case "nodejs":
-		return fmt.Sprintf(`FROM %s
+		return fmt.Sprintf(`FROM %s AS build
 WORKDIR /app
 COPY . .
 RUN npm install --omit=dev
-EXPOSE %d
-CMD ["npm", "start"]
-`, baseImage, port)
+%s
+
+`, baseImage, writeStartScript) + nodeRuntimeStage(baseImage, port)
+	case "typescript":
+		return fmt.Sprintf(`FROM %s AS build
+WORKDIR /app
+COPY . .
+RUN npm install && npm run build && npm prune --omit=dev
+%s
+
+`, baseImage, writeStartScript) + nodeRuntimeStage(baseImage, port)
 	case "python":
 		return fmt.Sprintf(`FROM %s
 WORKDIR /app
@@ -86,34 +150,22 @@ WORKDIR /app
 COPY . .
 RUN npm install && npm run build
 
-FROM %s
-WORKDIR /app
-COPY --from=build /app/build ./build
-RUN npm install -g serve
-EXPOSE %d
-CMD ["serve", "-s", "build", "-l", "%d"]
-`, baseImage, baseImage, port, port)
+`, baseImage) + staticRuntimeStage("build", port)
 	case "vue":
 		return fmt.Sprintf(`FROM %s AS build
 WORKDIR /app
 COPY . .
 RUN npm install && npm run build
 
-FROM %s
-WORKDIR /app
-COPY --from=build /app/dist ./dist
-RUN npm install -g serve
-EXPOSE %d
-CMD ["serve", "-s", "dist", "-l", "%d"]
-`, baseImage, baseImage, port, port)
+`, baseImage) + staticRuntimeStage("dist", port)
 	case "nextjs":
-		return fmt.Sprintf(`FROM %s
+		return fmt.Sprintf(`FROM %s AS build
 WORKDIR /app
 COPY . .
 RUN npm install && npm run build
-EXPOSE %d
-CMD ["npm", "start"]
-`, baseImage, port)
+%s
+
+`, baseImage, writeStartScript) + nodeRuntimeStage(baseImage, port)
 	default:
 		// Unreachable in practice: the Validated state's stack-compliance
 		// check (FR-030) already rejected any runtime not in the catalog

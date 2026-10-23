@@ -100,6 +100,17 @@ frontend+api+database+cache. Multiple services in one app (e.g.
 `frontend`, `api`) become separate entries under `services:`. Pick the
 matching starting template from `examples/`.
 
+**Starting a new application from scratch?** Use the company standard in
+`templates/` rather than inventing a layout: a React frontend
+(`templates/frontend-react/` → the project's `frontend/`), one API in
+`python`, `nodejs`, `typescript` or `go` (`templates/api-<runtime>/` →
+`api/`), a MySQL database, and `templates/deployment.yaml`. Each template
+already follows every platform convention — the build recipe its runtime
+expects, listening on `PORT`, reading `DATABASE_*`, relative asset paths
+so the frontend works under `/run/{app}/frontend/`, and the frontend
+finding its API at `/run/{app}/api/` — and has been deployed for real.
+See `templates/README.md`.
+
 ### 3. Check supported technologies — live, not cached
 
 Call `get_platform_info` and `get_supported_stacks`. Compare what you
@@ -124,12 +135,15 @@ Populate from what you inspected and confirmed with the employee:
 - `services.<name>.runtime` (must be an exact match from
   `get_supported_stacks`, e.g. `go`, not `golang` — the live catalog names
   win over any packaged assumption) and `.port` (**required** for
-  backend-kind services; omit for static frontends).
-- `database.type`, if the app has one. `postgres` is the only supported
-  value today. Declaring it provisions a real, dedicated, network-isolated
-  database on deploy, and the platform injects `DATABASE_URL` (plus the
-  individual `DATABASE_HOST`/`PORT`/`NAME`/`USER`/`PASSWORD` parts) into
-  the application's runtime. **Never write connection details or a
+  backend-kind services; omit for static frontends). The platform sets
+  `PORT` to that number inside the container, so the service should
+  listen on `PORT` rather than hard-code it.
+- `database.type`, if the app has one: `mysql` (the company standard) or
+  `postgres`. Declaring it provisions a real, dedicated, network-isolated
+  database on deploy, and the platform injects `DATABASE_URL` (plus
+  `DATABASE_ENGINE` and the individual
+  `DATABASE_HOST`/`PORT`/`NAME`/`USER`/`PASSWORD` parts) into the
+  application's runtime. **Never write connection details or a
   password into `deployment.yaml`, source, or anything you show the
   employee — the platform generates them and the application reads them
   from its environment.** The database is deprovisioned when the

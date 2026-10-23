@@ -18,18 +18,49 @@ import (
 	"platform-api/internal/domain"
 )
 
-// postgresImage is the engine image every provisioned database runs. Pinned
-// rather than floating on :latest, for the same reason build_service.go's
-// base images are: a deployment that worked yesterday should not start
-// failing because an upstream tag moved underneath it.
-const postgresImage = "postgres:16-alpine"
+// databaseEngine is what the platform needs to know about one supported
+// `database.type`: the image a provisioned instance runs, the port it
+// listens on inside its private network, and the URL scheme of the
+// DATABASE_URL handed to the application.
+//
+// Images are pinned rather than floating on :latest, for the same reason
+// build_service.go's base images are: a deployment that worked yesterday
+// should not start failing because an upstream tag moved underneath it.
+type databaseEngine struct {
+	image  string
+	port   int
+	scheme string
+	// urlSuffix is appended to DATABASE_URL — Postgres drivers otherwise
+	// insist on TLS that a private, per-application network doesn't have.
+	urlSuffix string
+}
 
-const postgresPort = 5432
+// databaseEngines is the set of engines provisioning can actually start.
+// The supported-stack catalog decides what validate_application accepts;
+// this decides what the runtime knows how to run, and an engine has to be
+// in both to be usable.
+var databaseEngines = map[string]databaseEngine{
+	"postgres": {image: "postgres:16-alpine", port: 5432, scheme: "postgres", urlSuffix: "?sslmode=disable"},
+	// 8.4 is MySQL's long-term-support line.
+	"mysql": {image: "mysql:8.4", port: 3306, scheme: "mysql"},
+}
+
+// engineFor tolerates an empty engine name: rows recorded before MySQL
+// existed were always Postgres.
+func engineFor(name string) (databaseEngine, bool) {
+	if name == "" {
+		name = "postgres"
+	}
+	e, ok := databaseEngines[name]
+	return e, ok
+}
 
 // databaseReadyTimeout bounds how long a freshly started database gets to
-// begin accepting connections. The official image runs initdb and restarts
-// itself once before it does — a few seconds on a warm host.
-const databaseReadyTimeout = 60 * time.Second
+// begin accepting connections. Both official images run their
+// initialisation against a temporary server and restart before they do:
+// a few seconds for Postgres on a warm host, noticeably longer for MySQL,
+// whose first start also initialises its data dictionary.
+const databaseReadyTimeout = 120 * time.Second
 
 type ProvisionedDatabaseRepository interface {
 	Create(ctx context.Context, d domain.ProvisionedDatabase) (domain.ProvisionedDatabase, error)
@@ -106,7 +137,8 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 	// FR-061's exception flow. validate_application's stack check is the
 	// first line of defence; this is the one that actually gates
 	// provisioning, so an unsupported type can never reach the runtime.
-	if declaredType != "postgres" {
+	engine, ok := databaseEngines[declaredType]
+	if !ok {
 		return domain.ProvisionedDatabase{}, domain.ErrUnsupportedDatabaseType
 	}
 
@@ -135,7 +167,8 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 	containerName := fmt.Sprintf("platform-db-%s-%s", sanitizeName(app.Name), shortID(app.ID))
 	spec := domain.DatabaseSpec{
 		Name:         containerName,
-		ImageRef:     postgresImage,
+		Engine:       declaredType,
+		ImageRef:     engine.image,
 		NetworkID:    networkID,
 		DatabaseName: "appdb",
 		Username:     "appuser",
@@ -166,13 +199,13 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 
 	return s.repo.Create(ctx, domain.ProvisionedDatabase{
 		ApplicationID: app.ID,
-		Engine:        "postgres",
+		Engine:        declaredType,
 		ContainerID:   containerID,
 		NetworkID:     networkID,
 		// The container's own name: Docker resolves it for anything on the
 		// same private network, and for nothing outside it.
 		Host:         containerName,
-		Port:         postgresPort,
+		Port:         engine.port,
 		DatabaseName: spec.DatabaseName,
 		Username:     spec.Username,
 	})
@@ -185,11 +218,20 @@ func (s *DatabaseService) EnsureProvisioned(ctx context.Context, app domain.Appl
 // DATABASE_URL is the whole DSN (what most frameworks read directly); the
 // individual parts are provided too, since plenty of libraries want host
 // and port separately rather than parsing a URL.
+//
+// DATABASE_ENGINE says which of the supported engines this is, so an
+// application written against more than one can choose its driver.
 func (s *DatabaseService) ConnectionEnv(db domain.ProvisionedDatabase, password string) []string {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		db.Username, password, db.Host, db.Port, db.DatabaseName)
+	engine, _ := engineFor(db.Engine)
+	engineName := db.Engine
+	if engineName == "" {
+		engineName = "postgres"
+	}
+	dsn := fmt.Sprintf("%s://%s:%s@%s:%d/%s%s",
+		engine.scheme, db.Username, password, db.Host, db.Port, db.DatabaseName, engine.urlSuffix)
 	return []string{
 		"DATABASE_URL=" + dsn,
+		"DATABASE_ENGINE=" + engineName,
 		"DATABASE_HOST=" + db.Host,
 		fmt.Sprintf("DATABASE_PORT=%d", db.Port),
 		"DATABASE_NAME=" + db.DatabaseName,
@@ -294,10 +336,11 @@ func (s *DatabaseService) MigrateLegacyPlaintextPasswords(ctx context.Context) (
 // (If even that revert fails, the error says so: the database then holds a
 // password nothing records, and that must not be quiet.)
 //
-// Postgres keeps one password per role, so there is no overlap window:
-// connections already open keep working, but a new connection from an
-// instance still holding the old password fails until that instance is
-// restarted — which RotationService does straight afterwards.
+// Postgres and MySQL both keep one password per account, so there is no
+// overlap window: connections already open keep working, but a new
+// connection from an instance still holding the old password fails until
+// that instance is restarted — which RotationService does straight
+// afterwards.
 func (s *DatabaseService) RotatePassword(ctx context.Context, applicationID string) error {
 	db, err := s.repo.GetLiveForApplication(ctx, applicationID)
 	if err != nil {
@@ -311,12 +354,15 @@ func (s *DatabaseService) RotatePassword(ctx context.Context, applicationID stri
 	if err != nil {
 		return err
 	}
-	spec := domain.DatabaseSpec{Username: db.Username, DatabaseName: db.DatabaseName, Password: newPassword}
+	spec := domain.DatabaseSpec{
+		Engine: db.Engine, Username: db.Username, DatabaseName: db.DatabaseName,
+		Password: newPassword, CurrentPassword: oldPassword,
+	}
 	if err := s.runtime.SetDatabasePassword(ctx, db.ContainerID, spec); err != nil {
 		return fmt.Errorf("set the new password on the database: %w", err)
 	}
 	if err := s.secrets.PutManaged(ctx, applicationID, domain.DatabasePasswordSecret, newPassword); err != nil {
-		spec.Password = oldPassword
+		spec.Password, spec.CurrentPassword = oldPassword, newPassword
 		if revertErr := s.runtime.SetDatabasePassword(ctx, db.ContainerID, spec); revertErr != nil {
 			return fmt.Errorf("store the rotated password: %v — and putting the database back to the previous one also failed: %w", err, revertErr)
 		}

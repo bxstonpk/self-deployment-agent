@@ -55,6 +55,14 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "expected /run/{application}/{service}/...")
 		return
 	}
+	if needsTrailingSlash(r) {
+		target := r.URL.Path + "/"
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, target, http.StatusPermanentRedirect)
+		return
+	}
 
 	resolved, err := h.scale.EnsureRunningByName(r.Context(), appName, serviceName)
 	if err != nil {
@@ -98,6 +106,22 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// needsTrailingSlash reports a page request for a service's bare address,
+// /run/{app}/{service} with no slash after it. A browser resolves a page's
+// relative links against the URL up to its last slash, so a frontend built
+// with relative asset paths — the only kind that works under a /run/...
+// prefix it can't know in advance — would load its assets from
+// /run/{app}/ instead of /run/{app}/{service}/. Redirecting once to the
+// slashed address fixes every relative URL on the page. Only GET and HEAD:
+// an API client posting to the bare address gets what it asked for.
+func needsTrailingSlash(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/run/")
+	return !strings.HasSuffix(rest, "/") && strings.Count(rest, "/") == 1
 }
 
 // parseRunPath splits "/run/{app}/{service}/rest/of/path" into its parts.

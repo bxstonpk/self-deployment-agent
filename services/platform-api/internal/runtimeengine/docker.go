@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -60,11 +61,18 @@ func (r *DockerRuntime) EnableLogCollection(sink LogSink) {
 // application's own private Docker network so it can reach its database
 // (see StartDatabase). Both are empty for an application that declares no
 // database, in which case this behaves exactly as it did before Module N.
+//
+// PORT is always set to the port the platform will route to — the
+// service's declared port, or the platform default — so an application
+// can listen on whatever it's told instead of hard-coding a number that
+// has to match deployment.yaml. Appended last, so it wins over a secret
+// of the same name: the platform only ever routes to this one.
 func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.ContainerSpec) (domain.RunningContainer, error) {
 	portKey := nat.Port(fmt.Sprintf("%d/tcp", spec.ContainerPort))
+	env := append(append([]string{}, spec.Env...), fmt.Sprintf("PORT=%d", spec.ContainerPort))
 	cfg := &container.Config{
 		Image:        spec.ImageRef,
-		Env:          spec.Env,
+		Env:          env,
 		ExposedPorts: nat.PortSet{portKey: struct{}{}},
 	}
 	if spec.Log.Collect() {
@@ -238,8 +246,59 @@ func (r *DockerRuntime) RemoveNetwork(ctx context.Context, networkID string) err
 	return nil
 }
 
-// StartDatabase implements FR-061: a real, dedicated PostgreSQL container
-// for one application.
+// ensureImage pulls ref if the daemon doesn't already have it. Found by
+// the first real MySQL deploy, not assumed: ContainerCreate does not pull,
+// so provisioning only ever worked for an engine whose image happened to
+// be on the host already — Postgres, because the platform's own database
+// runs on the same image.
+func (r *DockerRuntime) ensureImage(ctx context.Context, ref string) error {
+	if _, _, err := r.cli.ImageInspectWithRaw(ctx, ref); err == nil {
+		return nil
+	} else if !client.IsErrNotFound(err) {
+		return fmt.Errorf("inspect image %s: %w", ref, err)
+	}
+	rc, err := r.cli.ImagePull(ctx, ref, types.ImagePullOptions{})
+	if err != nil {
+		return fmt.Errorf("pull image %s: %w", ref, err)
+	}
+	defer rc.Close()
+	// The pull runs as long as its progress stream is being read.
+	if _, err := io.Copy(io.Discard, rc); err != nil {
+		return fmt.Errorf("pull image %s: %w", ref, err)
+	}
+	return nil
+}
+
+// databaseEnv is how each engine's official image is told which database,
+// account and password to create on first start.
+//
+// MySQL's root account gets a random password nobody records, and may
+// only sign in from inside its own container (MYSQL_ROOT_HOST=localhost):
+// the application has its own account, and nothing the platform does
+// needs root.
+func databaseEnv(spec domain.DatabaseSpec) ([]string, error) {
+	switch spec.Engine {
+	case "", "postgres":
+		return []string{
+			"POSTGRES_DB=" + spec.DatabaseName,
+			"POSTGRES_USER=" + spec.Username,
+			"POSTGRES_PASSWORD=" + spec.Password,
+		}, nil
+	case "mysql":
+		return []string{
+			"MYSQL_DATABASE=" + spec.DatabaseName,
+			"MYSQL_USER=" + spec.Username,
+			"MYSQL_PASSWORD=" + spec.Password,
+			"MYSQL_RANDOM_ROOT_PASSWORD=yes",
+			"MYSQL_ROOT_HOST=localhost",
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported database engine %q", spec.Engine)
+	}
+}
+
+// StartDatabase implements FR-061: a real, dedicated PostgreSQL or MySQL
+// container for one application.
 //
 // It deliberately publishes NO host port. The only way to reach it is from
 // inside spec.NetworkID — which is FR-061's business rule that databases
@@ -257,14 +316,14 @@ func (r *DockerRuntime) RemoveNetwork(ctx context.Context, networkID string) err
 // ["bridge", "platform-net-..."], so the isolation this function's own
 // comment claimed was not real.
 func (r *DockerRuntime) StartDatabase(ctx context.Context, spec domain.DatabaseSpec) (string, error) {
-	cfg := &container.Config{
-		Image: spec.ImageRef,
-		Env: []string{
-			"POSTGRES_DB=" + spec.DatabaseName,
-			"POSTGRES_USER=" + spec.Username,
-			"POSTGRES_PASSWORD=" + spec.Password,
-		},
+	env, err := databaseEnv(spec)
+	if err != nil {
+		return "", err
 	}
+	if err := r.ensureImage(ctx, spec.ImageRef); err != nil {
+		return "", err
+	}
+	cfg := &container.Config{Image: spec.ImageRef, Env: env}
 	hostCfg := &container.HostConfig{NetworkMode: container.NetworkMode(spec.NetworkID)}
 	netCfg := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
@@ -312,16 +371,26 @@ func (r *DockerRuntime) StartDatabase(ctx context.Context, spec domain.DatabaseS
 func (r *DockerRuntime) WaitDatabaseReady(ctx context.Context, containerID string, spec domain.DatabaseSpec, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	cmd := []string{"pg_isready", "-q", "-h", "127.0.0.1", "-p", "5432", "-U", spec.Username, "-d", spec.DatabaseName}
+	var env []string
+	if spec.Engine == "mysql" {
+		// MySQL's entrypoint has the same temporary-server phase, with
+		// networking switched off, so TCP to 127.0.0.1 only answers once the
+		// real server is up. Signing in as the application's own account
+		// also proves the entrypoint finished creating it. The password
+		// travels in the exec's environment, never on its command line.
+		cmd = []string{"mysql", "-h", "127.0.0.1", "-P", "3306", "-u", spec.Username, "-D", spec.DatabaseName, "-e", "SELECT 1"}
+		env = []string{"MYSQL_PWD=" + spec.Password}
+	}
 	var lastErr error
 	for time.Now().Before(deadline) {
-		exitCode, err := r.execExitCode(ctx, containerID, cmd, nil)
+		exitCode, err := r.execExitCode(ctx, containerID, cmd, env)
 		if err == nil && exitCode == 0 {
 			return nil
 		}
 		if err != nil {
 			lastErr = err
 		} else {
-			lastErr = fmt.Errorf("pg_isready exited %d", exitCode)
+			lastErr = fmt.Errorf("%s exited %d", cmd[0], exitCode)
 		}
 		select {
 		case <-ctx.Done():
@@ -340,8 +409,8 @@ var (
 	databasePassword   = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 )
 
-// SetDatabasePassword changes the application role's password inside its
-// database container — FR-068's rotation for the credential Module N
+// SetDatabasePassword changes the application account's password inside
+// its database container — FR-068's rotation for the credential Module N
 // generates. psql runs over the container's Unix socket, which the
 // official image trusts (as it also trusts 127.0.0.1), so no current
 // password is needed. Every connection an application makes arrives over
@@ -361,12 +430,24 @@ func (r *DockerRuntime) SetDatabasePassword(ctx context.Context, containerID str
 	}
 	script := `psql -q -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" -c "ALTER ROLE \"$DB_USER\" PASSWORD '$NEW_PASSWORD'"`
 	env := []string{"DB_USER=" + spec.Username, "DB_NAME=" + spec.DatabaseName, "NEW_PASSWORD=" + spec.Password}
+	statement := "ALTER ROLE"
+	if spec.Engine == "mysql" {
+		// MySQL trusts no socket: the account signs in with its current
+		// password (MYSQL_PWD) and changes its own. That needs no
+		// privilege beyond the account itself — root stays unused.
+		if !databasePassword.MatchString(spec.CurrentPassword) {
+			return errors.New("refusing to rotate: the current password is outside the platform's password alphabet")
+		}
+		script = `mysql -h 127.0.0.1 -P 3306 -u "$DB_USER" -D "$DB_NAME" -e "ALTER USER CURRENT_USER() IDENTIFIED BY '$NEW_PASSWORD'"`
+		env = append(env, "MYSQL_PWD="+spec.CurrentPassword)
+		statement = "ALTER USER"
+	}
 	exitCode, err := r.execExitCode(ctx, containerID, []string{"sh", "-c", script}, env)
 	if err != nil {
-		return fmt.Errorf("run ALTER ROLE: %w", err)
+		return fmt.Errorf("run %s: %w", statement, err)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("ALTER ROLE exited %d", exitCode)
+		return fmt.Errorf("%s exited %d", statement, exitCode)
 	}
 	return nil
 }
