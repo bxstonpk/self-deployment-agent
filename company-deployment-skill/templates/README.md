@@ -45,8 +45,9 @@ changes:
 - **Health.** `GET /` on every API answers `{"status": "ok", "runtime": …,
   "database": "connected" | "unavailable"}`. The platform's health check
   polls `/`.
-- **Addresses.** Deployed, the frontend is served at
-  `/run/<app>/frontend/` and the API at `/run/<app>/api/`.
+- **Addresses.** Deployed, the frontend is served at `/<app>/` and the
+  API at `/<app>/api/` (the long form, `/run/<app>/frontend/` and
+  `/run/<app>/api/`, works too).
   `frontend-react/src/api.js` derives the API address from the page's own,
   and Vite builds with relative asset paths (`base: './'`), so nothing is
   configured per environment.

@@ -32,6 +32,12 @@ It deploys the way a Claude Code machine does: with an API key fetched
 through a device approval (see platform_auth.py), not a self-declared
 identity.
 
+Each application is also checked at its short address, /{app}/ (frontend)
+and /{app}/api/ (API): through platform-api's own /app/ route always, and
+through the gateway as an employee would reach it when GATEWAY_URL is set
+(e.g. http://192.168.10.25) — where the Admin Portal's pages must still be
+the Portal's.
+
 Set PLATFORM_API_BASE_URL if the API is not on the .env default port, and
 RUNTIMES (comma-separated) to verify a subset.
 """
@@ -54,6 +60,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from platform_auth import api_key_for  # noqa: E402
 
 BASE_URL = os.environ.get("PLATFORM_API_BASE_URL", "http://localhost:8099")
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "").rstrip("/")
 EMPLOYEE_EMAIL = "lan-stack-verify@sti-th.com"
 RUNTIMES = [r for r in os.environ.get("RUNTIMES", "python,nodejs,typescript,go").split(",") if r]
 TEMPLATES = Path(__file__).resolve().parents[3] / "company-deployment-skill" / "templates"
@@ -96,10 +103,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _run(path: str, method: str = "GET", body=None, follow: bool = True, timeout: int = 60):
+def _run(path: str, method: str = "GET", body=None, follow: bool = True, timeout: int = 60, base: str = ""):
     """A request to a deployed application, through the platform's proxy."""
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(BASE_URL + path, data=data, method=method)
+    req = urllib.request.Request((base or BASE_URL) + path, data=data, method=method)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     opener = urllib.request.build_opener() if follow else urllib.request.build_opener(_NoRedirect)
@@ -229,6 +236,10 @@ def _verify_app(app_name: str, runtime: str) -> None:
         status, _, js = _run(f"/run/{app_name}/frontend/{script}")
         _check(status == 200 and len(js) > 10_000, f"{runtime}: its bundle loads ({status}, {len(js)} bytes)")
 
+    _verify_short_address(app_name, runtime, BASE_URL, "/app")
+    if GATEWAY_URL:
+        _verify_short_address(app_name, runtime, GATEWAY_URL, "")
+
     db = _db_container(app_name)
     image = _docker("inspect", "-f", "{{.Config.Image}}", db) if db else ""
     ports = _docker("inspect", "-f", "{{json .NetworkSettings.Ports}}", db) if db else ""
@@ -239,6 +250,33 @@ def _verify_app(app_name: str, runtime: str) -> None:
     _check(bool(db) and "HostPort" not in ports, f"{runtime}: it publishes no host port ({ports})")
     _check(len(networks) == 1 and next(iter(networks)).startswith("platform-net-"),
            f"{runtime}: it is attached only to its application network ({list(networks)})")
+
+
+def _verify_short_address(app_name: str, runtime: str, base: str, prefix: str) -> None:
+    """/{app}/ is the frontend and /{app}/api/ the API. Through platform-api
+    directly the gateway's /app prefix is added by hand; through the gateway
+    it's the address an employee shares."""
+    where = "gateway" if not prefix else "platform-api /app"
+    status, headers, _ = _run(f"{prefix}/{app_name}", follow=False, base=base)
+    location = headers.get("Location") or headers.get("location")
+    _check(status == 308 and location == f"/{app_name}/",
+           f"{runtime}: [{where}] /{app_name} redirects to /{app_name}/ ({status} -> {location})")
+    status, _, body = _run(f"{prefix}/{app_name}/api/", base=base)
+    health = json.loads(body) if status == 200 else {}
+    _check(health.get("runtime") == runtime and health.get("database") == "connected",
+           f"{runtime}: [{where}] /{app_name}/api/ answers as {health.get('runtime')!r}, database {health.get('database')!r}")
+    status, _, html = _run(f"{prefix}/{app_name}/", base=base)
+    page = html.decode(errors="replace")
+    script = page.split('src="./', 1)[1].split('"', 1)[0] if 'src="./' in page else ""
+    _check(status == 200 and script.startswith("assets/"),
+           f"{runtime}: [{where}] /{app_name}/ serves the React page ({status}, {script or 'no bundle'})")
+    if script:
+        status, _, js = _run(f"{prefix}/{app_name}/{script}", base=base)
+        _check(status == 200 and len(js) > 10_000, f"{runtime}: [{where}] its bundle loads at /{app_name}/{script} ({status})")
+    if not prefix:
+        status, _, portal = _run("/applications", base=base)
+        _check(status == 200 and b'id="root"' in portal,
+               f"[gateway] /applications is still the Admin Portal ({status})")
 
 
 def _verify_isolation_and_rotation(app_id: str, app_name: str) -> None:

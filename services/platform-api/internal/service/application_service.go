@@ -23,10 +23,25 @@ var dnsLabelPattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // the application name. This list is intentionally small for v1 and should
 // move to IT-governed configuration alongside the Supported Stack catalog
 // (Module F) rather than staying hardcoded — see docs/17_Decision_Log.md.
+//
+// Applications are also served at /{name}/ on the platform's address, which
+// the gateway shares with the Admin Portal and its own paths: an
+// application named after one of those would never be reached. The
+// gateway's list (deploy/gateway/nginx.conf) and the Portal's routes
+// (apps/admin-portal/src/App.tsx) must stay inside this set —
+// TestReservedNames_CoverEveryGatewayPath checks the gateway's.
 var reservedApplicationNames = map[string]bool{
 	"admin": true, "api": true, "www": true, "platform": true,
 	"mcp": true, "internal": true, "status": true,
+	// The gateway's own paths.
+	"run": true, "app": true, "downloads": true, "assets": true,
+	// The Admin Portal's pages.
+	"sign-in": true, "register": true, "device": true, "access-keys": true,
+	"applications": true, "notifications": true, "reports": true, "audit-log": true,
 }
+
+// ReservedApplicationName reports whether name is kept for the platform.
+func ReservedApplicationName(name string) bool { return reservedApplicationNames[name] }
 
 type ApplicationRepository interface {
 	Create(ctx context.Context, app domain.Application) (domain.Application, error)

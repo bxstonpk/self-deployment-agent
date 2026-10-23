@@ -13,7 +13,7 @@ with anything below, the live result is correct and this file is stale.
 
 | Runtime name (exact, case-sensitive) | Notes |
 |---|---|
-| `react` | `npm run build` must produce `build/` (Create React App's default; with Vite set `build.outDir: 'build'`). The app is served under `/run/{app}/{service}/`, so assets must use relative paths (Vite `base: './'`) — see `templates/frontend-react/` |
+| `react` | `npm run build` must produce `build/` (Create React App's default; with Vite set `build.outDir: 'build'`). The app is served under `/{app}/` (or `/run/{app}/{service}/`), so assets must use relative paths (Vite `base: './'`) — see `templates/frontend-react/` |
 | `nextjs` | Served via its `start` script (`next start`, run without npm); standalone-output optimization not implemented yet (larger runtime image than ideal) |
 | `vue` | Vite convention assumed (`npm run build`, output in `dist/`), served by nginx; use relative asset paths like `react` |
 

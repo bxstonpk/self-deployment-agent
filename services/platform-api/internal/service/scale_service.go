@@ -157,6 +157,38 @@ func (s *ScaleService) CleanupForDeployment(ctx context.Context, deploymentID st
 	return s.states.DeleteForDeployment(ctx, deploymentID)
 }
 
+// ServiceForPath resolves the short application address, /{app}/{rest}: if
+// rest's first segment names one of the running deployment's services, the
+// request is for that service and the segment is consumed
+// (/{app}/api/items -> "api", "/items"); otherwise it's for the application's
+// default service (domain.DefaultService) with the whole of rest
+// (/{app}/assets/x.js -> "frontend", "/assets/x.js").
+func (s *ScaleService) ServiceForPath(ctx context.Context, appName, firstSegment string) (serviceName string, consumesSegment bool, err error) {
+	app, err := s.apps.GetByName(ctx, appName)
+	if err != nil {
+		return "", false, err
+	}
+	deployment, err := s.deployments.CurrentRunning(ctx, app.ID)
+	if err != nil {
+		return "", false, err
+	}
+	states, err := s.states.ListForDeployment(ctx, deployment.ID)
+	if err != nil {
+		return "", false, err
+	}
+	names := make([]string, 0, len(states))
+	for _, st := range states {
+		if firstSegment != "" && st.ServiceName == firstSegment {
+			return st.ServiceName, true, nil
+		}
+		names = append(names, st.ServiceName)
+	}
+	if def := domain.DefaultService(names); def != "" {
+		return def, false, nil
+	}
+	return "", false, domain.ErrServiceStateNotFound
+}
+
 // EnsureRunningByName implements the proxy's entry point (FR-053): resolve
 // a public application/service name to its current live deployment, then
 // ensure a container is up.
