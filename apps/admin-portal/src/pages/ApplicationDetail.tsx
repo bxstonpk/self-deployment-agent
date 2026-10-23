@@ -635,41 +635,43 @@ export function ApplicationDetail() {
           no way to resolve "am I the primary owner" client-side without an extra lookup), so a non-primary owner
           attempting this sees the real error below.
         </p>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>User ID</th>
-              <th>Role</th>
-              <th>Status</th>
-              <th>Assigned</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {owners.map((o) => (
-              <tr key={o.user_id + o.ownership_role}>
-                <td>{o.user_id}</td>
-                <td>{o.ownership_role}</td>
-                <td>
-                  <StatusBadge status={o.status === "active" ? "success" : "failure"} />
-                </td>
-                <td>{new Date(o.assigned_at).toLocaleString()}</td>
-                <td>
-                  {o.ownership_role !== "primary" && o.status === "active" && (
-                    <button
-                      disabled={busy !== null}
-                      onClick={() =>
-                        runAction("revoke-owner", () => revokeOwner(identity, id, o.user_id), "Access revoked.")
-                      }
-                    >
-                      Revoke
-                    </button>
-                  )}
-                </td>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>User ID</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Assigned</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {owners.map((o) => (
+                <tr key={o.user_id + o.ownership_role}>
+                  <td>{o.user_id}</td>
+                  <td>{o.ownership_role}</td>
+                  <td>
+                    <StatusBadge status={o.status === "active" ? "success" : "failure"} />
+                  </td>
+                  <td>{new Date(o.assigned_at).toLocaleString()}</td>
+                  <td>
+                    {o.ownership_role !== "primary" && o.status === "active" && (
+                      <button
+                        disabled={busy !== null}
+                        onClick={() =>
+                          runAction("revoke-owner", () => revokeOwner(identity, id, o.user_id), "Access revoked.")
+                        }
+                      >
+                        Revoke
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <form className="action-row" onSubmit={handleGrantOwner}>
           <input
             type="email"
@@ -733,47 +735,49 @@ export function ApplicationDetail() {
         {secretsForbidden && <p className="hint">Only this application's owners can see or change its secrets.</p>}
         {!secretsForbidden && secrets.length === 0 && <p className="hint">No secrets yet.</p>}
         {secrets.length > 0 && (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Managed by</th>
-                <th>Version</th>
-                <th>Last set</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {secrets.map((s) => (
-                <tr key={s.name}>
-                  <td>
-                    <code>{s.name}</code>
-                  </td>
-                  <td>{s.managed_by === "platform" ? "Platform" : "Owner"}</td>
-                  <td>{s.version}</td>
-                  <td>{new Date(s.updated_at).toLocaleString()}</td>
-                  <td>
-                    {s.managed_by === "platform" && (
-                      <button disabled={busy !== null || !canSetSecret} onClick={() => handleRotateSecret(s.name)}>
-                        Rotate
-                      </button>
-                    )}
-                    {s.managed_by === "employee" && (
-                      <button
-                        disabled={busy !== null}
-                        onClick={() => {
-                          if (!window.confirm(`Delete ${s.name}? The application loses it at its next start.`)) return;
-                          runAction("delete-secret", () => deleteSecret(identity, id, s.name), `Deleted ${s.name}.`);
-                        }}
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </td>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Managed by</th>
+                  <th>Version</th>
+                  <th>Last set</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {secrets.map((s) => (
+                  <tr key={s.name}>
+                    <td>
+                      <code>{s.name}</code>
+                    </td>
+                    <td>{s.managed_by === "platform" ? "Platform" : "Owner"}</td>
+                    <td>{s.version}</td>
+                    <td>{new Date(s.updated_at).toLocaleString()}</td>
+                    <td>
+                      {s.managed_by === "platform" && (
+                        <button disabled={busy !== null || !canSetSecret} onClick={() => handleRotateSecret(s.name)}>
+                          Rotate
+                        </button>
+                      )}
+                      {s.managed_by === "employee" && (
+                        <button
+                          disabled={busy !== null}
+                          onClick={() => {
+                            if (!window.confirm(`Delete ${s.name}? The application loses it at its next start.`)) return;
+                            runAction("delete-secret", () => deleteSecret(identity, id, s.name), `Deleted ${s.name}.`);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         {secrets.some((s) => s.managed_by === "platform") && (
           <p className="hint">
@@ -824,39 +828,41 @@ export function ApplicationDetail() {
         <h2>Deployment history</h2>
         {history.length === 0 && <p className="hint">No deployments yet.</p>}
         {history.length > 0 && (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Environment</th>
-                <th>Created</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((d) => (
-                <tr key={d.id}>
-                  <td>
-                    <StatusBadge status={d.status} />
-                  </td>
-                  <td>{d.environment}</td>
-                  <td>{new Date(d.created_at).toLocaleString()}</td>
-                  <td>
-                    {(d.status === "running" || d.status === "superseded") && d.id !== deployment?.id && (
-                      <button
-                        disabled={busy !== null}
-                        onClick={() =>
-                          runAction("rollback", () => rollbackApplication(identity, id, d.id), "Rolled back.")
-                        }
-                      >
-                        Roll back to this
-                      </button>
-                    )}
-                  </td>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Environment</th>
+                  <th>Created</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {history.map((d) => (
+                  <tr key={d.id}>
+                    <td>
+                      <StatusBadge status={d.status} />
+                    </td>
+                    <td>{d.environment}</td>
+                    <td>{new Date(d.created_at).toLocaleString()}</td>
+                    <td>
+                      {(d.status === "running" || d.status === "superseded") && d.id !== deployment?.id && (
+                        <button
+                          disabled={busy !== null}
+                          onClick={() =>
+                            runAction("rollback", () => rollbackApplication(identity, id, d.id), "Rolled back.")
+                          }
+                        >
+                          Roll back to this
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
@@ -864,26 +870,28 @@ export function ApplicationDetail() {
         <h2>Scale events</h2>
         {scaleEvents.length === 0 && <p className="hint">None recorded for the current deployment.</p>}
         {scaleEvents.length > 0 && (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Service</th>
-                <th>Direction</th>
-                <th>Reason</th>
-                <th>When</th>
-              </tr>
-            </thead>
-            <tbody>
-              {scaleEvents.map((e, i) => (
-                <tr key={i}>
-                  <td>{e.service_name}</td>
-                  <td>{e.direction}</td>
-                  <td>{e.trigger_reason}</td>
-                  <td>{new Date(e.occurred_at).toLocaleString()}</td>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Service</th>
+                  <th>Direction</th>
+                  <th>Reason</th>
+                  <th>When</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {scaleEvents.map((e, i) => (
+                  <tr key={i}>
+                    <td>{e.service_name}</td>
+                    <td>{e.direction}</td>
+                    <td>{e.trigger_reason}</td>
+                    <td>{new Date(e.occurred_at).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
@@ -1085,28 +1093,30 @@ export function ApplicationDetail() {
         </p>
         {auditEntries.length === 0 && <p className="hint">No audit entries yet.</p>}
         {auditEntries.length > 0 && (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Action</th>
-                <th>Outcome</th>
-                <th>Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {auditEntries.map((e) => (
-                <tr key={e.id}>
-                  <td>{new Date(e.occurred_at).toLocaleString()}</td>
-                  <td>{e.action}</td>
-                  <td>
-                    <StatusBadge status={e.outcome} />
-                  </td>
-                  <td>{e.detail || <em>—</em>}</td>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Action</th>
+                  <th>Outcome</th>
+                  <th>Detail</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {auditEntries.map((e) => (
+                  <tr key={e.id}>
+                    <td>{new Date(e.occurred_at).toLocaleString()}</td>
+                    <td>{e.action}</td>
+                    <td>
+                      <StatusBadge status={e.outcome} />
+                    </td>
+                    <td>{e.detail || <em>—</em>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>

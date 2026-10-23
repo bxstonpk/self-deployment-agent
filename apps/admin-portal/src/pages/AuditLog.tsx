@@ -120,38 +120,40 @@ export function AuditLog() {
       </div>
 
       {entries === null && !error && <p>Loading…</p>}
-      {entries !== null && entries.length === 0 && <p className="hint">No audit entries match.</p>}
+      {entries !== null && entries.length === 0 && <p className="hint empty-state">No audit entries match.</p>}
 
       {entries !== null && entries.length > 0 && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>Actor</th>
-              <th>Action</th>
-              <th>Resource</th>
-              <th>Outcome</th>
-              <th>Detail</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => (
-              <tr key={e.id}>
-                <td>{new Date(e.occurred_at).toLocaleString()}</td>
-                <td>{e.actor_user_id}</td>
-                <td>{e.action}</td>
-                <td>
-                  {e.resource_type}
-                  {e.resource_id ? ` / ${e.resource_id}` : ""}
-                </td>
-                <td>
-                  <StatusBadge status={e.outcome} />
-                </td>
-                <td>{e.detail || <em>—</em>}</td>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Actor</th>
+                <th>Action</th>
+                <th>Resource</th>
+                <th>Outcome</th>
+                <th>Detail</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {entries.map((e) => (
+                <tr key={e.id}>
+                  <td>{new Date(e.occurred_at).toLocaleString()}</td>
+                  <td>{e.actor_user_id}</td>
+                  <td>{e.action}</td>
+                  <td>
+                    {e.resource_type}
+                    {e.resource_id ? ` / ${e.resource_id}` : ""}
+                  </td>
+                  <td>
+                    <StatusBadge status={e.outcome} />
+                  </td>
+                  <td>{e.detail || <em>—</em>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

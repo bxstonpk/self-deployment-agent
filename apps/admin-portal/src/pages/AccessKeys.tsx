@@ -96,67 +96,71 @@ export function AccessKeys() {
       {keys === null ? (
         <p>Loading…</p>
       ) : keys.length === 0 ? (
-        <p>No keys yet.</p>
+        <p className="hint empty-state">No keys yet.</p>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Key</th>
-              <th>Status</th>
-              <th>Created</th>
-              <th>Last used</th>
-              <th>Expires</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((key) => {
-              const state = keyState(key);
-              return (
-                <tr key={key.id}>
-                  <td>{key.name}</td>
-                  <td>
-                    <code>{key.prefix}…</code>
-                  </td>
-                  <td>
-                    <span className={state.className}>{state.label}</span>
-                  </td>
-                  <td>{when(key.created_at)}</td>
-                  <td>{when(key.last_used_at)}</td>
-                  <td>{when(key.expires_at)}</td>
-                  <td>
-                    {state.label === "active" && (
-                      <button className="button-danger" onClick={() => onRevoke(key)}>
-                        Revoke
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Key</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Last used</th>
+                <th>Expires</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((key) => {
+                const state = keyState(key);
+                return (
+                  <tr key={key.id}>
+                    <td>{key.name}</td>
+                    <td>
+                      <code>{key.prefix}…</code>
+                    </td>
+                    <td>
+                      <span className={state.className}>{state.label}</span>
+                    </td>
+                    <td>{when(key.created_at)}</td>
+                    <td>{when(key.last_used_at)}</td>
+                    <td>{when(key.expires_at)}</td>
+                    <td>
+                      {state.label === "active" && (
+                        <button className="button-danger" onClick={() => onRevoke(key)}>
+                          Revoke
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
-      <h2>Issue a key by hand</h2>
-      <p className="hint">
-        Only for a machine that can't run the sign-in itself. Claude Code machines should use{" "}
-        <code>company-deploy login</code> or the <code>login</code> tool instead, so the key never passes through a
-        screen or clipboard.
-      </p>
-      <form onSubmit={onCreate} className="toolbar">
-        <label>
-          Name
-          <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="build-server-01" />
-        </label>
-        <label>
-          Expires in (days)
-          <input type="number" min={1} max={90} value={days} onChange={(e) => setDays(Number(e.target.value))} />
-        </label>
-        <button type="submit" className="button-primary" disabled={busy}>
-          Issue key
-        </button>
-      </form>
+      <section className="card">
+        <h2>Issue a key by hand</h2>
+        <p className="hint">
+          Only for a machine that can't run the sign-in itself. Claude Code machines should use{" "}
+          <code>company-deploy login</code> or the <code>login</code> tool instead, so the key never passes through a
+          screen or clipboard.
+        </p>
+        <form onSubmit={onCreate} className="toolbar">
+          <label>
+            Name
+            <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="build-server-01" />
+          </label>
+          <label>
+            Expires in (days)
+            <input type="number" min={1} max={90} value={days} onChange={(e) => setDays(Number(e.target.value))} />
+          </label>
+          <button type="submit" className="button-primary" disabled={busy}>
+            Issue key
+          </button>
+        </form>
+      </section>
     </div>
   );
 }

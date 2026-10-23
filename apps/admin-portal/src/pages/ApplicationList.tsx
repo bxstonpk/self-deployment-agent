@@ -85,31 +85,33 @@ export function ApplicationList() {
       </div>
 
       {applications === null && !error && <p>Loading…</p>}
-      {applications !== null && filtered.length === 0 && <p className="hint">No applications match.</p>}
+      {applications !== null && filtered.length === 0 && <p className="hint empty-state">No applications match.</p>}
 
       {filtered.length > 0 && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Status</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((app) => (
-              <tr key={app.id}>
-                <td>
-                  <Link to={`/applications/${app.id}`}>{app.name}</Link>
-                </td>
-                <td>
-                  <StatusBadge status={app.lifecycle_status} />
-                </td>
-                <td>{new Date(app.created_at).toLocaleString()}</td>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Created</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filtered.map((app) => (
+                <tr key={app.id}>
+                  <td>
+                    <Link to={`/applications/${app.id}`}>{app.name}</Link>
+                  </td>
+                  <td>
+                    <StatusBadge status={app.lifecycle_status} />
+                  </td>
+                  <td>{new Date(app.created_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
