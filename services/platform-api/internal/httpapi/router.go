@@ -146,6 +146,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Departments.List)
+		r.Post("/", cfg.Departments.Create)
+		r.Get("/summary", cfg.Departments.Summary)
 	})
 
 	r.Route("/audit-log", func(r chi.Router) {

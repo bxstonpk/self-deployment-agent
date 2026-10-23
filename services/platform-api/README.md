@@ -2151,6 +2151,22 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   approver-independence point above — there is no distinct approver role
   to gate on.
 
+## Departments
+
+There is no fixed list of departments. A department is added:
+- when someone registers under a new one;
+- by `POST /departments {"name": ...}` (the Portal's Departments page);
+- by the MCP `create_application` tool, given a department that doesn't exist yet.
+
+Names are normalized (trimmed, inner whitespace collapsed, at most 80 characters, any script) and matched without regard to case, so "innovation" finds "Innovation" instead of creating a second one. A name that isn't valid UTF-8 is refused with 400. That case was found when a Thai name sent from a Windows console arrived in its code page and would have been stored as replacement characters.
+
+`create_application` with no department uses the signed-in employee's own. `GET /departments/summary` lists each department with its people and (not deleted) applications.
+
+Verified on the local stack:
+- the API added a department, matched it again in lowercase without a duplicate, refused an empty name and a non-UTF-8 one, and refused anyone not signed in;
+- a real browser added `ฝ่ายบุคคล` and registered an application under a department that didn't exist yet;
+- the real MCP tool created "Logistics …", matched "ENGINEERING" to "Engineering", and defaulted an empty department to the caller's own.
+
 ## How the administrators' dashboard works
 
 `GET /admin/overview` answers only accounts in `PLATFORM_ADMIN_EMAILS` (case-insensitive); anyone else gets 403. `GET /auth/me` carries `is_admin`, which the Portal uses to offer the **Dashboard** page. The API checks again on every request.

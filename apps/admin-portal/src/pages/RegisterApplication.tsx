@@ -1,9 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { listDepartments, registerApplication } from "../api/client";
+import { createDepartment, getMe, listDepartments, registerApplication } from "../api/client";
 import type { Department } from "../api/types";
 import { ApiError } from "../api/types";
 import { useIdentity } from "../context/IdentityContext";
+
+// The select's value for "a department that isn't in the list yet".
+const NEW_DEPARTMENT = "__new__";
 
 export function RegisterApplication() {
   const { identity } = useIdentity();
@@ -12,29 +15,49 @@ export function RegisterApplication() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [departmentId, setDepartmentId] = useState("");
+  const [newDepartment, setNewDepartment] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!identity) return;
-    listDepartments(identity)
-      .then((depts) => {
+    let cancelled = false;
+    Promise.all([listDepartments(identity), getMe(identity).catch(() => null)])
+      .then(([depts, me]) => {
+        if (cancelled) return;
         setDepartments(depts);
-        if (depts.length > 0) setDepartmentId(depts[0].id);
+        // The employee's own department first; any department can be chosen.
+        const own = depts.find((d) => d.id === me?.user?.department_id);
+        if (own) setDepartmentId(own.id);
+        else if (depts.length > 0) setDepartmentId(depts[0].id);
+        else setDepartmentId(NEW_DEPARTMENT);
       })
-      .catch((err: ApiError) => setError(err.message));
+      .catch((err: ApiError) => {
+        if (!cancelled) setError(err.message);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [identity]);
+
+  const addingDepartment = departmentId === NEW_DEPARTMENT;
+  const ready = addingDepartment ? newDepartment.trim() !== "" : departmentId !== "";
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!identity || !departmentId) return;
+    if (!identity || !ready) return;
     setSubmitting(true);
     setError(null);
     try {
+      let owningDepartmentId = departmentId;
+      if (addingDepartment) {
+        // Returns the existing department if one of that name (any case) exists.
+        owningDepartmentId = (await createDepartment(identity, newDepartment)).id;
+      }
       const app = await registerApplication(identity, {
         name: name.trim(),
         description: description.trim(),
-        owning_department_id: departmentId,
+        owning_department_id: owningDepartmentId,
       });
       navigate(`/applications/${app.id}`);
     } catch (err) {
@@ -73,15 +96,27 @@ export function RegisterApplication() {
         <label>
           Owning department
           <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} required>
-            {departments.length === 0 && <option value="">No departments yet</option>}
             {departments.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
               </option>
             ))}
+            <option value={NEW_DEPARTMENT}>+ New department…</option>
           </select>
         </label>
-        <button type="submit" disabled={submitting || !departmentId}>
+        {addingDepartment && (
+          <label>
+            New department name
+            <input
+              required
+              maxLength={80}
+              value={newDepartment}
+              onChange={(e) => setNewDepartment(e.target.value)}
+              placeholder="e.g. Human Resources"
+            />
+          </label>
+        )}
+        <button type="submit" disabled={submitting || !ready}>
           {submitting ? "Registering…" : "Register"}
         </button>
       </form>

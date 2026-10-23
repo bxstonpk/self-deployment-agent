@@ -525,3 +525,27 @@ export interface AdminOverview {
 export function getAdminOverview(identity: Identity): Promise<AdminOverview> {
   return request(identity, "GET", "/admin/overview");
 }
+
+// --- Departments: adding one, and the summary page ---
+
+// Adds a department, or returns the existing one of that name (any case).
+// Any signed-in employee can: an application can belong to whichever
+// department it's for, not only to ones someone registered under.
+export async function createDepartment(identity: Identity, name: string): Promise<Department> {
+  const data = await request<{ department: DepartmentRaw }>(identity, "POST", "/departments", { json: { name } });
+  const d = data.department;
+  return { id: d.ID, name: d.Name, cost_center_code: d.CostCenterCode, status: d.Status };
+}
+
+export interface DepartmentSummary {
+  id: string;
+  name: string;
+  status: string;
+  users: number;
+  applications: number;
+  created_at: string;
+}
+
+export function listDepartmentSummaries(identity: Identity): Promise<{ departments: DepartmentSummary[] }> {
+  return request(identity, "GET", "/departments/summary");
+}

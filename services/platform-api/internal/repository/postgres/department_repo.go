@@ -64,12 +64,30 @@ func (r *DepartmentRepo) List(ctx context.Context) ([]domain.Department, error) 
 	return departments, rows.Err()
 }
 
-// GetOrCreateByName supports the dev-mode authenticator (no IdP yet — see
-// DEC-001 in docs/17_Decision_Log.md), which needs a Department row to
-// attach a locally-provisioned dev User to.
+// GetOrCreateByName returns the department called name, creating it if
+// there is none: how registration, the dev-mode authenticator and anyone
+// adding a department (POST /departments, the MCP create_application tool)
+// all reach the same row. The name is normalized first and matched without
+// regard to case, so "innovation" finds "Innovation" rather than creating
+// a second one.
 func (r *DepartmentRepo) GetOrCreateByName(ctx context.Context, name string) (domain.Department, error) {
+	name, err := domain.NormalizeDepartmentName(name)
+	if err != nil {
+		return domain.Department{}, err
+	}
 	var d domain.Department
-	err := r.pool.QueryRow(ctx, `
+	err = r.pool.QueryRow(ctx, `
+		SELECT id, name, COALESCE(cost_center_code, ''), status, created_at
+		FROM departments WHERE lower(name) = lower($1)
+		ORDER BY created_at LIMIT 1
+	`, name).Scan(&d.ID, &d.Name, &d.CostCenterCode, &d.Status, &d.CreatedAt)
+	if err == nil {
+		return d, nil
+	}
+	if err != pgx.ErrNoRows {
+		return domain.Department{}, fmt.Errorf("find department: %w", err)
+	}
+	err = r.pool.QueryRow(ctx, `
 		INSERT INTO departments (name) VALUES ($1)
 		ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
 		RETURNING id, name, COALESCE(cost_center_code, ''), status, created_at
@@ -78,4 +96,29 @@ func (r *DepartmentRepo) GetOrCreateByName(ctx context.Context, name string) (do
 		return domain.Department{}, fmt.Errorf("get or create department: %w", err)
 	}
 	return d, nil
+}
+
+// ListSummaries is every department with how many people and (not deleted)
+// applications belong to it, for the Portal's departments page.
+func (r *DepartmentRepo) ListSummaries(ctx context.Context) ([]domain.DepartmentSummary, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT d.id, d.name, COALESCE(d.cost_center_code, ''), d.status, d.created_at,
+		       (SELECT COUNT(*) FROM users u WHERE u.department_id = d.id),
+		       (SELECT COUNT(*) FROM applications a WHERE a.owning_department_id = d.id AND a.lifecycle_status <> 'deleted')
+		FROM departments d ORDER BY d.name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list department summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.DepartmentSummary
+	for rows.Next() {
+		var s domain.DepartmentSummary
+		if err := rows.Scan(&s.ID, &s.Name, &s.CostCenterCode, &s.Status, &s.CreatedAt, &s.Users, &s.Applications); err != nil {
+			return nil, fmt.Errorf("scan department summary: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

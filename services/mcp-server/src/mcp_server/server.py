@@ -148,7 +148,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     async def create_application(
         name: str,
         description: str,
-        department: str,
+        department: str = "",
         deployment_yaml: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:

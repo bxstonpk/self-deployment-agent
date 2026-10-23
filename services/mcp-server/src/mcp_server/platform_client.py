@@ -172,6 +172,13 @@ class PlatformClient:
             for d in data.get("departments", [])
         ]
 
+    async def create_department(self, name: str) -> dict[str, Any]:
+        # Returns the existing department of that name (any case) rather
+        # than a duplicate; same PascalCase normalization as above.
+        data = await self._request("POST", "/departments", json={"name": name})
+        d = data.get("department", {})
+        return {"id": d.get("ID"), "name": d.get("Name"), "status": d.get("Status")}
+
     # --- Applications ------------------------------------------------------
 
     async def register_application(

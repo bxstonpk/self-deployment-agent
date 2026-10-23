@@ -207,11 +207,22 @@ platform's security precheck — don't attempt it even if asked.
 ### 5. Register (if needed)
 
 If the application isn't registered yet, call `create_application(name,
-description, department, deployment_yaml, idempotency_key)` — `department`
-is a **name** (e.g. `"Engineering"`), not an internal ID; the tool
-resolves it server-side, and returns a clear `VALIDATION_ERROR` listing
-known department names if it doesn't recognize the one given. Passing
-`deployment_yaml` here saves it in the same call. If the application
+description, department, deployment_yaml, idempotency_key)`. `department`
+is the **name** of the department the application belongs to, not an
+internal ID. Any department is accepted:
+- **Leave it out (or empty)** when the employee hasn't said: the
+  application then belongs to the signed-in employee's own department.
+- **Pass the name the employee gives** when they say it's for another
+  department. One that doesn't exist yet is created, and an existing one
+  is matched regardless of case.
+- **Never invent a department name** (no `"Engineering"` placeholder). If
+  you're unsure which department it's for, ask the employee or leave it
+  out.
+
+The result's `data.department` is the department it was registered
+under, and `data.department_created` says whether that department was
+just added. Mention a newly created one to the employee so a typo can be
+caught. Passing `deployment_yaml` here saves it in the same call. If the application
 already exists, use `validate_application`'s own `deployment_yaml`
 parameter (next step) to update it instead of re-registering.
 
