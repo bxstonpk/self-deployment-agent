@@ -1831,8 +1831,9 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   Deployment step talk to — that's the intended permanent shape, per
   `DEC-004`'s revision, not a stand-in for a multi-host setup that isn't
   planned.
-- Real authentication — not a gap, a decision: see **Self-declared
-  identity** below (`DEC-001`, Decided).
+- Enterprise SSO/IdP integration — not a gap, a decision (`DEC-001`).
+  The platform authenticates employees itself: see **How authentication
+  works** below.
 - Resource quota enforcement (FR-032) — depends on Module M, not built yet.
 - Full RBAC / Role / Permission tables (Module A/B) — not a gap, a
   decision: `DEC-002` (Decided 2026-09-11) is that there is no role beyond
@@ -1888,42 +1889,119 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   approver-independence point above — there is no distinct approver role
   to gate on.
 
-## Self-declared identity (permanent — see DEC-001)
+## How authentication works (DEC-001/DEC-003, revised 2026-10-23)
 
-There is no Identity Provider integration, and per
-[`17_Decision_Log.md`](../../docs/17_Decision_Log.md)'s `DEC-001` (**Decided
-2026-09-11**), there won't be one: this platform is internal-only, runs on a
-single existing on-prem Linux host, and is reachable only from the company
-LAN — not internet-facing, no cloud. With network access to the platform
-already the trust boundary, an employee identifies themselves with these
-headers rather than a password:
+Every endpoint except `/healthz` and the application proxy (`/run/...`)
+needs `Authorization: Bearer <token>`. A token is one of two kinds of
+credential (`internal/domain/auth.go`):
+
+- **Portal session** (`cps_…`, 12h by default). An employee gets one by
+  registering or signing in with email and password.
+- **API key** (`cpk_…`, 30 days by default). Each Claude Code machine
+  fetches its own through a **device authorization** before it can deploy.
+
+Only a SHA-256 of each token is stored, and passwords are bcrypt. The
+pg_dump check in `scripts/verify_auth.py` confirms neither appears in the
+database.
 
 ```
-X-Dev-User-Email: alice@example.com
-X-Dev-User-Name:  Alice Employee      # optional
-X-Dev-Department: Engineering         # optional, defaults to "Unassigned"
+POST /auth/register   {email, password, full_name, department, enrollment_code}  -> session
+POST /auth/login      {email, password}                                         -> session
+POST /auth/device     {client_name}         -> device_code, user_code, verification_uri(_complete)
+POST /auth/device/token {device_code}       -> authorization_pending | access_denied | expired_token | api_key
+GET  /auth/me                               -> who this credential is
+POST /auth/logout                           -> revoke the credential used
+# session only — never an API key:
+GET/POST /auth/api-keys, DELETE /auth/api-keys/{id}
+GET /auth/device/{userCode}, POST /auth/device/{userCode}/approve|deny
 ```
 
-The user/department are upserted on first use. This mechanism
-(`internal/httpapi/devauth.go`) sits behind the `Authenticator` interface,
-same as before — so it *could* still be swapped for real SSO later if the
-deployment context ever changes (`NFR-051`), but that is no longer an
-expected near-term step, just a door left open.
+**The device flow.**
+1. The machine asks `/auth/device` and shows the employee a code such as
+   `BCDF-GHJK` and a link to the Admin Portal's `/device` page.
+2. The employee signs in there with their own password and approves the
+   code.
+3. The machine's next poll of `/auth/device/token` receives a key named
+   after the machine.
 
-**Accepted risk, recorded not hidden:** anyone with LAN access can type any
-email in these headers, including impersonating another employee — nothing
-here verifies the claim. Per `DEC-001`, `DEC-002`, and `DEC-003`
-(all Decided 2026-09-11), this is accepted for a small, trusted internal
-user base, together with **no RBAC beyond application ownership** — no
-Platform/Security/IT Administrator role exists anywhere, by design, not
-because it's unfinished. See those three entries in the Decision Log for
-the full reasoning.
+The key is generated at that moment, so it exists in plaintext only on its
+way to the machine. A device code yields exactly one key and expires after
+10 minutes. Device codes follow RFC 8628's error vocabulary.
 
-The `PLATFORM_ENV=dev` config value that gates this code path is a name
-left over from when it was assumed temporary — it is still the correct
-value to run with even though this is now the platform's permanent,
-intended mode, not a stopgap. Nothing reads that name as a promise that a
-different value is coming.
+**What a key cannot do.** It can do everything its employee can, except
+credential management:
+- listing, issuing or revoking keys;
+- approving or denying a device.
+
+Those take a Portal session. So an AI agent holding a key can never mint
+itself another key or approve its own request.
+
+**Registration** needs `PLATFORM_ENROLLMENT_CODE`, the shared code IT sets
+and hands to employees. It is compared in constant time, and the platform
+refuses to start in token mode without one. `PLATFORM_ALLOWED_EMAIL_DOMAINS`
+can additionally limit which emails may register. An account the old
+self-declared identity created has applications but no password; the
+first registration with that email **claims** it, keeping its id and
+applications, and only once.
+
+**Sign-in** gives the same answer for an unknown email, a wrong password
+and an account with no password yet. After 5 failures in 15 minutes an
+email is locked out for the rest of that window, even with the right
+password. The failure count is in memory, so a restart forgets it.
+
+**Audit.** Registering, signing in (and failing to), issuing and revoking
+keys, and deciding devices are recorded as `auth.*` actions against the
+employee they concern (`resource_type = credential`). They appear in that
+employee's own audit view.
+
+**Authorization is unchanged** (DEC-002): there is still no role beyond
+application ownership. Authentication only makes the "who" real.
+
+### The dev-header mode
+
+`PLATFORM_AUTH_MODE=dev-header` brings back the old self-declared identity
+(`X-Dev-User-Email` and friends, `internal/httpapi/devauth.go`) for local
+testing only. `config.Load` refuses it unless `PLATFORM_ENV=dev`. The
+older verification scripts (`verify_module_n.py` and the others before
+this change) still authenticate that way, so they need this mode.
+`verify_auth.py`, `verify_lan_stack.py` and the MCP end-to-end script sign
+in for real (`scripts/platform_auth.py`).
+
+### Known gaps
+
+- **No password reset and no MFA.** An employee who forgets their
+  password needs IT to clear `users.password_hash`, after which
+  registering with the enrollment code sets a new one.
+- **The enrollment code is shared.** Anyone who has it and an
+  unregistered email (in an allowed domain, if set) can create an account.
+  Rotate it by changing `PLATFORM_ENROLLMENT_CODE` and restarting;
+  existing accounts are unaffected.
+- **Lockout is per email, in memory, and not per source address.**
+- **Starting a device authorization needs no credential**, by design (the
+  machine has none yet), and isn't rate-limited. Unapproved requests grant
+  nothing and expire after 10 minutes, but they are not purged.
+- **The Portal keeps its session in `localStorage`**, readable by any
+  script running on the Portal's origin.
+
+### Verifying it
+
+```bash
+docker compose up -d --build      # from the repo root, with .env present
+python services/platform-api/scripts/verify_auth.py
+```
+
+It checks the following, over real HTTP against the live stack:
+- nothing answers without a credential, and the old header is refused;
+- registration needs the code;
+- sign-in doesn't reveal which emails exist, and locks out;
+- the device flow, end to end: pending, approved, collected once, denied;
+- the key registers and validates an application owned by the employee
+  who approved it, which another employee can't act on;
+- the key can't touch credentials;
+- revoked keys and signed-out sessions stop at once;
+- every event is in the audit log;
+- a full `pg_dump` contains none of the key, session, password or device
+  code.
 
 ## Running locally
 
@@ -1932,6 +2010,7 @@ From the repo root, first time only:
 ```
 cp .env.example .env   # then edit POSTGRES_PASSWORD if you want a non-default value
 openssl rand -base64 32   # required: paste the output into .env as PLATFORM_SECRET_KEY
+python -c "import secrets; print(secrets.token_urlsafe(12))"   # required: .env's PLATFORM_ENROLLMENT_CODE
 ```
 
 `.env` is git-ignored — `docker-compose.yml` reads all credentials from it
@@ -1949,16 +2028,18 @@ docker compose up --build
 Then:
 
 ```
-curl -X POST localhost:8080/applications \
-  -H "X-Dev-User-Email: alice@example.com" \
+curl -X POST localhost:8090/auth/register -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"at-least-10-chars","department":"Engineering","enrollment_code":"<from .env>"}'
+# -> {"token":"cps_...", ...}; send it as a Bearer credential from here on
+curl localhost:8090/departments -H "Authorization: Bearer cps_..."
+curl -X POST localhost:8090/applications -H "Authorization: Bearer cps_..." \
   -H "Content-Type: application/json" \
-  -d '{"name":"overtime","description":"HR overtime tracker","owning_department_id":"<department-uuid>"}'
+  -d '{"name":"overtime","description":"HR overtime tracker","owning_department_id":"<department id>"}'
 ```
 
-(`owning_department_id` must be a real department UUID — dev-mode auth
-auto-creates one from `X-Dev-Department` on first request; fetch it from the
-`departments` table, or extend this flow with a `GET /departments` endpoint
-in a future state.)
+(Registering creates the department you name if it doesn't exist yet.
+A Claude Code machine uses an API key instead of a session — see **How
+authentication works**.)
 
 To exercise a real build, after registering + saving a valid
 `deployment.yaml` + validating: `POST` a `tar.gz` archive as the raw request

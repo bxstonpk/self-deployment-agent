@@ -122,7 +122,27 @@ func main() {
 	trafficRecorder := service.NewTrafficRecorder()
 	metricsService := service.NewMetricsService(applicationRepo, ownerRepo, metricRepo, runtime, trafficRecorder,
 		deploymentRepo, serviceStateRepo, scaleEventRepo, cfg.MetricsSampleInterval)
-	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
+	// DEC-001/DEC-003 (revised 2026-10-23): real authentication unless the
+	// dev-header mode was asked for explicitly — config.Load already
+	// refused that outside PLATFORM_ENV=dev.
+	var authenticator httpapi.Authenticator
+	var authHandler *httpapi.AuthHandler
+	if cfg.AuthMode == "dev-header" {
+		log.Printf("auth: DEV-HEADER mode — identities are self-declared and unverified (local testing only)")
+		authenticator = httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
+	} else {
+		policy := service.DefaultAuthPolicy()
+		policy.EnrollmentCode = cfg.EnrollmentCode
+		policy.AllowedEmailDomains = cfg.AllowedEmailDomains
+		policy.SessionTTL = cfg.SessionTTL
+		policy.APIKeyTTL = cfg.APIKeyTTL
+		policy.APIKeyMaxTTL = cfg.APIKeyMaxTTL
+		authService := service.NewAuthService(postgres.NewAuthRepo(pool), userRepo, departmentRepo, auditService, policy)
+		authenticator = httpapi.NewTokenAuthenticator(authService)
+		authHandler = httpapi.NewAuthHandler(authService, cfg.PortalURL)
+		log.Printf("auth: token mode — sessions %s, API keys %s (max %s), devices approved at %s/device",
+			cfg.SessionTTL, cfg.APIKeyTTL, cfg.APIKeyMaxTTL, cfg.PortalURL)
+	}
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,
@@ -141,6 +161,8 @@ func main() {
 		Secrets:            httpapi.NewSecretHandler(secretService, rotationService),
 		Logs:               httpapi.NewLogHandler(logService),
 		Metrics:            httpapi.NewMetricsHandler(metricsService),
+		Auth:               authHandler,
+		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})

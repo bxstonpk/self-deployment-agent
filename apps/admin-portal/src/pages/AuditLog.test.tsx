@@ -88,7 +88,7 @@ describe("AuditLog", () => {
     expect(await screen.findByText(/chain intact/i)).toBeInTheDocument();
   });
 
-  it("downloads a CSV export via the export endpoint with identity headers", async () => {
+  it("downloads a CSV export via the export endpoint with the session credential", async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       if (url.includes("/export")) {
         return Promise.resolve(
@@ -111,7 +111,7 @@ describe("AuditLog", () => {
       const exportCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/export"));
       expect(exportCall).toBeDefined();
       const headers = (exportCall![1] as RequestInit).headers as Record<string, string>;
-      expect(headers["X-Dev-User-Email"]).toBe("alice@example.com");
+      expect(headers.Authorization).toBe("Bearer cps_test-session-alice@example.com");
     });
     expect(clickSpy).toHaveBeenCalled();
   });

@@ -18,7 +18,25 @@ type Config struct {
 	// derived from Port: under Docker the API listens on 8080 inside its
 	// container and is published on a different port outside.
 	PublicBaseURL string
-	PlatformEnv   string // "dev" enables the temporary header-based auth stub; see DEC-001
+	PlatformEnv   string // "dev" is required for the dev-header auth mode; see AuthMode
+
+	// AuthMode is "token" (the default: Portal sessions and per-machine API
+	// keys, DEC-001/DEC-003 revised 2026-10-23) or "dev-header" (the old
+	// self-declared identity, for local test scripts only — refused unless
+	// PlatformEnv is "dev").
+	AuthMode string
+	// EnrollmentCode is the shared code IT gives employees so they can
+	// create an account. Required in token mode: without it, anyone on the
+	// LAN could register.
+	EnrollmentCode string
+	// AllowedEmailDomains optionally limits registration (e.g. sti-th.com).
+	AllowedEmailDomains []string
+	SessionTTL          time.Duration
+	APIKeyTTL           time.Duration
+	APIKeyMaxTTL        time.Duration
+	// PortalURL is the Admin Portal's address, where an employee approves
+	// a machine's request for an API key (/device).
+	PortalURL string
 
 	// CORSAllowedOrigins lets apps/admin-portal (a browser client, its own
 	// origin) call this API — see httpapi.RouterConfig's doc comment.
@@ -107,12 +125,46 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	authMode := getEnv("PLATFORM_AUTH_MODE", "token")
+	platformEnv := getEnv("PLATFORM_ENV", "dev")
+	enrollmentCode := os.Getenv("PLATFORM_ENROLLMENT_CODE")
+	switch authMode {
+	case "token":
+		if len(enrollmentCode) < 8 {
+			return Config{}, fmt.Errorf("PLATFORM_ENROLLMENT_CODE is required (at least 8 characters) — employees need it to create an account; see .env.example at the repo root")
+		}
+	case "dev-header":
+		if platformEnv != "dev" {
+			return Config{}, fmt.Errorf("PLATFORM_AUTH_MODE=dev-header trusts self-declared identity headers and is refused unless PLATFORM_ENV=dev")
+		}
+	default:
+		return Config{}, fmt.Errorf("PLATFORM_AUTH_MODE must be \"token\" or \"dev-header\", got %q", authMode)
+	}
+	sessionTTL, err := getEnvSeconds("SESSION_TTL_SECONDS", 12*3600)
+	if err != nil {
+		return Config{}, err
+	}
+	apiKeyTTL, err := getEnvSeconds("API_KEY_TTL_SECONDS", 30*24*3600)
+	if err != nil {
+		return Config{}, err
+	}
+	apiKeyMaxTTL, err := getEnvSeconds("API_KEY_MAX_TTL_SECONDS", 90*24*3600)
+	if err != nil {
+		return Config{}, err
+	}
 	port := getEnv("PORT", "8080")
 	return Config{
+		AuthMode:                     authMode,
+		EnrollmentCode:               enrollmentCode,
+		AllowedEmailDomains:          getEnvList("PLATFORM_ALLOWED_EMAIL_DOMAINS", ""),
+		SessionTTL:                   sessionTTL,
+		APIKeyTTL:                    apiKeyTTL,
+		APIKeyMaxTTL:                 apiKeyMaxTTL,
+		PortalURL:                    strings.TrimRight(getEnv("PLATFORM_PORTAL_URL", "http://localhost:5173"), "/"),
 		DatabaseURL:                  databaseURL,
 		Port:                         port,
 		PublicBaseURL:                strings.TrimRight(getEnv("PLATFORM_PUBLIC_BASE_URL", "http://localhost:"+port), "/"),
-		PlatformEnv:                  getEnv("PLATFORM_ENV", "dev"),
+		PlatformEnv:                  platformEnv,
 		CORSAllowedOrigins:           getEnvList("CORS_ALLOWED_ORIGINS", "http://localhost:5173"),
 		ScaleToZeroIdleTimeout:       idleTimeout,
 		ScaleSweepInterval:           sweepInterval,

@@ -36,7 +36,7 @@ describe("ApplicationList", () => {
     expect(screen.getByText("payroll")).toBeInTheDocument();
   });
 
-  it("sends the signed-in identity as dev-auth headers", async () => {
+  it("sends the signed-in session as a Bearer credential, and no self-declared identity", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ applications: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -45,7 +45,8 @@ describe("ApplicationList", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     const headers = options.headers as Record<string, string>;
-    expect(headers["X-Dev-User-Email"]).toBe("alice@example.com");
+    expect(headers.Authorization).toBe("Bearer cps_test-session-alice@example.com");
+    expect(Object.keys(headers).some((h) => h.toLowerCase().startsWith("x-dev-"))).toBe(false);
   });
 
   it("filters the list by search text", async () => {

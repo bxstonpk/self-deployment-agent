@@ -16,6 +16,7 @@ dev = [
 
 [project.scripts]
 company-deployment-mcp = "mcp_server.server:main"
+company-deploy = "mcp_server.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

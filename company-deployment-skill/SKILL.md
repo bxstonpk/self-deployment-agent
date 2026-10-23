@@ -18,9 +18,37 @@ over anything cached here, and never reach for infrastructure directly.
 live tool result wins.** Treat `docs/`/`schemas/` as a fast offline cache,
 never as the source of truth.
 
+## Before anything else: is this machine signed in?
+
+Call `whoami` first, every session. Every other tool is refused until this
+machine has fetched its API key, and the platform decides who the machine
+acts for from that key alone.
+
+If `whoami` says `signed_in: false`:
+
+1. Call `login`. It returns a `user_code` (like `BCDF-GHJK`) and a
+   `verification_url`.
+2. Tell the employee, in these words or close to them: *"Open
+   <verification_url>, sign in with your own company account, check the
+   code shown is <user_code>, and click Approve."* If they have no account
+   yet, the page lets them create one with the enrollment code from IT.
+3. Call `complete_login` (it waits up to `wait_seconds`, default 60). If it
+   answers `state: waiting_for_approval`, remind the employee and call it
+   again. If it fails with `UNAUTHORIZED`, they denied it — stop and ask
+   why rather than starting over.
+
+Never ask the employee for their password, never ask them to paste a key
+into the conversation, and never try to read or print
+`~/.company-deploy/credentials.json` — the key must not enter this
+transcript. If a tool later fails with `UNAUTHORIZED` and a message
+telling you to call `login`, the key expired or was revoked: sign in again
+the same way. `logout` revokes this machine's key, when the employee asks
+for that.
+
 ## The MCP tools
 
 Every platform interaction goes through these, and nothing else:
+`whoami`, `login`, `complete_login`, `logout`,
 `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`,
 `create_application`, `validate_application`, `deploy_application`,
 `get_application_status`, `get_deployment_status`, `get_application_logs`,
@@ -279,7 +307,7 @@ platform returned.
 
 ### 11. Never touch infrastructure directly
 
-At every step, your only path to the platform is these 13 MCP tools. You
+At every step, your only path to the platform is these MCP tools. You
 never write, suggest, or execute `kubectl`, `docker`, `docker-compose`
 (beyond reading an employee's own pre-existing local-dev file — never
 executing it on the platform's behalf), `helm`, `ssh`, or any other

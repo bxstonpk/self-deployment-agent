@@ -1,25 +1,36 @@
+import tempfile
+from pathlib import Path
+
 import httpx
 import pytest
 
-from mcp_server.config import Config, EmployeeIdentity
+from mcp_server import credentials
+from mcp_server.config import Config
 from mcp_server.envelope import ErrorCode, ToolError
-from mcp_server.platform_client import PlatformClient
+from mcp_server.platform_client import NOT_SIGNED_IN, PlatformClient
+
+BASE = "http://platform-api.test"
 
 
-def _client_with_transport(handler) -> PlatformClient:
+def _client_with_transport(handler, signed_in: bool = True, platform_url: str = BASE) -> PlatformClient:
+    path = Path(tempfile.mkdtemp()) / "credentials.json"
+    if signed_in:
+        credentials.save(credentials.StoredCredential(
+            platform_url=platform_url, api_key="cpk_test-key", key_id="k1", key_name="laptop",
+            email="alice@example.com", expires_at="2026-12-01T00:00:00Z",
+        ), path)
     config = Config(
-        mcp_env="dev",
-        platform_api_base_url="http://platform-api.test",
+        platform_api_base_url=BASE,
         platform_api_timeout_seconds=5,
-        employee=EmployeeIdentity(email="alice@example.com", full_name="Alice", department="Engineering"),
         idempotency_ttl_seconds=60,
+        credentials_path=path,
     )
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(base_url=config.platform_api_base_url, transport=transport)
     return PlatformClient(config, http_client=http_client)
 
 
-async def test_sends_dev_auth_headers_on_every_request():
+async def test_sends_the_machine_api_key_and_no_self_declared_identity():
     seen_headers = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -28,9 +39,41 @@ async def test_sends_dev_auth_headers_on_every_request():
 
     client = _client_with_transport(handler)
     await client.get_application("app-1")
-    assert seen_headers["x-dev-user-email"] == "alice@example.com"
-    assert seen_headers["x-dev-user-name"] == "Alice"
-    assert seen_headers["x-dev-department"] == "Engineering"
+    assert seen_headers["authorization"] == "Bearer cpk_test-key"
+    assert not any(h.startswith("x-dev-") for h in seen_headers)
+
+
+async def test_without_a_key_nothing_is_sent_and_the_agent_is_told_to_log_in():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    client = _client_with_transport(handler, signed_in=False)
+    with pytest.raises(ToolError) as exc:
+        await client.get_application("app-1")
+    assert exc.value.code == ErrorCode.UNAUTHORIZED
+    assert "login" in exc.value.message
+    assert requests == []
+
+
+async def test_a_key_for_another_platform_is_not_used():
+    client = _client_with_transport(lambda r: httpx.Response(200, json={}), platform_url="http://elsewhere:8090")
+    with pytest.raises(ToolError) as exc:
+        await client.get_application("app-1")
+    assert exc.value.code == ErrorCode.UNAUTHORIZED
+
+
+async def test_a_rejected_key_says_how_to_sign_in_again():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"code": "unauthorized", "message": "missing, unknown, expired or revoked credential"}})
+
+    client = _client_with_transport(handler)
+    with pytest.raises(ToolError) as exc:
+        await client.get_application("app-1")
+    assert exc.value.code == ErrorCode.UNAUTHORIZED
+    assert exc.value.message == NOT_SIGNED_IN
 
 
 @pytest.mark.parametrize(
@@ -92,14 +135,14 @@ async def test_trigger_build_sends_raw_bytes_with_gzip_content_type():
     def handler(request: httpx.Request) -> httpx.Response:
         seen["content_type"] = request.headers.get("content-type")
         seen["body"] = request.content
-        seen["dev_email"] = request.headers.get("x-dev-user-email")
+        seen["authorization"] = request.headers.get("authorization")
         return httpx.Response(200, json={"id": "b1", "status": "succeeded"})
 
     client = _client_with_transport(handler)
     result = await client.trigger_build("app-1", b"raw-tar-gz-bytes")
     assert seen["content_type"] == "application/gzip"
     assert seen["body"] == b"raw-tar-gz-bytes"
-    assert seen["dev_email"] == "alice@example.com"  # dev-auth headers still attached
+    assert seen["authorization"] == "Bearer cpk_test-key"  # the key is still attached
     assert result["status"] == "succeeded"
 
 

@@ -14,6 +14,14 @@ this impossible through the MCP, closed alongside this script) — not a
 workaround, this is the actual intended path now. Also checks Module O's
 boundary: secret names are visible through get_application_status, a
 value never is, and no tool takes a parameter that could carry one.
+
+Signs in the way a Claude Code machine does (DEC-001/DEC-003 revised
+2026-10-23): every tool is refused until `login` returns a code, the
+employee approves it with their own Portal session (done here over HTTP,
+as the Portal would), and `complete_login` stores the key — in a
+throwaway credentials file, never the real ~/.company-deploy one. The
+enrollment code comes from the repo-root .env (see
+services/platform-api/scripts/platform_auth.py).
 """
 
 from __future__ import annotations
@@ -32,7 +40,11 @@ import httpx
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-PLATFORM_API_BASE_URL = os.environ.get("PLATFORM_API_BASE_URL", "http://localhost:8090")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "platform-api" / "scripts"))
+from platform_auth import api_key_for, session_for  # noqa: E402
+
+PLATFORM_API_BASE_URL = os.environ.get("PLATFORM_API_BASE_URL", "http://localhost:8099")
+_CRED_DIR = Path(tempfile.mkdtemp(prefix="mcp-e2e-creds-"))
 EMPLOYEE_EMAIL = "mcp-e2e@sti-th.com"
 # Signs in to the platform but owns nothing: what a non-owner's agent sees.
 OTHER_EMPLOYEE_EMAIL = "mcp-e2e-other@sti-th.com"
@@ -88,22 +100,59 @@ def _print_result(label: str, result) -> dict:
 
 
 def _server_params(employee_email: str) -> StdioServerParameters:
+    """One machine per employee: each gets its own credentials file."""
     return StdioServerParameters(
         command=sys.executable,
         args=["-m", "mcp_server.server"],
         env={
             **os.environ,
-            "MCP_ENV": "dev",
             "PLATFORM_API_BASE_URL": PLATFORM_API_BASE_URL,
-            "MCP_EMPLOYEE_EMAIL": employee_email,
-            "MCP_EMPLOYEE_NAME": "MCP E2E Tester",
-            "MCP_EMPLOYEE_DEPARTMENT": "Engineering",
+            "COMPANY_DEPLOY_CREDENTIALS": str(_CRED_DIR / f"{employee_email}.json"),
         },
     )
 
 
+async def _sign_in_through_mcp(session: ClientSession) -> str:
+    """The real path: refused until signed in; login -> employee approves
+    -> complete_login. Returns the employee's Portal session token."""
+    who = _print_result("whoami (fresh machine)", await session.call_tool("whoami", {}))
+    _check(who["data"]["signed_in"] is False, "a fresh machine is not signed in")
+    refused = _print_result("get_supported_stacks before login", await session.call_tool("get_supported_stacks", {}))
+    _check(refused["status"] == "error" and refused["error"]["code"] == "UNAUTHORIZED" and "login" in refused["error"]["message"],
+           "every platform tool is refused before login, with instructions to sign in")
+
+    started = _print_result("login", await session.call_tool("login", {}))
+    code = started["data"]["user_code"]
+    _check(started["status"] == "success" and len(code) == 9 and code in started["data"]["verification_url"],
+           f"login returns a code for the employee to approve ({code})")
+
+    portal_session = session_for(PLATFORM_API_BASE_URL, EMPLOYEE_EMAIL, "MCP E2E Tester", "Engineering")
+    waiting = _print_result("complete_login (not approved yet)", await session.call_tool("complete_login", {"wait_seconds": 0}))
+    _check(waiting["data"].get("state") == "waiting_for_approval", "complete_login waits until the employee approves")
+    async with httpx.AsyncClient(timeout=30) as http:
+        approved = await http.post(f"{PLATFORM_API_BASE_URL}/auth/device/{code}/approve",
+                                   headers={"Authorization": f"Bearer {portal_session}"})
+    _check(approved.status_code == 200, "the employee approves the code with their own Portal session")
+    raw = await session.call_tool("complete_login", {"wait_seconds": 30})
+    done = _print_result("complete_login", raw)
+    _check(done["data"]["signed_in"] is True and done["data"]["email"] == EMPLOYEE_EMAIL,
+           f"complete_login stores the key; the machine now acts as {done['data'].get('email')}")
+    stored = json.loads((_CRED_DIR / f"{EMPLOYEE_EMAIL}.json").read_text())
+    _check(stored["api_key"].startswith("cpk_") and stored["api_key"] not in json.dumps(raw.structured_content)
+           and stored["api_key"] not in str(raw.content),
+           "the key is in the machine's credentials file and nowhere in what the agent saw")
+    return portal_session
+
+
 async def main() -> None:
     server_params = _server_params(EMPLOYEE_EMAIL)
+    # The second employee's machine is signed in ahead of time, the way the
+    # helper scripts do it (a real device approval, over HTTP).
+    other_key = api_key_for(PLATFORM_API_BASE_URL, OTHER_EMPLOYEE_EMAIL, "mcp e2e other machine")
+    (_CRED_DIR / f"{OTHER_EMPLOYEE_EMAIL}.json").write_text(json.dumps({
+        "platform_url": PLATFORM_API_BASE_URL, "api_key": other_key, "key_id": "", "key_name": "other",
+        "email": OTHER_EMPLOYEE_EMAIL, "expires_at": "",
+    }))
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -111,10 +160,11 @@ async def main() -> None:
             tools = await session.list_tools()
             tool_names = sorted(t.name for t in tools.tools)
             _check(
-                len(tool_names) == 21,
-                f"all 13 Section-13 tools plus the 8 later-module tools (Modules W/X/AB/E) "
-                f"discovered via MCP protocol: {tool_names}",
+                len(tool_names) == 25,
+                f"all 13 Section-13 tools, the 8 later-module tools (Modules W/X/AB/E) and the 4 "
+                f"sign-in tools discovered via MCP protocol: {tool_names}",
             )
+            portal_session = await _sign_in_through_mcp(session)
 
             info = _print_result("get_platform_info", await session.call_tool("get_platform_info", {}))
             _check(info["status"] == "success", "get_platform_info succeeded")
@@ -197,8 +247,7 @@ async def main() -> None:
                 put = await http.put(
                     f"{PLATFORM_API_BASE_URL}/applications/{app_id}/secrets/PAYMENTS_API_KEY",
                     json={"value": secret_value},
-                    headers={"X-Dev-User-Email": EMPLOYEE_EMAIL, "X-Dev-User-Name": "MCP E2E Tester",
-                             "X-Dev-Department": "Engineering"},
+                    headers={"Authorization": f"Bearer {portal_session}"},
                 )
             _check(put.status_code == 200, f"the employee set PAYMENTS_API_KEY on the platform directly (HTTP {put.status_code})")
             raw = await session.call_tool("get_application_status", {"application_id": app_id})

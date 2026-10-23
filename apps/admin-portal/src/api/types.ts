@@ -351,6 +351,41 @@ export interface DeploymentActivityReport {
 
 // --- API error envelope ---
 
+// --- Authentication -------------------------------------------------------
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  full_name: string;
+  department_id: string;
+}
+
+export interface AuthSession {
+  token: string;
+  expires_at: string;
+  user: AuthUser;
+}
+
+export interface ApiKey {
+  id: string;
+  kind: "api_key" | "session";
+  name: string;
+  prefix: string;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  active: boolean;
+}
+
+export interface PendingDevice {
+  user_code: string;
+  client_name: string;
+  status: "pending" | "approved" | "denied" | "consumed";
+  created_at: string;
+  expires_at: string;
+}
+
 export interface ApiErrorBody {
   error: { code: string; message: string };
 }

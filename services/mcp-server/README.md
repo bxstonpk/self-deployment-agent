@@ -153,14 +153,17 @@ the field to the response DTO.
 
 ## How it works
 
-- **`config.py`** — env-var-only configuration, fail-fast at startup.
-  `MCP_ENV` must be `"dev"`; the server refuses to start otherwise (see
-  **Dev-mode identity** below).
+- **`config.py`** — env-var-only configuration, fail-fast at startup:
+  where the Platform API is. Not who the server acts for — that's the
+  machine's API key (see **Signing a machine in** below).
+- **`credentials.py`, `login_flow.py`, `tools/auth.py`, `cli.py`** — the
+  machine's API key, how it's fetched (a device authorization the
+  employee approves in the Admin Portal), the `login` / `complete_login`
+  / `whoami` / `logout` tools, and the `company-deploy` command line.
 - **`platform_client.py`** — the only thing that talks HTTP to the
-  Platform API. Attaches the bound employee's identity via the same
-  `X-Dev-User-Email`/`X-Dev-User-Name`/`X-Dev-Department` headers
-  `platform-api`'s own dev-mode auth stub trusts (no separate mechanism
-  invented here). Translates every Platform API
+  Platform API. Sends the machine's API key as `Authorization: Bearer`,
+  read from the credentials file on every call; with no key it doesn't
+  send the request at all and tells the agent to call `login`. Translates every Platform API
   `{"error": {"code": ..., "message": ...}}` response into a `ToolError`
   carrying one of Section 8's fixed `ErrorCode`s, using the HTTP status as
   the primary signal and a handful of Platform API `code` strings as
@@ -283,15 +286,13 @@ Several of these mirror gaps already documented in
 logging, and monitoring don't exist on the Go side either, so nothing here
 can paper over them.
 
-- **Self-declared identity, not real MCP session tokens — by decision**
-  (`config.py`, `platform_client.py`). Section 3 wants a short-lived,
-  per-call, revocable, IdP-backed token; `DEC-003` (Decided 2026-09-11) is
-  that this platform, being internal-only and LAN-only, won't have one —
-  same basis as `DEC-001` for `platform-api`'s own identity mechanism.
-  This server binds ONE employee identity to the whole process lifetime
-  instead — refuses to start unless `MCP_ENV=dev`, exactly mirroring
-  `platform-api`'s `DevOnlyGuard` (a name left over from when this was
-  assumed temporary; it's the permanent value to run with).
+- **A per-machine key, not a per-call token** (`DEC-003`, revised
+  2026-10-23). Section 3 wants a short-lived, per-call, revocable,
+  IdP-backed token. What exists is an API key per machine: revocable,
+  expiring (30 days by default), attributable to the employee who
+  approved it, but valid for every call until then, and not IdP-backed
+  (`DEC-001`). The key sits in a file on the machine, readable by the
+  user who owns it; anything running as that user can use it.
 - **No real RBAC beyond ownership, permanently** (Section 4, Section 6's
   permission matrix). There is no IT/Platform/Security Administrator or
   Management/Auditor role anywhere in this platform, by decision
@@ -357,24 +358,43 @@ can paper over them.
   `server.py`. Remote HTTP/SSE transport, and the hosting-topology
   decision that goes with it, is future work, not designed against here.
 
-## Self-declared identity (permanent — see DEC-003)
+## Signing a machine in (DEC-001/DEC-003, revised 2026-10-23)
+
+Every tool except the four sign-in tools is refused until the machine has
+an API key. There are two ways to get one, and both write the same file,
+`~/.company-deploy/credentials.json` (or `COMPANY_DEPLOY_CREDENTIALS`):
+
+**From Claude Code.**
+1. Claude calls `login`, which returns a code such as `BCDF-GHJK` and a
+   link to the Admin Portal's `/device` page.
+2. The employee opens the link, signs in with **their own** password,
+   checks the code matches and approves it.
+3. Claude calls `complete_login`, which waits for the approval (up to
+   `wait_seconds`) and stores the key.
+
+`whoami` reports who the machine acts as. `logout` revokes the key on the
+platform and deletes the file.
+
+**From a terminal.**
 
 ```
-MCP_ENV=dev
-MCP_EMPLOYEE_EMAIL=alice@example.com
-MCP_EMPLOYEE_NAME=Alice Employee        # optional
-MCP_EMPLOYEE_DEPARTMENT=Engineering     # optional
+company-deploy login --url http://platform-host:8090
+company-deploy whoami
+company-deploy logout
 ```
 
-Every tool call in this server process acts as this one employee — there
-is no per-call identity, because per `DEC-003` (Decided 2026-09-11) there
-won't be a real MCP session-token mechanism (Section 3): this platform is
-internal-only and LAN-only, so a process-startup binding is the permanent
-model, not a stopgap. This is not a security boundary of its own; the
-Platform API's own identity mechanism (`platform-api`'s `DEC-001`,
-likewise Decided) is what actually authenticates every downstream call.
-`MCP_ENV=dev` is, as in `platform-api`, a name left over from when this
-was assumed temporary — still the correct value to run with.
+The key itself is never shown — not by any tool, not by the CLI, not in
+the Portal. No tool takes or returns it, so it never enters an agent's
+transcript; `scripts/e2e_verify.py` checks exactly that. The key is
+named after the machine (hostname and user), and the employee can revoke
+it from the Portal's **Access keys** page at any time. It can't manage
+keys or approve devices itself — those need the employee's own Portal
+session — so an agent can't extend its own access.
+
+The file is written owner-only (`0600` in a `0700` directory). On Windows
+those bits only mark it read-write, and the protection is the user
+profile's own ACL. A key issued by one platform address isn't sent to
+another: change `PLATFORM_API_BASE_URL` and the machine signs in again.
 
 ## Running locally
 
@@ -383,7 +403,7 @@ cd services/mcp-server
 python -m venv .venv
 source .venv/Scripts/activate   # or .venv/bin/activate on Linux/macOS
 pip install -e ".[dev]"
-cp .env.example .env            # then edit MCP_EMPLOYEE_EMAIL etc.
+cp .env.example .env            # then edit PLATFORM_API_BASE_URL
 ```
 
 Start the Platform API first (from the repo root — see
@@ -441,9 +461,12 @@ This is what was actually run to verify this server for real, not just
 unit-tested against fakes. What it covers, in order, all through the real
 MCP stdio protocol (not calling Python functions directly):
 
-1. Confirms all 21 tools (13 from Section 13, plus the eight
-   later-module tools for Modules W/X/AB/E) are discovered via
-   protocol-level `list_tools()`.
+1. Confirms all 25 tools (13 from Section 13, the eight later-module
+   tools for Modules W/X/AB/E, and the four sign-in tools) are discovered
+   via protocol-level `list_tools()`. Then signs in for real: a fresh
+   machine is refused every platform tool, `login` returns a code, the
+   employee approves it with their own session, `complete_login` stores
+   the key, and the key appears nowhere in anything the agent saw.
 2. `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`
    — real reads against the real catalog.
 3. `create_application` with an unknown department — confirmed rejected
@@ -507,7 +530,8 @@ confirmed both of `grant_application_access`'s rejections for real — an
 `access_level` of `primary` refused before the platform is even called,
 and a genuinely unknown employee refused by the Platform API itself.
 
-Every one of the 21 tools was exercised for real in this run — not just
+Every one of the 25 tools was exercised for real in this run (the four
+sign-in tools since DEC-003's revision) — not just
 the ones that were easy to make pass. The first full run of this exact
 script (back when it covered 13) is also what surfaced the
 context-cancellation bug described above: it failed partway through step 8
