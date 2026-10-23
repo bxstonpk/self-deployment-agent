@@ -50,7 +50,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-014 | Financial / Quota | Resource quota tiers and numeric limits (small/medium/large) | Platform Administrator + IT Administrator | Before Technical Design | **Decided (2026-10-23)** |
 | DEC-015 | Financial / Quota | Budget/cost ceiling for control-plane infra and tooling/licensing | Management / Auditor | Before Solution Architecture sign-off | Open |
 | DEC-016 | Financial / Quota | Department/cost-center chargeback or showback model | Management / Auditor | Before Production Go-Live | Open |
-| DEC-017 | Process & Governance | Production deployment approval workflow and tooling | Platform Administrator + Security Administrator | Before Technical Design | Open |
+| DEC-017 | Process & Governance | Production deployment approval workflow and tooling | Platform Administrator + Security Administrator | Before Technical Design | **Decided (2026-10-23)** |
 | DEC-018 | Process & Governance | Notification channels to integrate | IT Administrator + Platform Administrator | Before Development | Open |
 | DEC-019 | Process & Governance | Governance process for supported-stack changes | Platform Administrator + IT Administrator | Before Production Go-Live | Open |
 | DEC-020 | Process & Governance | Application ownership transfer process on employee departure | Application Owner + Platform Administrator | Before Production Go-Live | Open |
@@ -302,7 +302,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Application Owner self-approves with Platform Administrator spot-audits; (b) mandatory two-party approval (Application Owner + Platform/Security Administrator) via the Administration Portal; (c) ticket-based approval integrated with an existing ITSM tool. |
 | Recommendation | (b) for production; auto-approval (a-style) remains acceptable for dev, per the stated business rule. Final workflow to be confirmed jointly with IT/Security. |
 | Decision Owner | Platform Administrator + Security Administrator |
-| Status | Open |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **The platform administrator approves, by signing with a private key only they hold.** The platform owner decided this on 2026-10-23 ("I approve code after running the tests; I am the Admin and I hold the private key").<br><br>• A deployment needing approval pauses until a decision signed with an administrator's **Ed25519 private key** arrives. That is production by default (`APPROVAL_REQUIRED_ENVIRONMENTS`; dev keeps deploying on its own, as the BRD allows).<br>• The key is generated and used only on the administrator's machine (`company-deploy approver keygen` / `approve`), encrypted with a passphrase. The platform holds the public key (`PLATFORM_APPROVER_KEYS`).<br>• The signature covers the deployment, its build, every image and the SHA-256 of the test report the requester attached. A signature can't be reused for another deployment or a rebuilt one, and is refused more than 10 minutes from its signing time.<br>• An application's owner can no longer approve their own production deployment. The audit log and the approval record keep the signing key's fingerprint.<br><br>This adds one role to DEC-002's ownership-only model: approver, defined by holding a configured key. With no key configured, the previous owner approval applies. |
 | Target Phase | Before Technical Design |
 
 #### DEC-018 — Notification Channels to Integrate

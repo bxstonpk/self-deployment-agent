@@ -104,6 +104,19 @@ newer ones automatically. Refresh them on a schedule (FR-022):
 docker pull node:22-alpine golang:1.25-alpine python:3.12-alpine alpine:3.21 nginx:1.30-alpine mysql:8.4 aquasec/trivy:latest
 ```
 
+**Approving production deployments.** Production deployments wait for
+the administrator's decision, signed with a private key that never leaves
+their machine (`DEC-017`).
+1. Once, on the administrator's machine, after the installer: run
+   `company-deploy approver keygen`, choose a passphrase, and keep an
+   offline copy of the key file.
+2. Put the line it prints in the host's `.env` as
+   `PLATFORM_APPROVER_KEYS=…`, add the same email to
+   `PLATFORM_ADMIN_EMAILS`, and run `docker compose up -d platform-api`.
+3. From then on, `company-deploy approvals` lists what's waiting, and
+   `company-deploy approve <id>` shows the images, scan results and the
+   requester's test report, then signs.
+
 **Backups.** Every application database is backed up automatically
 (`DEC-025`): a full every Sunday and a differential every other day, from
 01:00 Asia/Bangkok. The previous week's set is deleted once a new full

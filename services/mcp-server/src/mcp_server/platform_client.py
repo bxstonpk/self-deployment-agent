@@ -230,10 +230,24 @@ class PlatformClient:
 
     # --- Deployments -------------------------------------------------------
 
-    async def deploy_application(self, application_id: str, environment: str) -> dict[str, Any]:
-        return await self._request(
-            "POST", f"/applications/{application_id}/deploy", json={"environment": environment}
-        )
+    async def deploy_application(self, application_id: str, environment: str, test_report: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"environment": environment}
+        if test_report:
+            body["test_report"] = test_report
+        return await self._request("POST", f"/applications/{application_id}/deploy", json=body)
+
+    # --- Signed approvals (DEC-017) -----------------------------------------
+
+    async def pending_approvals(self) -> list[dict[str, Any]]:
+        return (await self._request("GET", "/approvals/pending")).get("pending", [])
+
+    async def approval_request(self, deployment_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/approvals/{deployment_id}")
+
+    async def decide_approval(self, deployment_id: str, decision: str, reason: str, signed_at: str, signature: str) -> dict[str, Any]:
+        return await self._request("POST", f"/approvals/{deployment_id}/decision", json={
+            "decision": decision, "reason": reason, "signed_at": signed_at, "signature": signature,
+        })
 
     async def latest_deployment(self, application_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/applications/{application_id}/deployments/latest")

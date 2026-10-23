@@ -255,6 +255,12 @@ same machine as Claude Code, so it packs the folder itself, in five steps:
 `source_archive_base64` remains for a caller with no access to the
 folder.
 
+**`test_report`** (`DEC-017`): for a deployment that needs approval
+(production), the agent passes the tests it ran and their results. The
+approving administrator reads them in `company-deploy approve` before
+signing, and their hash is part of the signature. The same CLI gained
+`approver keygen`, `approvals` and `approve` (`approver.py`).
+
 This is a different situation from `query_audit_log`/`list_notifications`/
 `mark_notification_read` above, worth distinguishing rather than reading
 as an inconsistent application of Section 1's "don't add a tool for a gap

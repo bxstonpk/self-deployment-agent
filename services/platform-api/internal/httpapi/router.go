@@ -27,6 +27,7 @@ type RouterConfig struct {
 	Metrics       *MetricsHandler
 	Backups       *BackupHandler
 	Alerts        *AlertHandler
+	Approvals     *ApprovalHandler
 	// Auth serves /auth/*. Nil under the dev-header mode, which has no
 	// accounts to sign in to.
 	Auth *AuthHandler
@@ -165,6 +166,15 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Post("/{transferId}/accept", cfg.Applications.AcceptTransfer)
 	})
+
+	if cfg.Approvals != nil {
+		r.Route("/approvals", func(r chi.Router) {
+			r.Use(RequireAuth(cfg.Authenticator))
+			r.Get("/pending", cfg.Approvals.Pending)
+			r.Get("/{deploymentId}", cfg.Approvals.Get)
+			r.Post("/{deploymentId}/decision", cfg.Approvals.Decide)
+		})
+	}
 
 	r.Route("/deployments", func(r chi.Router) {
 		useDevGuard(r, cfg)

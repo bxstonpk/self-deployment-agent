@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -95,6 +96,26 @@ type DeploymentApproval struct {
 	Reason       *string
 	CreatedAt    time.Time
 	DecidedAt    *time.Time
+	// TestReport is what the requester attached for the approver; see
+	// approval_signing.go. SignerFingerprint and SignedAt record a signed
+	// decision.
+	TestReport        string
+	SignerFingerprint *string
+	SignedAt          *time.Time
+}
+
+type testReportKey struct{}
+
+// WithTestReport carries a deployment request's test report down to where
+// its approval record is created, so the record is complete the moment it
+// exists — an approver notified of it never reads it half-written.
+func WithTestReport(ctx context.Context, report string) context.Context {
+	return context.WithValue(ctx, testReportKey{}, report)
+}
+
+func TestReportFrom(ctx context.Context) string {
+	s, _ := ctx.Value(testReportKey{}).(string)
+	return s
 }
 
 var (

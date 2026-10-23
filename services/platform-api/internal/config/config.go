@@ -99,6 +99,13 @@ type Config struct {
 	BackupFullWeekday time.Weekday
 	BackupSweep       time.Duration
 
+	// ApproverKeys are the platform administrators' Ed25519 public keys
+	// (PLATFORM_APPROVER_KEYS). With any set, deployments needing approval
+	// go ahead only on a decision signed with the matching private key
+	// (DEC-017). ApprovalEnvironments are which environments need one.
+	ApproverKeys         []domain.ApproverKey
+	ApprovalEnvironments []domain.Environment
+
 	// AdminEmails are the platform administrators (PLATFORM_ADMIN_EMAILS):
 	// they receive platform-level alerts.
 	AdminEmails []string
@@ -200,6 +207,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	approverKeys, err := domain.ParseApproverKeys(os.Getenv("PLATFORM_APPROVER_KEYS"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PLATFORM_APPROVER_KEYS: %w", err)
+	}
+	approvalEnvs := []domain.Environment{}
+	for _, e := range getEnvList("APPROVAL_REQUIRED_ENVIRONMENTS", "production") {
+		env := domain.Environment(e)
+		if env != domain.EnvironmentDev && env != domain.EnvironmentProduction {
+			return Config{}, fmt.Errorf("APPROVAL_REQUIRED_ENVIRONMENTS: %q is not an environment (dev, production)", e)
+		}
+		approvalEnvs = append(approvalEnvs, env)
+	}
 	alerts, err := loadAlertThresholds()
 	if err != nil {
 		return Config{}, err
@@ -211,6 +230,8 @@ func Load() (Config, error) {
 	port := getEnv("PORT", "8080")
 	return Config{
 		AdminEmails:                  getEnvList("PLATFORM_ADMIN_EMAILS", ""),
+		ApproverKeys:                 approverKeys,
+		ApprovalEnvironments:         approvalEnvs,
 		Alerts:                       alerts,
 		AlertEvalInterval:            alertEval,
 		BackupEnabled:                getEnv("BACKUP_ENABLED", "true") != "false",
