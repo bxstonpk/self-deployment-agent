@@ -3,6 +3,7 @@ import { identityHeaders, UNAUTHORIZED_EVENT } from "../identity";
 import {
   ApiError,
   type ApiKey,
+  type ApplicationAlerts,
   type AuthSession,
   type BackupOverview,
   type DatabaseBackup,
@@ -375,6 +376,12 @@ export function deploymentActivity(identity: Identity, from?: string, to?: strin
   if (to) q.set("to", to);
   const query = q.toString();
   return request(identity, "GET", `/reports/deployment-activity${query ? `?${query}` : ""}`);
+}
+
+// --- Alerts (FR-092, DEC-028) ----------------------------------------------
+
+export function getAlerts(identity: Identity, applicationId: string): Promise<ApplicationAlerts> {
+  return request(identity, "GET", `/applications/${applicationId}/alerts`);
 }
 
 // --- Database backups (FR-064, DEC-025) ------------------------------------

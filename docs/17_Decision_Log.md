@@ -61,6 +61,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-025 | Operational | RPO/RTO targets and backup retention period for DR | IT Administrator + Application Owner | Before Production Go-Live | **Decided (2026-10-23)** (backup schedule and retention; RPO/RTO not set) |
 | DEC-026 | Operational | Platform support model / on-call ownership | IT Administrator + Platform Administrator | Before Production Go-Live | Open |
 | DEC-027 | Operational | Application log retention period | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
+| DEC-028 | Operational | Alert thresholds and notification rhythm | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
 
 ---
 
@@ -434,6 +435,20 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Decision Owner | Platform owner |
 | Status | **Decided (2026-10-23)** |
 | Resolution | **90 days.** platform-api deletes application log lines older than 90 days, hourly (`LOG_RETENTION_DAYS=90`; 0 would keep them forever). This covers what applications print (Module S) only. The audit log is immutable by design (FR-106) and its retention remains DEC-010. Metric retention (NFR-032) has not been decided. |
+| Target Phase | Before Production Go-Live |
+
+---
+
+#### DEC-028 — Alert Thresholds and Notification Rhythm
+
+| Field | Detail |
+|---|---|
+| Topic | When FR-092 raises an alert, and how often it tells people |
+| Question | FR-092 requires alerts on metric thresholds and defers the numbers, which no other requirement sets. What are they, and how often should an ongoing problem be announced? |
+| Options Considered | Three threshold sets were proposed on 2026-10-23: A (strict), B (balanced) and C (lenient). |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **Rhythm** (chosen explicitly): announce once when an alert starts, once more when it becomes critical, at most once an hour while it continues, and once when it clears. **Thresholds:** set B, the proposed default; the owner chose the rhythm and did not pick another set:<br>• 5xx rate over 5 minutes, judged from 20 requests: warning 5%, critical 20%;<br>• mean latency over 5 minutes: warning 1 s, critical 3 s;<br>• CPU sustained over 10 minutes: warning 85%, critical 95%;<br>• memory over 5 minutes, as a share of the limit (the host's RAM, since there are no quotas): warning 80%, critical 95%;<br>• the host's data disk: warning 85%, critical 95%.<br><br>Each is overridable (`ALERT_*`). Application alerts go to the application's owners; platform alerts go to `PLATFORM_ADMIN_EMAILS`. Delivery is the in-app inbox only, since no external channel has been chosen (DEC-018 remains open). |
 | Target Phase | Before Production Go-Live |
 
 ---

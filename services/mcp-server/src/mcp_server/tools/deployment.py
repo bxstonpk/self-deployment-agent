@@ -213,6 +213,14 @@ async def get_application_status(client: PlatformClient, application_id: str) ->
             raise
 
     secrets, secrets_note = await _secret_references(client, application_id)
+    active_alerts = None
+    try:
+        alerts = await client.get_alerts(application_id)
+        active_alerts = [
+            {k: a.get(k) for k in ("service", "rule", "level", "message", "started_at")} for a in alerts.get("active", [])
+        ]
+    except ToolError:
+        pass  # only owners see alerts, same as secrets
 
     return success(
         {
@@ -224,6 +232,9 @@ async def get_application_status(client: PlatformClient, application_id: str) ->
             "urls": urls,
             "secrets": secrets,
             "secrets_note": secrets_note,
+            # What the platform's alert rules (FR-092) say is wrong right
+            # now; None when this caller can't see them.
+            "active_alerts": active_alerts,
         }
     )
 

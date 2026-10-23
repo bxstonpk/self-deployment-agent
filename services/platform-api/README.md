@@ -1748,11 +1748,8 @@ cross-application administrator view would be audited — it doesn't exist.
 
 ### Known gaps
 
-- **FR-092 (threshold alerting) is not implemented.** FR-092 defers the
-  thresholds to the non-functional requirements, which set none for
-  metrics, so building it would mean inventing the numbers that decide
-  when someone gets woken up. The pieces it would need are here: the
-  metrics, and Module X's notifications.
+- **FR-092 (threshold alerting)** is implemented with `DEC-028`'s
+  thresholds — see **How Alerts work** below.
 - **FR-093 (platform-wide dashboard) is not implemented** — not a gap, a
   decision: it is explicitly an administrator and auditor view, and by
   `DEC-002` (Decided 2026-09-11) those roles don't exist, permanently, for
@@ -1807,6 +1804,74 @@ byte-identical to a random id's. Finally it suspends the application and
 confirms that the answer then contains no samples at all — not zeros —
 and says why, that no audit entry is written for a metrics read, and that
 deleting the application leaves no container behind.
+
+## How Alerts work (FR-092, DEC-028)
+
+Every 60 seconds (`ALERT_EVAL_INTERVAL_SECONDS`) platform-api judges each
+running service against the decided thresholds (set B). It uses its own
+measurements (Module T) and the host's data disk:
+
+| Rule | Over | Warning | Critical |
+|---|---|---|---|
+| 5xx rate (only from 20 requests up) | 5 min | 5% | 20% |
+| Mean latency (from 5 requests) | 5 min | 1 s | 3 s |
+| CPU, *every* sample over the line, readings covering ¾ of the window | 10 min | 85% | 95% |
+| Memory, as a share of the limit (the host's RAM: no quotas) | 5 min | 80% | 95% |
+| The host's data disk (where databases, backups and logs live) | now | 85% | 95% |
+
+**The rhythm** is what the platform owner chose. An alert is announced:
+- once when it **starts**;
+- once if it **becomes critical**;
+- as a **reminder at most once an hour** while it lasts;
+- once when it **clears**.
+
+A drop from critical back to warning isn't announced. A service that
+stops being measured (scaled to zero, stopped) counts as cleared.
+
+**State.** What is firing lives in `alert_states`, so a restart neither
+forgets an alert nor announces it again. Every announcement is kept in
+`alert_events` for 90 days (`DEC-027`).
+
+**Recipients.** Application alerts go to the application's owners.
+Platform alerts (the disk) go to `PLATFORM_ADMIN_EMAILS`. Both arrive in
+the in-app inbox (category `alert`). Owners also see what's firing:
+- on the application page in the Portal;
+- at `GET /applications/{id}/alerts` (current state, the last 7 days, and
+  the thresholds in force);
+- in the MCP's `get_application_status` (`active_alerts`).
+
+Every number is overridable through `ALERT_*` (see `.env.example`).
+
+### Known gaps
+
+- **In-app only.** No e-mail, Slack, Teams or LINE: no channel has been
+  chosen (`DEC-018`).
+- **Means, not percentiles.** Latency is a mean: Module T keeps a total
+  and a maximum per minute, not a distribution.
+- **No alert on a service that's down.** A service that never answers
+  produces 502s at the proxy, which the error-rate rule catches. Module R
+  already restarts unhealthy instances and notifies owners.
+
+### Verifying it
+
+```bash
+python services/platform-api/scripts/verify_alerts.py
+```
+
+It deploys a real application and drives real traffic through the proxy,
+with platform-api restarted on short windows so the run takes minutes.
+Each check is read from the notifications the owner and the admin actually
+received:
+- slow responses raised a latency warning, which resolved once diluted;
+- 7% 5xx raised a warning, and more failures escalated it to critical,
+  announced once;
+- a platform-api restart did not announce it again;
+- after the reminder interval came exactly one "Still critical";
+- the owner's alerts endpoint showed it with its history (another
+  employee got a 404), and healthy traffic resolved it;
+- a real busy loop in the container raised a CPU alert, which resolved
+  when it stopped;
+- the disk alert reached the admin and not the owner.
 
 ## How Continuous Health Monitoring works (Module R, FR-084/085)
 

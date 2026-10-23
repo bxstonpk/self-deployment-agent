@@ -49,6 +49,7 @@ import type {
 import { useIdentity } from "../context/IdentityContext";
 import { StatusBadge } from "../components/StatusBadge";
 import { BackupsSection } from "../components/BackupsSection";
+import { AlertsBanner } from "../components/AlertsBanner";
 
 // Mirrors lifecycle_service.go's requireNothingLive: deployment statuses that
 // still count as "in progress".
@@ -459,6 +460,8 @@ export function ApplicationDetail() {
       </div>
 
       {message && <div className={message.kind === "error" ? "error-banner" : "info-banner"}>{message.text}</div>}
+
+      {identity && <AlertsBanner identity={identity} applicationId={app.id} />}
 
       <section className="card">
         <h2>Overview</h2>

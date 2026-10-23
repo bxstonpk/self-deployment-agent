@@ -305,6 +305,12 @@ Call `get_deployment_status(deployment_id)`. Confirm `data.phase` is
 `data.current_lifecycle_state` is `running` with a non-null `data.url` —
 don't declare success on the deploy call alone.
 
+If `get_application_status` returns a non-empty `data.active_alerts`, the
+platform's own measurements say something is wrong right now (error rate,
+latency, CPU or memory). Tell the employee in the alert's own words, and
+look at `get_application_logs` / `get_application_metrics` before
+suggesting a cause.
+
 ### 10. Report the URLs — verbatim, never guessed
 
 Relay the exact addresses from `get_application_status`'s response to the

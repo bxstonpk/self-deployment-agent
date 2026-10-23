@@ -38,6 +38,7 @@ class FakePlatformClient:
             "by_department": {},
         }
         self.owners: dict[str, list[dict[str, Any]]] = {}
+        self.active_alerts: dict[str, list[dict[str, Any]]] = {}
         # Per-application secret metadata, and the applications whose secret
         # list this fake caller may not see (the Platform API's 403).
         self.secrets: dict[str, list[dict[str, Any]]] = {}
@@ -100,6 +101,10 @@ class FakePlatformClient:
         if not app:
             raise ToolError(ErrorCode.NOT_FOUND, "application not found")
         return dict(app)
+
+    async def get_alerts(self, application_id: str) -> dict[str, Any]:
+        self._record("get_alerts", application_id)
+        return {"active": list(self.active_alerts.get(application_id, [])), "recent": []}
 
     async def trigger_build(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
         self._record("trigger_build", application_id, source_archive)

@@ -248,3 +248,13 @@ async def test_status_reports_every_service_url_with_the_frontend_first():
 
     by_id = await deployment.get_deployment_status(client, dep["id"])
     assert by_id["data"]["result"]["urls"]["frontend"] == "http://gw/run/overtime/frontend/"
+
+
+async def test_status_reports_active_alerts_to_an_owner():
+    client = FakePlatformClient()
+    app = await _registered_app(client)
+    client.active_alerts[app["id"]] = [{"service": "api", "rule": "error_rate", "level": "critical",
+                                        "message": "30% failed", "started_at": "2026-10-23T03:00:00Z", "value": 0.3}]
+    status = await deployment.get_application_status(client, app["id"])
+    assert status["data"]["active_alerts"] == [{"service": "api", "rule": "error_rate", "level": "critical",
+                                                "message": "30% failed", "started_at": "2026-10-23T03:00:00Z"}]
