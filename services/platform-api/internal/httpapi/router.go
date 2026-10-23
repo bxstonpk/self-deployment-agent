@@ -26,6 +26,7 @@ type RouterConfig struct {
 	Logs          *LogHandler
 	Metrics       *MetricsHandler
 	Backups       *BackupHandler
+	Alerts        *AlertHandler
 	// Auth serves /auth/*. Nil under the dev-header mode, which has no
 	// accounts to sign in to.
 	Auth *AuthHandler
@@ -115,6 +116,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Post("/{id}/secrets/{name}/rotate", cfg.Secrets.Rotate)
 		r.Get("/{id}/logs", cfg.Logs.Query)
 		r.Get("/{id}/metrics", cfg.Metrics.Query)
+		if cfg.Alerts != nil {
+			r.Get("/{id}/alerts", cfg.Alerts.ForApplication)
+		}
 		if cfg.Backups != nil {
 			r.Get("/{id}/backups", cfg.Backups.List)
 			r.Post("/{id}/backups", cfg.Backups.BackupNow)

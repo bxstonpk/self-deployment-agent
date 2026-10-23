@@ -41,6 +41,9 @@ const (
 	NotificationHealthRemediation NotificationCategory = "health_remediation"
 	// NotificationDatabaseBackup: a scheduled backup failed (FR-064).
 	NotificationDatabaseBackup NotificationCategory = "database_backup"
+	// NotificationAlert: a measured problem started, escalated, persists
+	// or cleared (FR-092, DEC-028).
+	NotificationAlert NotificationCategory = "alert"
 )
 
 type Notification struct {

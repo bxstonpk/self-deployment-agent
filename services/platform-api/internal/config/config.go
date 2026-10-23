@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"platform-api/internal/domain"
 )
 
 type Config struct {
@@ -96,6 +98,14 @@ type Config struct {
 	BackupLocation    *time.Location
 	BackupFullWeekday time.Weekday
 	BackupSweep       time.Duration
+
+	// AdminEmails are the platform administrators (PLATFORM_ADMIN_EMAILS):
+	// they receive platform-level alerts.
+	AdminEmails []string
+	// Alerts (FR-092): DEC-028's thresholds, each overridable, evaluated
+	// every AlertEvalInterval.
+	Alerts            domain.AlertThresholds
+	AlertEvalInterval time.Duration
 
 	// SecretKey is Module O's encryption key (FR-066), base64 — see
 	// internal/secretbox. Required with no fallback, for the same reason
@@ -190,8 +200,19 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	alerts, err := loadAlertThresholds()
+	if err != nil {
+		return Config{}, err
+	}
+	alertEval, err := getEnvSeconds("ALERT_EVAL_INTERVAL_SECONDS", 60)
+	if err != nil {
+		return Config{}, err
+	}
 	port := getEnv("PORT", "8080")
 	return Config{
+		AdminEmails:                  getEnvList("PLATFORM_ADMIN_EMAILS", ""),
+		Alerts:                       alerts,
+		AlertEvalInterval:            alertEval,
 		BackupEnabled:                getEnv("BACKUP_ENABLED", "true") != "false",
 		BackupDir:                    getEnv("BACKUP_DIR", "/var/lib/platform/backups"),
 		BackupHour:                   backupHour,
@@ -219,6 +240,61 @@ func Load() (Config, error) {
 		OwnershipTransferWindow:      transferWindow,
 		SecretKey:                    secretKey,
 	}, nil
+}
+
+// loadAlertThresholds starts from DEC-028's set B and applies any
+// ALERT_* override.
+func loadAlertThresholds() (domain.AlertThresholds, error) {
+	t := domain.DefaultAlertThresholds()
+	floats := []struct {
+		key   string
+		dst   *float64
+		scale float64
+	}{
+		{"ALERT_ERROR_RATE_WARNING_PERCENT", &t.ErrorRateWarning, 0.01},
+		{"ALERT_ERROR_RATE_CRITICAL_PERCENT", &t.ErrorRateCritical, 0.01},
+		{"ALERT_LATENCY_WARNING_MS", &t.LatencyWarningMs, 1},
+		{"ALERT_LATENCY_CRITICAL_MS", &t.LatencyCriticalMs, 1},
+		{"ALERT_CPU_WARNING_PERCENT", &t.CPUWarning, 1},
+		{"ALERT_CPU_CRITICAL_PERCENT", &t.CPUCritical, 1},
+		{"ALERT_MEMORY_WARNING_PERCENT", &t.MemoryWarning, 1},
+		{"ALERT_MEMORY_CRITICAL_PERCENT", &t.MemoryCritical, 1},
+		{"ALERT_DISK_WARNING_PERCENT", &t.DiskWarning, 1},
+		{"ALERT_DISK_CRITICAL_PERCENT", &t.DiskCritical, 1},
+	}
+	for _, f := range floats {
+		if v := os.Getenv(f.key); v != "" {
+			n, err := strconv.ParseFloat(v, 64)
+			if err != nil || n < 0 {
+				return t, fmt.Errorf("%s must be a non-negative number, got %q", f.key, v)
+			}
+			*f.dst = n * f.scale
+		}
+	}
+	durations := []struct {
+		key string
+		dst *time.Duration
+	}{
+		{"ALERT_TRAFFIC_WINDOW_SECONDS", &t.TrafficWindow},
+		{"ALERT_CPU_WINDOW_SECONDS", &t.CPUWindow},
+		{"ALERT_MEMORY_WINDOW_SECONDS", &t.MemoryWindow},
+		{"ALERT_REMINDER_SECONDS", &t.ReminderInterval},
+	}
+	for _, d := range durations {
+		if v, err := getEnvSeconds(d.key, int(d.dst.Seconds())); err != nil {
+			return t, err
+		} else {
+			*d.dst = v
+		}
+	}
+	if v := os.Getenv("ALERT_MIN_REQUESTS"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return t, fmt.Errorf("ALERT_MIN_REQUESTS must be a positive whole number")
+		}
+		t.MinRequestsForRate = n
+	}
+	return t, nil
 }
 
 func getEnvList(key, fallback string) []string {

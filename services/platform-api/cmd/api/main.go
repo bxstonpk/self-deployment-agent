@@ -22,6 +22,7 @@ import (
 	"platform-api/internal/buildengine"
 	"platform-api/internal/config"
 	"platform-api/internal/db"
+	"platform-api/internal/hostdisk"
 	"platform-api/internal/httpapi"
 	"platform-api/internal/imagescan"
 	"platform-api/internal/repository/postgres"
@@ -111,6 +112,10 @@ func main() {
 	resources.SetBackups(backupService)
 	notificationService := service.NewNotificationService(notificationRepo, ownerRepo)
 	backupService.SetNotifier(notificationService)
+	admins := service.NewEmailAdminDirectory(userRepo, cfg.AdminEmails)
+	alertRepo := postgres.NewAlertRepo(pool)
+	alertService := service.NewAlertService(alertRepo, applicationRepo, ownerRepo, notificationService, admins,
+		cfg.Alerts, func() (float64, error) { return hostdisk.UsedPercent(cfg.BackupDir) })
 	applicationService := service.NewApplicationService(
 		applicationRepo, ownerRepo, departmentRepo, userRepo, transferRepo, notificationService, cfg.OwnershipTransferWindow, auditService,
 	)
@@ -172,6 +177,7 @@ func main() {
 		Logs:               httpapi.NewLogHandler(logService),
 		Metrics:            httpapi.NewMetricsHandler(metricsService),
 		Backups:            httpapi.NewBackupHandler(backupService),
+		Alerts:             httpapi.NewAlertHandler(alertService),
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,
@@ -186,7 +192,10 @@ func main() {
 	} else {
 		log.Printf("backups: scheduled database backups are switched off (BACKUP_ENABLED=false)")
 	}
-	go runRetentionSweeper(ctx, service.NewRetentionService(logRepo, cfg.LogRetention), time.Hour)
+	retention := service.NewRetentionService(logRepo, cfg.LogRetention)
+	retention.SetAlertHistory(alertRepo)
+	go runRetentionSweeper(ctx, retention, time.Hour)
+	go runAlertEvaluator(ctx, alertService, cfg.AlertEvalInterval, admins.Emails())
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -238,6 +247,28 @@ func runScaleSweeper(ctx context.Context, scaleService *service.ScaleService, in
 // runMetricsSampler implements FR-090's collection loop: one reading of
 // every running application container, and whatever traffic the proxy has
 // counted since the last sweep. Runs until ctx is cancelled.
+// runAlertEvaluator judges DEC-028's alert rules every interval (FR-092).
+func runAlertEvaluator(ctx context.Context, alerts *service.AlertService, interval time.Duration, admins []string) {
+	t := alerts.Thresholds()
+	log.Printf("alerts: every %s — errors %.0f%%/%.0f%%, latency %.0f/%.0f ms, CPU %.0f/%.0f%%, memory %.0f/%.0f%%, disk %.0f/%.0f%%, reminders every %s; platform alerts to %v",
+		interval, 100*t.ErrorRateWarning, 100*t.ErrorRateCritical, t.LatencyWarningMs, t.LatencyCriticalMs,
+		t.CPUWarning, t.CPUCritical, t.MemoryWarning, t.MemoryCritical, t.DiskWarning, t.DiskCritical, t.ReminderInterval, admins)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := alerts.Evaluate(ctx); err != nil {
+				log.Printf("alerts: %v", err)
+			} else if n > 0 {
+				log.Printf("alerts: sent %d notification(s)", n)
+			}
+		}
+	}
+}
+
 // runBackupScheduler takes the database backups that are due (DEC-025),
 // checking every interval. Each database is backed up once a day, so the
 // interval only bounds how long after the scheduled hour a backup starts.

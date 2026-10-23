@@ -16,9 +16,18 @@ type LogPurger interface {
 
 type RetentionService struct {
 	logs      LogPurger
+	alerts    AlertHistoryPurger
 	retention time.Duration
 	now       func() time.Time
 }
+
+// AlertHistoryPurger is alert history (FR-092), kept as long as logs.
+type AlertHistoryPurger interface {
+	DeleteEventsOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// SetAlertHistory purges alert history with the same retention as logs.
+func (s *RetentionService) SetAlertHistory(p AlertHistoryPurger) { s.alerts = p }
 
 // NewRetentionService keeps logs for retention; zero keeps them forever.
 func NewRetentionService(logs LogPurger, retention time.Duration) *RetentionService {
@@ -33,5 +42,11 @@ func (s *RetentionService) Sweep(ctx context.Context) (int64, error) {
 	if s.retention <= 0 {
 		return 0, nil
 	}
-	return s.logs.DeleteOlderThan(ctx, s.now().Add(-s.retention))
+	cutoff := s.now().Add(-s.retention)
+	n, err := s.logs.DeleteOlderThan(ctx, cutoff)
+	if err != nil || s.alerts == nil {
+		return n, err
+	}
+	m, err := s.alerts.DeleteEventsOlderThan(ctx, cutoff)
+	return n + m, err
 }

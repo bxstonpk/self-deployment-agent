@@ -433,8 +433,9 @@ decisions above:
 - **Observability stops short of alerting and metric retention.** Logging
   (Module S) and Monitoring (Module T) both collect and serve. Application
   logs are kept 90 days (`DEC-027`) and then purged, but `NFR-032`'s
-  metric retention is still undecided, so metrics aren't purged; `FR-092`'s alert thresholds are specified nowhere, so no alert
-  is raised on numbers nobody agreed to; `FR-093`'s platform-wide
+  metric retention is still undecided, so metrics aren't purged. Alerts
+  (`FR-092`) follow `DEC-028`'s thresholds and rhythm, in the in-app inbox
+  only, because no external channel has been chosen (`DEC-018`); `FR-093`'s platform-wide
   dashboard needs administrator roles that don't exist; log levels aren't
   parsed; latency has no percentiles; and nothing streams — reading logs
   is a page-at-a-time query in the Portal and over MCP alike. See

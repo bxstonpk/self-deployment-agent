@@ -351,6 +351,33 @@ export interface DeploymentActivityReport {
 
 // --- API error envelope ---
 
+// --- Alerts (FR-092, DEC-028) ----------------------------------------------
+
+export interface ActiveAlert {
+  service: string;
+  rule: "error_rate" | "latency" | "cpu" | "memory" | "host_disk";
+  level: "warning" | "critical";
+  value: number;
+  message: string;
+  started_at: string;
+}
+
+export interface AlertEvent {
+  service: string;
+  rule: string;
+  level: string;
+  kind: "fired" | "escalated" | "reminded" | "resolved";
+  value: number;
+  message: string;
+  at: string;
+}
+
+export interface ApplicationAlerts {
+  active: ActiveAlert[];
+  recent: AlertEvent[];
+  thresholds: Record<string, unknown>;
+}
+
 // --- Database backups (FR-064, DEC-025) ------------------------------------
 
 export interface DatabaseBackup {

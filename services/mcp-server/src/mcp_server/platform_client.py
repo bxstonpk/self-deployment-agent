@@ -133,6 +133,11 @@ class PlatformClient:
             return {}
         return resp.json()
 
+    # --- Alerts (FR-092) ---------------------------------------------------
+
+    async def get_alerts(self, application_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/applications/{application_id}/alerts")
+
     # --- Authentication (device authorization) ---------------------------
 
     async def start_device_authorization(self, client_name: str) -> dict[str, Any]:
