@@ -809,11 +809,10 @@ application rather than working around this gap.
 ### Validation report shape
 
 `POST /applications/{id}/validate` returns `{"application": {...}, "report": {"valid": bool, "checks": [...]}}`.
-Each check is `passed`, `failed`, or **`skipped`** — `resource_quota` is
-always `skipped` because Module M (Resource Manager) doesn't exist yet and
-exact quota numbers are TBD (`DEC-014`). This mirrors the docs' rule of
-never inventing a business decision: an honest "not implemented yet" beats a
-fake pass.
+Each check is `passed`, `failed`, or **`skipped`**. `resource_quota` is
+always `passed`, because `DEC-014` (decided 2026-10-23) is that there are no
+quotas. Its detail says so, so nobody reads it as a limit that was checked.
+Until that decision it was reported `skipped` rather than given a fake pass.
 
 The one concretely-enforced part of FR-031 (security pre-check) so far: any
 top-level field outside `app/services/database/scaling/resources/domain` is
@@ -1531,10 +1530,15 @@ every state.
 
 ### Known gaps
 
-- **FR-088 (retention and purge) is not implemented.** The retention
-  period is TBD in the requirement itself, so nothing is purged: lines
-  accumulate, including a deleted application's (Delete is a status
-  change, and the rows stay with it).
+- **Retention (FR-088) is 90 days** (`DEC-027`). platform-api deletes
+  lines older than `LOG_RETENTION_DAYS` (default 90) at startup and then
+  hourly, in batches, using an index on `logged_at` (migration 0019).
+  When collection resumes after a restart, it reaches back no further
+  than the retention period. A container quiet for longer than that
+  doesn't get its already-purged output collected again. A deleted
+  application's lines age out the same way. Verified by planting a line
+  100 days old and one 10 days old in the real database: a restart
+  purged only the first.
 - **Log levels aren't parsed.** Each line carries its stream (stdout or
   stderr) instead, so FR-087's severity filter has nothing to filter on;
   the MCP tool says so when asked for one.
@@ -1834,7 +1838,8 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
 - Enterprise SSO/IdP integration — not a gap, a decision (`DEC-001`).
   The platform authenticates employees itself: see **How authentication
   works** below.
-- Resource quota enforcement (FR-032) — depends on Module M, not built yet.
+- Resource quota enforcement (FR-032) — not a gap, a decision: `DEC-014`
+  (2026-10-23) is no quotas, so Module M is not built.
 - Full RBAC / Role / Permission tables (Module A/B) — not a gap, a
   decision: `DEC-002` (Decided 2026-09-11) is that there is no role beyond
   application ownership. This is also why the production approval gate

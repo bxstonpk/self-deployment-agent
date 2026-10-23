@@ -339,6 +339,11 @@ func (r *DockerRuntime) ResumeLogCollection(ctx context.Context) (int, error) {
 			log.Printf("logs: cannot resume %s: %v", shortContainerID(c.ID), err)
 			continue
 		}
+		if r.logRetention > 0 {
+			if oldest := time.Now().Add(-r.logRetention); after.Before(oldest) {
+				after = oldest
+			}
+		}
 		src := domain.LogSource{ApplicationID: c.Labels[labelApplication], DeploymentID: c.Labels[labelDeployment], Service: c.Labels[labelService]}
 		r.follow(c.ID, src, redactionsFor(inspected.Config.Env, strings.Split(c.Labels[labelSecretEnvKeys], ",")), after)
 		resumed++

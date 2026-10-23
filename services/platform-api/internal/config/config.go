@@ -81,6 +81,11 @@ type Config struct {
 	// ratified value" status as the scale-to-zero timeouts above.
 	OwnershipTransferWindow time.Duration
 
+	// LogRetention is how long application logs are kept before the
+	// retention sweeper deletes them: 90 days, decided in DEC-027
+	// (2026-10-23). Zero keeps them forever.
+	LogRetention time.Duration
+
 	// SecretKey is Module O's encryption key (FR-066), base64 — see
 	// internal/secretbox. Required with no fallback, for the same reason
 	// as DatabaseURL: a default would be a key published in source code.
@@ -152,8 +157,13 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	logRetentionDays, err := strconv.Atoi(getEnv("LOG_RETENTION_DAYS", "90"))
+	if err != nil || logRetentionDays < 0 {
+		return Config{}, fmt.Errorf("LOG_RETENTION_DAYS must be a whole number of days (0 keeps logs forever)")
+	}
 	port := getEnv("PORT", "8080")
 	return Config{
+		LogRetention:                 time.Duration(logRetentionDays) * 24 * time.Hour,
 		AuthMode:                     authMode,
 		EnrollmentCode:               enrollmentCode,
 		AllowedEmailDomains:          getEnvList("PLATFORM_ALLOWED_EMAIL_DOMAINS", ""),

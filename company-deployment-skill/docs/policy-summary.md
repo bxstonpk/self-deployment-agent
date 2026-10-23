@@ -43,10 +43,12 @@ oversight beyond that.
 
 ## What's *not* enforced yet — say so honestly if asked
 
-- **Resource quotas.** `validate_application`'s response always reports
-  `resource_quota` as `skipped`, not passed — there is no department or
-  application quota system yet. Don't tell an employee a quota check
-  happened when it didn't.
+- **Resource quotas.** There are none, by decision (`DEC-014`):
+  `validate_application` reports `resource_quota` as `passed` with that
+  reason. Don't describe it as a limit the application was checked
+  against.
+- **Logs are kept 90 days.** Anything older than that is gone from
+  `get_application_logs` (`DEC-027`).
 - **Role-based access control beyond ownership.** No distinct IT
   Administrator / Platform Administrator / Security Administrator /
   Auditor roles exist in enforcement — see the approval-gate note above.
