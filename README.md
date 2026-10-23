@@ -34,7 +34,7 @@ the system most:
 | `DEC-027` | Application logs kept 90 days |
 | `DEC-028` | Alert thresholds, and the rhythm: on start, on escalation, at most hourly while ongoing, on clear |
 | `DEC-006` | The platform's encryption key is sealed with the host's TPM |
-| `DEC-007` | No per-application DNS: applications live at `/run/<app>/<service>/` on the platform's address |
+| `DEC-007` | No per-application DNS: applications live at `/<app>/` on the platform's address (`/<app>/api/` for the API) |
 
 ## The application standard
 

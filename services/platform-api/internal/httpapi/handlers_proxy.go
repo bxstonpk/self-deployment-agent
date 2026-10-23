@@ -29,6 +29,7 @@ import (
 
 type ScaleResolver interface {
 	EnsureRunningByName(ctx context.Context, appName, serviceName string) (domain.ResolvedService, error)
+	ServiceForPath(ctx context.Context, appName, firstSegment string) (serviceName string, consumesSegment bool, err error)
 }
 
 // TrafficRecorder is Module T's traffic half (FR-090): every request to a
@@ -43,10 +44,14 @@ type ProxyHandler struct {
 	scale   ScaleResolver
 	traffic TrafficRecorder
 	client  *http.Client
+	// upstreamHost is where application containers' published ports are
+	// reached from inside platform-api's container. A field only so tests
+	// can point it at a local server.
+	upstreamHost string
 }
 
 func NewProxyHandler(scale ScaleResolver, traffic TrafficRecorder) *ProxyHandler {
-	return &ProxyHandler{scale: scale, traffic: traffic, client: &http.Client{Timeout: 30 * time.Second}}
+	return &ProxyHandler{scale: scale, traffic: traffic, client: &http.Client{Timeout: 30 * time.Second}, upstreamHost: "host.docker.internal"}
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +69,60 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.forward(w, r, appName, serviceName, remainder)
+}
+
+// ServeApp serves the short application address, /{app}/... — what the
+// gateway turns every path that isn't the Portal's, /api/, /run/ or
+// /downloads/ into (as /app/{app}/...; see deploy/gateway/nginx.conf).
+// /{app}/ is the application's frontend and /{app}/{service}/ any other of
+// its services: see ScaleService.ServiceForPath. The bare /{app} redirects
+// to /{app}/ for the same reason needsTrailingSlash gives, as does a bare
+// /{app}/{service}.
+func (h *ProxyHandler) ServeApp(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, appPathPrefix)
+	appName, after, hasSlash := strings.Cut(rest, "/")
+	if appName == "" || rest == r.URL.Path {
+		writeError(w, http.StatusNotFound, "not_found", "no application at this address")
+		return
+	}
+	isPage := r.Method == http.MethodGet || r.Method == http.MethodHead
+	if !hasSlash && isPage {
+		redirectWithQuery(w, r, "/"+appName+"/")
+		return
+	}
+	first, tail, segmentHasSlash := strings.Cut(after, "/")
+	serviceName, consumes, err := h.scale.ServiceForPath(r.Context(), appName, first)
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	remainder := "/" + after
+	if consumes {
+		if !segmentHasSlash && isPage {
+			redirectWithQuery(w, r, "/"+appName+"/"+first+"/")
+			return
+		}
+		remainder = "/" + tail
+	}
+	h.forward(w, r, appName, serviceName, remainder)
+}
+
+// appPathPrefix is where the gateway sends the short application address.
+const appPathPrefix = "/app/"
+
+// redirectWithQuery sends a permanent redirect to the public path target,
+// keeping the query string.
+func redirectWithQuery(w http.ResponseWriter, r *http.Request, target string) {
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, target, http.StatusPermanentRedirect)
+}
+
+// forward sends one request on to the service's current container,
+// cold-starting it first if it's scaled to zero.
+func (h *ProxyHandler) forward(w http.ResponseWriter, r *http.Request, appName, serviceName, remainder string) {
 	resolved, err := h.scale.EnsureRunningByName(r.Context(), appName, serviceName)
 	if err != nil {
 		writeProxyError(w, err)
@@ -74,7 +133,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// itself — same reasoning as the deploy pipeline's health check (see
 	// deploy_service.go). host.docker.internal reaches the sibling
 	// container that was just ensured running.
-	target := "http://host.docker.internal:" + strconv.Itoa(resolved.HostPort) + remainder
+	target := "http://" + h.upstreamHost + ":" + strconv.Itoa(resolved.HostPort) + remainder
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}

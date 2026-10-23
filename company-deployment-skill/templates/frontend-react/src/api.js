@@ -1,11 +1,16 @@
 // Where the API service lives. On the platform this page is served at
-// /run/{application}/frontend/ and the API at /run/{application}/api/, so
-// the API's address is derived from the page's own — nothing to configure
-// per environment. Locally (`npm run dev`) Vite proxies /api to the API.
+// /{application}/ and the API at /{application}/api/ — or, in the long form,
+// /run/{application}/frontend/ and /run/{application}/api/ — so the API's
+// address is derived from the page's own: nothing to configure per
+// environment. Locally (`npm run dev`) Vite proxies /api to the API.
 function apiBase() {
   if (import.meta.env.VITE_API_BASE) return import.meta.env.VITE_API_BASE
-  const onPlatform = window.location.pathname.match(/^\/run\/[^/]+\//)
-  return onPlatform ? `${onPlatform[0]}api` : '/api'
+  if (import.meta.env.DEV) return '/api'
+  const path = window.location.pathname
+  const longForm = path.match(/^\/run\/[^/]+\//)
+  if (longForm) return `${longForm[0]}api`
+  const app = path.match(/^\/[^/]+\//)
+  return app ? `${app[0]}api` : '/api'
 }
 
 export const API_BASE = apiBase()

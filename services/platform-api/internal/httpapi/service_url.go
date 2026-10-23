@@ -30,9 +30,12 @@ type ApplicationNamer interface {
 }
 
 // serviceURL is the stable public address of one service of one
-// application. Empty when the application's name isn't known: a response
-// that says nothing beats one advertising an address that won't work.
-func serviceURL(base, appName, serviceName string) string {
+// application: /{app}/ for the service a bare application address serves
+// (its frontend — see domain.DefaultService), /{app}/{service}/ for any
+// other. The long form, /run/{app}/{service}/, still works. Empty when the
+// application's name isn't known: a response that says nothing beats one
+// advertising an address that won't work.
+func serviceURL(base, appName, serviceName string, isDefault bool) string {
 	if base == "" || appName == "" || serviceName == "" {
 		return ""
 	}
@@ -41,7 +44,11 @@ func serviceURL(base, appName, serviceName string) string {
 	// that out would cost every client a round trip — and a client that
 	// doesn't follow redirects got the redirect page instead of the
 	// application, which is how the MCP end-to-end run found it.
-	return strings.TrimRight(base, "/") + "/run/" + url.PathEscape(appName) + "/" + url.PathEscape(serviceName) + "/"
+	u := strings.TrimRight(base, "/") + "/" + url.PathEscape(appName) + "/"
+	if !isDefault {
+		u += url.PathEscape(serviceName) + "/"
+	}
+	return u
 }
 
 // withPublicURLs returns the containers with each URL replaced by the
@@ -50,9 +57,14 @@ func withPublicURLs(containers map[string]domain.RunningContainer, base, appName
 	if len(containers) == 0 {
 		return containers
 	}
+	names := make([]string, 0, len(containers))
+	for serviceName := range containers {
+		names = append(names, serviceName)
+	}
+	defaultService := domain.DefaultService(names)
 	out := make(map[string]domain.RunningContainer, len(containers))
 	for serviceName, c := range containers {
-		c.URL = serviceURL(base, appName, serviceName)
+		c.URL = serviceURL(base, appName, serviceName, serviceName == defaultService)
 		out[serviceName] = c
 	}
 	return out

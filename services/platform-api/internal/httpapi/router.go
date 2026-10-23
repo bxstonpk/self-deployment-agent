@@ -186,6 +186,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	// Deliberately outside any auth middleware — see the package doc
 	// comment on ProxyHandler for why.
 	r.Handle("/run/*", cfg.Proxy)
+	r.Handle(appPathPrefix+"*", http.HandlerFunc(cfg.Proxy.ServeApp))
 
 	return r
 }

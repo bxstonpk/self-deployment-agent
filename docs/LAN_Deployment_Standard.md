@@ -11,10 +11,10 @@ verified it.
 ```
  Employee's machine (Windows / macOS / Linux)            Platform host (Linux + Docker)
  ┌──────────────────────────────────────────┐   LAN    ┌─────────────────────────────────────────────┐
- │ Claude Code                               │          │ gateway :8080  (nginx)                       │
+ │ Claude Code                               │          │ gateway :80  (nginx)                         │
  │   ├─ company-deployment skill             │  HTTP    │   /            Admin Portal                  │
  │   └─ Company Deployment MCP server ───────┼─────────▶│   /api/        Platform API ──▶ Postgres     │
- │        reads the machine's API key from   │          │   /run/        deployed applications         │
+ │        reads the machine's API key from   │          │   /<app>/      deployed applications         │
  │        ~/.company-deploy/credentials.json │          │   /downloads/  installer, MCP server, skill  │
  │ company-deploy (sign-in CLI)              │          │ Platform API ──▶ Docker: app containers,     │
  └──────────────────────────────────────────┘          │                  one MySQL per application   │
@@ -48,9 +48,16 @@ my-app/
   api/              # listens on $PORT, reads DATABASE_HOST/PORT/NAME/USER/PASSWORD
 ```
 
-- **Addresses.** Deployed, the frontend is at `/run/<app>/frontend/` and
-  the API at `/run/<app>/api/`. The template frontend works out its API
-  address from its own.
+- **Addresses.** Deployed, an application is at `/<app>/` on the
+  platform's address: the frontend at `/<app>/`, the API at
+  `/<app>/api/`. Share that link; anyone on the LAN can open it. The bare
+  `/<app>/` serves the service named `frontend` (or the only service);
+  `/<app>/<service>/` reaches any other. The long form,
+  `/run/<app>/<service>/`, still works. The Portal's pages and the
+  gateway's own paths (`api`, `run`, `downloads`, `assets`,
+  `applications`, `device`, `sign-in`, …) are reserved and can't be
+  application names. The template frontend works out its API address from
+  its own.
 - **Credentials.** The platform generates the database password and
   injects it. Nobody writes a credential into source or
   `deployment.yaml`. Other secrets are set by the employee in the Admin
@@ -197,7 +204,7 @@ to the dev environment as leave-tracker"*. The skill makes Claude:
    the service folders itself, leaving out `node_modules`, build output,
    `.git` and local secret files (`.env`, keys), and reports any it left
    out;
-5. report the URLs (`/run/<app>/frontend/`, `/run/<app>/api/`).
+5. report the URLs (`/<app>/`, `/<app>/api/`).
 
 **Verified with a real Claude Code session.** It was run headless with
 only the MCP server and skill available. Given a project made of the React

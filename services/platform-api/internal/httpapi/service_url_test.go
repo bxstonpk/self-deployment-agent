@@ -9,12 +9,15 @@ import (
 )
 
 func TestServiceURL_IsThePlatformsOwnAddress(t *testing.T) {
-	got := serviceURL("http://localhost:8090", "overtime", "api")
-	if want := "http://localhost:8090/run/overtime/api/"; got != want {
+	got := serviceURL("http://localhost:8090", "overtime", "api", false)
+	if want := "http://localhost:8090/overtime/api/"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	if got := serviceURL("http://localhost:8090/", "overtime", "api"); got != "http://localhost:8090/run/overtime/api/" {
+	if got := serviceURL("http://localhost:8090/", "overtime", "api", false); got != "http://localhost:8090/overtime/api/" {
 		t.Fatalf("a trailing slash on the base produced %q", got)
+	}
+	if got := serviceURL("http://localhost:8090", "overtime", "frontend", true); got != "http://localhost:8090/overtime/" {
+		t.Fatalf("the default service is at the application's own address, got %q", got)
 	}
 }
 
@@ -26,14 +29,14 @@ func TestServiceURL_EmptyWhenAnythingIsMissing(t *testing.T) {
 		{"http://localhost:8090", "", "api"},
 		{"http://localhost:8090", "overtime", ""},
 	} {
-		if got := serviceURL(args[0], args[1], args[2]); got != "" {
+		if got := serviceURL(args[0], args[1], args[2], false); got != "" {
 			t.Errorf("serviceURL(%q, %q, %q) = %q, want empty", args[0], args[1], args[2], got)
 		}
 	}
 }
 
 func TestServiceURL_EscapesEachSegment(t *testing.T) {
-	if got := serviceURL("http://localhost:8090", "over time", "api/v2"); got != "http://localhost:8090/run/over%20time/api%2Fv2/" {
+	if got := serviceURL("http://localhost:8090", "over time", "api/v2", false); got != "http://localhost:8090/over%20time/api%2Fv2/" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -48,7 +51,7 @@ func TestWithPublicURLs_ReplacesOnlyTheURL(t *testing.T) {
 
 	out := withPublicURLs(containers, "http://localhost:8090", "overtime")
 
-	if out["api"].URL != "http://localhost:8090/run/overtime/api/" || out["frontend"].URL != "http://localhost:8090/run/overtime/frontend/" {
+	if out["api"].URL != "http://localhost:8090/overtime/api/" || out["frontend"].URL != "http://localhost:8090/overtime/" {
 		t.Fatalf("unexpected URLs: %+v", out)
 	}
 	if out["api"].HostPort != 32770 || out["api"].ContainerID != "c-api" {

@@ -58,6 +58,22 @@ type ResolvedService struct {
 	HostPort      int
 }
 
+// DefaultService is the service an application's bare address, /{app}/,
+// serves: the one named "frontend" (what the templates and the skill
+// produce), or the only service of a single-service application. Empty when
+// neither applies; then every service is reached by name, /{app}/{service}/.
+func DefaultService(serviceNames []string) string {
+	for _, name := range serviceNames {
+		if name == "frontend" {
+			return name
+		}
+	}
+	if len(serviceNames) == 1 {
+		return serviceNames[0]
+	}
+	return ""
+}
+
 var (
 	ErrApplicationNotFound  = errors.New("application not found")
 	ErrNoRunningDeployment  = errors.New("application has no running deployment")

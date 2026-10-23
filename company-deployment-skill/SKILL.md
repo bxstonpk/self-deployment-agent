@@ -135,8 +135,11 @@ matching starting template from `examples/`.
 `api/`), a MySQL database, and `templates/deployment.yaml`. Each template
 already follows every platform convention — the build recipe its runtime
 expects, listening on `PORT`, reading `DATABASE_*`, relative asset paths
-so the frontend works under `/run/{app}/frontend/`, and the frontend
-finding its API at `/run/{app}/api/` — and has been deployed for real.
+so the frontend works under `/{app}/` (and the long form
+`/run/{app}/frontend/`), and the frontend finding its API at
+`/{app}/api/` — and has been deployed for real. An API service must be
+named `api` and the frontend `frontend`: the bare application address
+serves the service named `frontend`.
 See `templates/README.md`.
 
 ### 3. Check supported technologies — live, not cached
