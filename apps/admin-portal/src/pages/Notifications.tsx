@@ -59,42 +59,44 @@ export function Notifications() {
       </div>
 
       {notifications === null && !error && <p>Loading…</p>}
-      {notifications !== null && notifications.length === 0 && <p className="hint">Nothing here.</p>}
+      {notifications !== null && notifications.length === 0 && <p className="hint empty-state">Nothing here.</p>}
 
       {notifications !== null && notifications.length > 0 && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>Category</th>
-              <th>Title</th>
-              <th>Detail</th>
-              <th>Resource</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {notifications.map((n) => (
-              <tr key={n.id} className={n.read_at ? undefined : "notification-unread"}>
-                <td>{new Date(n.created_at).toLocaleString()}</td>
-                <td>{n.category}</td>
-                <td>{n.title}</td>
-                <td>{n.detail || <em>—</em>}</td>
-                <td>
-                  {n.resource_type}
-                  {n.resource_id ? ` / ${n.resource_id}` : ""}
-                </td>
-                <td>
-                  {!n.read_at && (
-                    <button disabled={busyId !== null} onClick={() => handleMarkRead(n.id)}>
-                      {busyId === n.id ? "Marking…" : "Mark read"}
-                    </button>
-                  )}
-                </td>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Category</th>
+                <th>Title</th>
+                <th>Detail</th>
+                <th>Resource</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {notifications.map((n) => (
+                <tr key={n.id} className={n.read_at ? undefined : "notification-unread"}>
+                  <td>{new Date(n.created_at).toLocaleString()}</td>
+                  <td>{n.category}</td>
+                  <td>{n.title}</td>
+                  <td>{n.detail || <em>—</em>}</td>
+                  <td>
+                    {n.resource_type}
+                    {n.resource_id ? ` / ${n.resource_id}` : ""}
+                  </td>
+                  <td>
+                    {!n.read_at && (
+                      <button disabled={busyId !== null} onClick={() => handleMarkRead(n.id)}>
+                        {busyId === n.id ? "Marking…" : "Mark read"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <p className="hint">

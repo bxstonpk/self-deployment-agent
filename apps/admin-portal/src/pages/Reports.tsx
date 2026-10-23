@@ -31,24 +31,26 @@ function BreakdownTable({ title, rows }: { title: string; rows: Record<string, O
   const entries = Object.entries(rows);
   if (entries.length === 0) return <p className="hint">No {title.toLowerCase()} activity in this range.</p>;
   return (
-    <table className="data-table breakdown-table" aria-label={`${title} breakdown`}>
-      <thead>
-        <tr>
-          <th>{title}</th>
-          <th className="numeric">Succeeded</th>
-          <th className="numeric">Failed</th>
-          <th className="numeric">Rolled back</th>
-        </tr>
-      </thead>
-      <tbody>
-        {entries.map(([key, counts]) => (
-          <tr key={key}>
-            <td>{key}</td>
-            <OutcomeCells counts={counts} />
+    <div className="table-wrap">
+      <table className="data-table breakdown-table" aria-label={`${title} breakdown`}>
+        <thead>
+          <tr>
+            <th>{title}</th>
+            <th className="numeric">Succeeded</th>
+            <th className="numeric">Failed</th>
+            <th className="numeric">Rolled back</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {entries.map(([key, counts]) => (
+            <tr key={key}>
+              <td>{key}</td>
+              <OutcomeCells counts={counts} />
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -180,34 +182,36 @@ export function Reports() {
         {inventory === null && !error && <p>Loading…</p>}
         {inventory !== null && inventory.length === 0 && <p className="hint">You don't own any applications yet.</p>}
         {inventory !== null && inventory.length > 0 && (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Department</th>
-                <th>Status</th>
-                <th>Stack</th>
-                <th>Environment</th>
-                <th className="numeric">Owners</th>
-              </tr>
-            </thead>
-            <tbody>
-              {inventory.map((row) => (
-                <tr key={row.application_id}>
-                  <td>
-                    <Link to={`/applications/${row.application_id}`}>{row.name}</Link>
-                  </td>
-                  <td>{row.department_name || row.department_id}</td>
-                  <td>
-                    <StatusBadge status={row.lifecycle_status} />
-                  </td>
-                  <td>{row.runtimes.length > 0 ? row.runtimes.join(", ") : <em>—</em>}</td>
-                  <td>{row.environment || <em>never deployed</em>}</td>
-                  <td className="numeric">{row.owner_user_ids.length}</td>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Department</th>
+                  <th>Status</th>
+                  <th>Stack</th>
+                  <th>Environment</th>
+                  <th className="numeric">Owners</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {inventory.map((row) => (
+                  <tr key={row.application_id}>
+                    <td>
+                      <Link to={`/applications/${row.application_id}`}>{row.name}</Link>
+                    </td>
+                    <td>{row.department_name || row.department_id}</td>
+                    <td>
+                      <StatusBadge status={row.lifecycle_status} />
+                    </td>
+                    <td>{row.runtimes.length > 0 ? row.runtimes.join(", ") : <em>—</em>}</td>
+                    <td>{row.environment || <em>never deployed</em>}</td>
+                    <td className="numeric">{row.owner_user_ids.length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>

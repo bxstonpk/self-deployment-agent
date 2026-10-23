@@ -98,44 +98,46 @@ export function BackupsSection({ identity, applicationId, applicationName }: {
       ) : overview.backups.length === 0 ? (
         <p>No backups yet.</p>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Taken</th>
-              <th>Kind</th>
-              <th>Why</th>
-              <th>Status</th>
-              <th>Stored</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {overview.backups.map((b) => (
-              <tr key={b.id}>
-                <td>{new Date(b.taken_at).toLocaleString()}</td>
-                <td>{b.kind}</td>
-                <td>{TRIGGER_LABEL[b.trigger]}</td>
-                <td>
-                  {b.status === "succeeded" ? (
-                    <span className="badge badge-success">succeeded</span>
-                  ) : (
-                    <span className="badge badge-danger" title={b.error}>
-                      failed
-                    </span>
-                  )}
-                </td>
-                <td>{b.status === "succeeded" ? size(b.stored_bytes) : b.error}</td>
-                <td>
-                  {b.status === "succeeded" && (
-                    <button disabled={busy} onClick={() => setRestoring(b)}>
-                      Restore…
-                    </button>
-                  )}
-                </td>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Taken</th>
+                <th>Kind</th>
+                <th>Why</th>
+                <th>Status</th>
+                <th>Stored</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {overview.backups.map((b) => (
+                <tr key={b.id}>
+                  <td>{new Date(b.taken_at).toLocaleString()}</td>
+                  <td>{b.kind}</td>
+                  <td>{TRIGGER_LABEL[b.trigger]}</td>
+                  <td>
+                    {b.status === "succeeded" ? (
+                      <span className="badge badge-success">succeeded</span>
+                    ) : (
+                      <span className="badge badge-danger" title={b.error}>
+                        failed
+                      </span>
+                    )}
+                  </td>
+                  <td>{b.status === "succeeded" ? size(b.stored_bytes) : b.error}</td>
+                  <td>
+                    {b.status === "succeeded" && (
+                      <button disabled={busy} onClick={() => setRestoring(b)}>
+                        Restore…
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       {restoring && (
         <div className="card" role="dialog" aria-label="Confirm restore">

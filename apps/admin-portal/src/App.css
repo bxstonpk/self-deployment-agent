@@ -1,146 +1,580 @@
+/* ───────────────────────── App shell ───────────────────────── */
+
 .app-shell {
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr);
+  /* The sidebar column stays navy however long the page runs. */
+  background: linear-gradient(90deg, var(--navy) 252px, var(--bg) 252px);
 }
 
-.app-header {
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 24px;
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  background: var(--navy);
+  background-image: linear-gradient(180deg, #172748 0%, var(--navy) 55%);
+  color: #d5dbe7;
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  overflow-y: auto;
 }
 
 .app-title {
-  font-weight: 600;
-  text-decoration: none;
-  color: var(--text);
-}
-
-.identity-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  color: var(--text-muted);
-  font-size: 13px;
+  gap: var(--space-3);
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.3;
+  color: #fff;
+  text-decoration: none;
 }
 
+.app-title:hover {
+  color: #fff;
+}
+
+.brand-mark {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--orange);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(181, 83, 26, 0.35);
+}
+
+.sidebar-brand {
+  padding: 0 var(--space-2) var(--space-5);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 9px var(--space-3);
+  border-radius: var(--radius-sm);
+  color: #c3cbdb;
+  font-size: 14.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.nav-link:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.nav-link.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.nav-link.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--orange);
+}
+
+.nav-link:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -2px;
+}
+
+.nav-icon {
+  flex: none;
+  opacity: 0.85;
+}
+
+.nav-link.active .nav-icon {
+  color: #f0a675;
+  opacity: 1;
+}
+
+.unread-count-badge {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 6px;
+  margin-left: 8px;
+  border-radius: 999px;
+  background: var(--orange);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 20px;
+  vertical-align: 1px;
+}
+
+.sidebar-user {
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-4) var(--space-2) 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.user-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--navy-600);
+  color: #fff;
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.user-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.user-name {
+  color: #fff;
+  font-weight: 500;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-email {
+  color: #a9b3c7;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.button-signout {
+  grid-column: 1 / -1;
+  width: 100%;
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #e3e8f1;
+  box-shadow: none;
+}
+
+button.button-signout:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+.app-main {
+  min-width: 0;
+  background: var(--bg);
+}
+
+/* Narrow screens: the sidebar folds into a top bar — brand and the
+   signed-in user on one row, the navigation as a scrollable strip below. */
+@media (max-width: 900px) {
+  .app-shell {
+    display: block;
+    background: var(--bg);
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    height: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "brand user"
+      "nav nav";
+    align-items: center;
+    gap: var(--space-3) var(--space-3);
+    padding: var(--space-3) var(--space-4) 0;
+    overflow: visible;
+    box-shadow: 0 2px 12px rgba(8, 15, 32, 0.2);
+  }
+
+  .sidebar-brand {
+    grid-area: brand;
+    padding: 0;
+    margin: 0;
+    border: none;
+    min-width: 0;
+  }
+
+  .app-title {
+    font-size: 14px;
+  }
+
+  .brand-mark {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+  }
+
+  .side-nav {
+    grid-area: nav;
+    flex-direction: row;
+    gap: var(--space-1);
+    overflow-x: auto;
+    margin: 0 calc(-1 * var(--space-4));
+    padding: 0 var(--space-4) var(--space-2);
+    scrollbar-width: none;
+    /* Fade the right edge so it's clear the strip scrolls. */
+    mask-image: linear-gradient(90deg, #000 85%, transparent);
+  }
+
+  .side-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-link {
+    flex: none;
+    padding: 7px 12px;
+    font-size: 14px;
+    gap: var(--space-2);
+  }
+
+  .nav-link.active::before {
+    left: 12px;
+    right: 12px;
+    top: auto;
+    bottom: -8px;
+    width: auto;
+    height: 3px;
+  }
+
+  .sidebar-user {
+    grid-area: user;
+    margin: 0;
+    padding: 0;
+    border: none;
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .user-avatar {
+    width: 32px;
+    height: 32px;
+    font-size: 14px;
+  }
+
+  .user-text {
+    max-width: 180px;
+  }
+
+  button.button-signout {
+    width: auto;
+    min-height: 32px;
+    padding: 4px 12px;
+    font-size: 13px;
+  }
+}
+
+/* Visually hidden but still read out, so the signed-in email isn't lost to
+   screen-reader users when there's no room to show it. */
+@media (max-width: 640px) {
+  .user-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+/* ───────────────────────── Signed-out (auth) shell ───────────────────────── */
+
+.auth-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-7) var(--space-4);
+  background-color: var(--navy);
+  background-image:
+    radial-gradient(ellipse 60% 50% at 85% 0%, rgba(181, 83, 26, 0.28), transparent 70%),
+    radial-gradient(ellipse 55% 45% at 0% 100%, rgba(47, 111, 176, 0.3), transparent 70%),
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size:
+    auto,
+    auto,
+    32px 32px,
+    32px 32px;
+}
+
+.auth-brand {
+  margin-bottom: var(--space-5);
+}
+
+.auth-brand .app-title {
+  font-size: 18px;
+  gap: var(--space-3);
+}
+
+.auth-brand .brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+}
+
+.auth-main {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.auth-main .page {
+  margin: 0;
+  max-width: 440px;
+  padding: var(--space-6);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: var(--shadow-lg);
+}
+
+.auth-main .page h1 {
+  font-size: 24px;
+  margin-bottom: var(--space-2);
+}
+
+.auth-main form {
+  margin-top: var(--space-5);
+}
+
+.auth-main form button[type="submit"] {
+  width: 100%;
+  min-height: 44px;
+  margin-top: var(--space-2);
+  font-size: 15px;
+}
+
+.auth-main form + .hint {
+  margin: var(--space-5) 0 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .auth-shell {
+    padding: var(--space-6) var(--space-4);
+  }
+
+  .auth-main .page {
+    padding: var(--space-5);
+  }
+
+  .auth-brand .app-title {
+    font-size: 16px;
+  }
+}
+
+/* ───────────────────────── Page layout ───────────────────────── */
+
 .page {
-  max-width: 1000px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 24px;
+  padding: var(--space-6) var(--space-6) var(--space-7);
   width: 100%;
 }
 
+/* Single-task pages (approve a machine, register an application) read as
+   one panel rather than loose fields on the page background. */
 .page-narrow {
-  max-width: 480px;
+  max-width: 560px;
+}
+
+.app-main .page-narrow {
+  margin-top: var(--space-6);
+  padding: var(--space-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
 }
 
 .page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 
 .page-header h1 {
   margin: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.page-header h1 .badge {
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: var(--space-5) var(--space-4) var(--space-6);
+  }
+
+  .app-main .page-narrow {
+    margin: var(--space-4);
+    width: auto;
+    padding: var(--space-5);
+  }
+
+  h1 {
+    font-size: 22px;
+  }
 }
 
 .hint {
   color: var(--text-muted);
-  font-size: 13px;
-  margin-bottom: 12px;
+  font-size: 13.5px;
+  margin-bottom: var(--space-3);
 }
+
+/* An empty list: a quiet panel, so a blank page doesn't read as broken. */
+.empty-state {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+
+/* ───────────────────────── Forms ───────────────────────── */
 
 form label {
   display: block;
-  margin-bottom: 12px;
-  font-size: 13px;
-  color: var(--text-muted);
+  margin-bottom: var(--space-4);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text);
 }
 
-form input,
+form input:not([type="checkbox"]):not([type="radio"]),
 form select,
 form textarea {
   display: block;
   width: 100%;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .toolbar {
   display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 
-.toolbar input {
-  flex: 1;
+.toolbar > input {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  overflow-x: auto;
-  display: block;
+.toolbar > select {
+  flex: 0 1 auto;
 }
 
-.data-table th,
-.data-table td {
-  text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  font-size: 14px;
-}
-
-.data-table th {
-  color: var(--text-muted);
+.toolbar > label {
+  flex: 1 1 180px;
+  margin: 0;
+  font-size: 13.5px;
   font-weight: 500;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.card {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 16px;
+.toolbar > label input {
+  margin-top: 0;
 }
 
-.detail-grid {
-  display: grid;
-  grid-template-columns: 140px 1fr;
-  gap: 6px 12px;
-  margin: 0;
+.toolbar > label:has(input[type="number"]),
+.toolbar > label:has(input[type="date"]) {
+  flex: 0 1 180px;
 }
 
-.detail-grid dt {
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.detail-grid dd {
-  margin: 0;
+.toolbar > label:has(input[type="checkbox"]) {
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }
 
 .action-row {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   align-items: center;
   flex-wrap: wrap;
-  margin: 10px 0;
+  margin: var(--space-3) 0;
+}
+
+.action-row > input:not([type="checkbox"]):not([type="radio"]) {
+  flex: 1 1 240px;
+  width: auto;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.action-row > select {
+  flex: 0 1 auto;
+  width: auto;
+  margin-top: 0;
 }
 
 .yaml-editor {
   width: 100%;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
+  line-height: 1.55;
   resize: vertical;
+  background: var(--surface-subtle);
 }
 
 /* Name | value | save on one row, the value widest because PEM keys and
@@ -148,9 +582,9 @@ form textarea {
 .secret-form {
   display: grid;
   grid-template-columns: minmax(10rem, 16rem) 1fr auto;
-  gap: 10px;
+  gap: var(--space-2);
   align-items: start;
-  margin: 10px 0;
+  margin: var(--space-3) 0 0;
 }
 
 .secret-form input,
@@ -159,7 +593,7 @@ form textarea {
 }
 
 .secret-form textarea {
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   resize: vertical;
 }
@@ -170,71 +604,278 @@ form textarea {
   }
 }
 
+/* ───────────────────────── Cards ───────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  margin-bottom: var(--space-4);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+
+.card > h2:first-child {
+  margin-bottom: var(--space-3);
+}
+
+.card > :last-child {
+  margin-bottom: 0;
+}
+
+.card > h3 {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+/* A card inside a card (the machine being approved, a restore
+   confirmation) is a tinted inset, not a second floating panel. */
+.card .card,
+.page-narrow .card {
+  background: var(--surface-subtle);
+  box-shadow: none;
+  padding: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 640px) {
+  .card {
+    padding: var(--space-4);
+  }
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+
+.detail-grid dt {
+  color: var(--text-muted);
+  font-size: 13.5px;
+}
+
+.detail-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .detail-grid dd {
+    margin-bottom: var(--space-3);
+  }
+}
+
+/* ───────────────────────── Tables ───────────────────────── */
+
+/* Tables scroll inside their own frame, never the page. */
+.table-wrap {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-bottom: var(--space-4);
+}
+
+.card .table-wrap {
+  box-shadow: none;
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  vertical-align: middle;
+}
+
+.data-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr {
+  transition: background-color 0.12s ease;
+}
+
+.data-table tbody tr:hover {
+  background: #f8f9fb;
+}
+
+.data-table td a {
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.data-table td a:hover {
+  text-decoration: underline;
+}
+
+.data-table td button {
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+.data-table td.numeric,
+.data-table th.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two breakdown tables stacked directly on top of each other read as one
+   table with a stray repeated header — caught by looking at the rendered
+   page, not by any test. Separate them. */
+.table-wrap:has(.breakdown-table) {
+  margin-bottom: var(--space-5);
+}
+
+.notification-unread {
+  background: color-mix(in srgb, var(--blue) 6%, white);
+  font-weight: 600;
+}
+
+.data-table tbody tr.notification-unread:hover {
+  background: color-mix(in srgb, var(--blue) 10%, white);
+}
+
+.notification-unread td:first-child {
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
+/* ───────────────────────── Badges & banners ───────────────────────── */
+
 .badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   font-weight: 500;
-  padding: 2px 8px;
+  line-height: 1.5;
+  padding: 2px 10px 2px 8px;
   border-radius: 999px;
   text-transform: capitalize;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
 }
 
 .badge-neutral {
-  background: var(--bg-subtle);
+  background: var(--neutral-soft);
   color: var(--text-muted);
+  border-color: #dfe3ea;
 }
 
 .badge-info {
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  color: var(--accent);
+  background: var(--info-soft);
+  color: #245a91;
+  border-color: #cfdff0;
 }
 
 .badge-success {
-  background: color-mix(in srgb, var(--success) 15%, transparent);
-  color: var(--success);
+  background: var(--success-soft);
+  color: #256a4c;
+  border-color: #c7e3d5;
 }
 
 .badge-warning {
-  background: color-mix(in srgb, var(--warning) 20%, transparent);
-  color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  border-color: #f0dcb5;
 }
 
 .badge-danger {
-  background: color-mix(in srgb, var(--danger) 15%, transparent);
-  color: var(--danger);
+  background: var(--danger-soft);
+  color: #9c2f2f;
+  border-color: #efc9c9;
 }
 
-.button-primary {
-  background: var(--accent);
-  color: white;
-  border-color: var(--accent);
-  text-decoration: none;
-  display: inline-block;
-}
-
-.button-danger {
-  border-color: var(--danger);
-  color: var(--danger);
+.error-banner,
+.info-banner {
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  font-size: 14px;
+  border: 1px solid;
+  border-left-width: 4px;
+  overflow-wrap: anywhere;
 }
 
 .error-banner {
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-  border: 1px solid var(--danger);
-  color: var(--danger);
-  border-radius: 6px;
-  padding: 10px 14px;
-  margin-bottom: 16px;
-  font-size: 14px;
+  background: var(--danger-soft);
+  border-color: #efc9c9;
+  border-left-color: var(--danger);
+  color: #8a2828;
 }
 
 .info-banner {
-  background: color-mix(in srgb, var(--success) 10%, transparent);
-  border: 1px solid var(--success);
-  color: var(--success);
-  border-radius: 6px;
-  padding: 10px 14px;
-  margin-bottom: 16px;
-  font-size: 14px;
+  background: var(--success-soft);
+  border-color: #c7e3d5;
+  border-left-color: var(--success);
+  color: #1f5a40;
+}
+
+.error-banner ul {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+
+.error-banner li + li {
+  margin-top: 4px;
+}
+
+.info-banner p {
+  margin: 0 0 var(--space-2);
+}
+
+.info-banner p:last-child {
+  margin: var(--space-2) 0 0;
+}
+
+.info-banner > code {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid #c7e3d5;
+  word-break: break-all;
+  font-size: 13px;
 }
 
 .error-text {
@@ -244,13 +885,30 @@ form textarea {
 .findings {
   list-style: none;
   padding: 0;
-  margin: 12px 0 0;
-  font-size: 13px;
+  margin: var(--space-3) 0 0;
+  font-size: 13.5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
 
-.findings li {
-  padding: 6px 0;
+.findings > li {
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border);
+}
+
+.findings > li:first-child {
+  border-top: none;
+}
+
+.findings ul {
+  margin: 4px 0 0;
+  padding-left: var(--space-5);
+  color: var(--text-muted);
+}
+
+.finding-failed {
+  background: color-mix(in srgb, var(--danger) 5%, white);
 }
 
 .finding-failed strong {
@@ -265,24 +923,7 @@ form textarea {
   color: var(--text-muted);
 }
 
-.notification-unread {
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-  font-weight: 600;
-}
-
-.unread-count-badge {
-  display: inline-block;
-  min-width: 16px;
-  padding: 0 5px;
-  margin-left: 4px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: white;
-  font-size: 11px;
-  font-weight: 600;
-  text-align: center;
-  line-height: 16px;
-}
+/* ───────────────────────── Reports ───────────────────────── */
 
 /* KPI row (Module AB's deployment outcomes). Three headline numbers is a
    stat-tile row, not a three-bar chart — and at this size a chart library
@@ -292,21 +933,37 @@ form textarea {
 .stat-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin: 12px 0;
+  gap: var(--space-3);
+  margin: var(--space-3) 0 var(--space-4);
 }
 
 .stat-tile {
   flex: 1 1 140px;
-  padding: 12px 14px;
+  padding: var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-subtle);
+  border-top: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.stat-succeeded {
+  border-top-color: var(--success);
+}
+
+.stat-failed {
+  border-top-color: var(--danger);
+}
+
+.stat-rolled-back {
+  border-top-color: var(--blue);
 }
 
 .stat-tile .stat-label {
   display: block;
   font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   color: var(--text-muted);
 }
 
@@ -315,10 +972,12 @@ form textarea {
    where vertical alignment is the point. */
 .stat-tile .stat-value {
   display: block;
-  margin-top: 2px;
-  font-size: 28px;
+  margin-top: 4px;
+  font-family: var(--font-heading);
+  font-size: 30px;
   font-weight: 600;
   line-height: 1.1;
+  color: var(--navy);
 }
 
 .stat-succeeded .stat-value {
@@ -332,53 +991,44 @@ form textarea {
 /* Rolled back is a distinct outcome, not a failure — the informational
    accent, not the danger red. */
 .stat-rolled-back .stat-value {
-  color: var(--accent);
+  color: var(--blue);
 }
 
-.data-table td.numeric,
-.data-table th.numeric {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Two breakdown tables stacked directly on top of each other read as one
-   table with a stray repeated header — caught by looking at the rendered
-   page, not by any test. Separate them. */
-.breakdown-table {
-  margin-bottom: 20px;
-}
+/* ───────────────────────── Logs ───────────────────────── */
 
 /* Module S log lines. A log reads better as lines than as a table, but each
    line still has to say which stream it came from in words — the colour
    alone wouldn't reach everyone. */
 .log-lines {
   list-style: none;
-  margin: 0 0 12px;
-  padding: 0;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) 0;
   max-height: 420px;
   overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: #0f1a30;
+  color: #e3e8f1;
+  border: 1px solid var(--navy);
+  border-radius: var(--radius-sm);
 }
 
 .log-line {
   display: grid;
   grid-template-columns: 6.5rem 2.5rem minmax(4rem, 8rem) 1fr;
   gap: 10px;
-  padding: 4px 10px;
-  font-family: ui-monospace, Consolas, monospace;
+  padding: 3px 14px;
+  font-family: var(--font-mono);
   font-size: 12.5px;
-  border-bottom: 1px solid var(--border);
+  line-height: 1.55;
 }
 
-.log-line:last-child {
-  border-bottom: none;
+.log-line:hover {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .log-line time,
 .log-service,
 .log-stream {
-  color: var(--text-muted);
+  color: #8f9bb5;
 }
 
 .log-stream {
@@ -387,8 +1037,12 @@ form textarea {
   letter-spacing: 0.04em;
 }
 
+.log-stderr {
+  background: rgba(178, 58, 58, 0.14);
+}
+
 .log-stderr .log-stream {
-  color: var(--danger);
+  color: #f19a9a;
   font-weight: 600;
 }
 
@@ -401,8 +1055,12 @@ form textarea {
   .log-line {
     grid-template-columns: 1fr;
     gap: 2px;
+    padding: 6px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
 }
+
+/* ───────────────────────── Metrics ───────────────────────── */
 
 /* Module T metrics: plain numbers with the series behind them. No axes, no
    gridlines — the shape is worth showing, but the precision to read a value
@@ -410,61 +1068,69 @@ form textarea {
 .metric-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: 10px;
-  margin: 0 0 14px;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
 }
 
 .metric-tiles div {
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-subtle);
 }
 
 .metric-tiles dt {
   color: var(--text-muted);
   font-size: 12px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.05em;
 }
 
 .metric-tiles dd {
   margin: 4px 0 0;
-  font-size: 18px;
+  font-family: var(--font-heading);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--navy);
 }
 
 .metric-sub {
   display: block;
   color: var(--text-muted);
+  font-family: var(--font-body);
   font-size: 12px;
+  font-weight: 400;
 }
 
 .metric-chart {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
 }
 
 .metric-chart figcaption {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 12.5px;
   margin-bottom: 4px;
 }
 
 .sparkline {
   width: 100%;
-  height: 48px;
+  height: 56px;
   display: block;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
 }
 
 .sparkline polyline {
   fill: none;
-  stroke: var(--accent);
+  stroke: var(--blue);
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }
 
 .sparkline rect {
-  fill: var(--accent);
+  fill: var(--blue);
 }
 
 .sparkline rect.errors {
