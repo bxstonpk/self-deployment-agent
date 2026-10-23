@@ -424,9 +424,10 @@ decisions above:
   network isolation Module N already provides). Its absence means
   `FR-062`'s *detection* half is missing: a cross-application database
   connection attempt is prevented, but not detected or logged as a
-  policy violation. `FR-064` (database backups) is not implemented
-  either — it needs a scheduler this platform doesn't have and a retention
-  policy the requirement itself marks TBD. See
+  policy violation. Database backups (`FR-064`) run on `DEC-025`'s
+  schedule — a full every Sunday, differentials Monday to Saturday — but
+  they live on the same host as the databases, so copy the
+  `platform-backups` volume off the host. See
   `services/platform-api/README.md`'s "How Database Management works" for
   the full scope.
 - **Observability stops short of alerting and metric retention.** Logging

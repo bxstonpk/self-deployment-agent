@@ -86,6 +86,17 @@ type Config struct {
 	// (2026-10-23). Zero keeps them forever.
 	LogRetention time.Duration
 
+	// Database backups (FR-064) on DEC-025's schedule: a full backup on
+	// BackupFullWeekday, a differential every other day, each from
+	// BackupHour local to BackupLocation. BackupDir is where the sealed
+	// files go — a volume of its own in docker-compose.yml.
+	BackupEnabled     bool
+	BackupDir         string
+	BackupHour        int
+	BackupLocation    *time.Location
+	BackupFullWeekday time.Weekday
+	BackupSweep       time.Duration
+
 	// SecretKey is Module O's encryption key (FR-066), base64 — see
 	// internal/secretbox. Required with no fallback, for the same reason
 	// as DatabaseURL: a default would be a key published in source code.
@@ -161,8 +172,32 @@ func Load() (Config, error) {
 	if err != nil || logRetentionDays < 0 {
 		return Config{}, fmt.Errorf("LOG_RETENTION_DAYS must be a whole number of days (0 keeps logs forever)")
 	}
+	backupHour, err := strconv.Atoi(getEnv("BACKUP_HOUR", "1"))
+	if err != nil || backupHour < 0 || backupHour > 23 {
+		return Config{}, fmt.Errorf("BACKUP_HOUR must be an hour of the day, 0-23")
+	}
+	backupLocation, err := time.LoadLocation(getEnv("BACKUP_TIMEZONE", "Asia/Bangkok"))
+	if err != nil {
+		return Config{}, fmt.Errorf("BACKUP_TIMEZONE: %w", err)
+	}
+	weekdays := map[string]time.Weekday{"sunday": time.Sunday, "monday": time.Monday, "tuesday": time.Tuesday,
+		"wednesday": time.Wednesday, "thursday": time.Thursday, "friday": time.Friday, "saturday": time.Saturday}
+	fullWeekday, ok := weekdays[strings.ToLower(getEnv("BACKUP_FULL_WEEKDAY", "sunday"))]
+	if !ok {
+		return Config{}, fmt.Errorf("BACKUP_FULL_WEEKDAY must be a day of the week, e.g. sunday")
+	}
+	backupSweep, err := getEnvSeconds("BACKUP_SWEEP_INTERVAL_SECONDS", 600)
+	if err != nil {
+		return Config{}, err
+	}
 	port := getEnv("PORT", "8080")
 	return Config{
+		BackupEnabled:                getEnv("BACKUP_ENABLED", "true") != "false",
+		BackupDir:                    getEnv("BACKUP_DIR", "/var/lib/platform/backups"),
+		BackupHour:                   backupHour,
+		BackupLocation:               backupLocation,
+		BackupFullWeekday:            fullWeekday,
+		BackupSweep:                  backupSweep,
 		LogRetention:                 time.Duration(logRetentionDays) * 24 * time.Hour,
 		AuthMode:                     authMode,
 		EnrollmentCode:               enrollmentCode,

@@ -171,7 +171,12 @@ Populate from what you inspected and confirmed with the employee:
   database on deploy, and the platform injects `DATABASE_URL` (plus
   `DATABASE_ENGINE` and the individual
   `DATABASE_HOST`/`PORT`/`NAME`/`USER`/`PASSWORD` parts) into the
-  application's runtime. **Never write connection details or a
+  application's runtime. The database is backed up automatically: a full
+  backup every Sunday and a differential every other day. Leave
+  `database.backup` out (it defaults to `weekly`). Set `backup: none` only
+  when the employee says the data doesn't need keeping, never on your own.
+  Restoring a backup replaces the database's contents, so it is done by
+  an owner in the Admin Portal (**Backups** section), not by you. **Never write connection details or a
   password into `deployment.yaml`, source, or anything you show the
   employee — the platform generates them and the application reads them
   from its environment.** The database is deprovisioned when the

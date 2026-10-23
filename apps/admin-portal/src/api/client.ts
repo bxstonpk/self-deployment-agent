@@ -4,6 +4,8 @@ import {
   ApiError,
   type ApiKey,
   type AuthSession,
+  type BackupOverview,
+  type DatabaseBackup,
   type PendingDevice,
   type Application,
   type ApplicationOwner,
@@ -373,6 +375,27 @@ export function deploymentActivity(identity: Identity, from?: string, to?: strin
   if (to) q.set("to", to);
   const query = q.toString();
   return request(identity, "GET", `/reports/deployment-activity${query ? `?${query}` : ""}`);
+}
+
+// --- Database backups (FR-064, DEC-025) ------------------------------------
+
+export function listBackups(identity: Identity, applicationId: string): Promise<BackupOverview> {
+  return request(identity, "GET", `/applications/${applicationId}/backups`);
+}
+
+export function takeBackup(identity: Identity, applicationId: string): Promise<{ backup: DatabaseBackup }> {
+  return request(identity, "POST", `/applications/${applicationId}/backups`, { json: {} });
+}
+
+export function restoreBackup(
+  identity: Identity,
+  applicationId: string,
+  backupId: string,
+  confirm: string,
+): Promise<{ restored_backup_id: string; pre_restore_backup: DatabaseBackup }> {
+  return request(identity, "POST", `/applications/${applicationId}/backups/${backupId}/restore`, {
+    json: { confirm },
+  });
 }
 
 // --- Authentication (DEC-001/DEC-003 revised 2026-10-23) --------------------

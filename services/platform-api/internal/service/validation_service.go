@@ -249,6 +249,13 @@ func (s *ValidationService) checkStackCompliance(ctx context.Context, parsed dom
 			problems = append(problems, fmt.Sprintf("database.type declares unsupported database %q", dbType))
 		}
 	}
+	switch backup := parsed.Database.Backup; {
+	case backup == "":
+	case parsed.Database.Type == "":
+		problems = append(problems, domain.ErrBackupWithoutDatabase.Error())
+	case backup != domain.BackupPolicyWeekly && backup != domain.BackupPolicyNone:
+		problems = append(problems, fmt.Sprintf("%s (got %q)", domain.ErrInvalidBackupPolicy.Error(), backup))
+	}
 
 	if len(problems) > 0 {
 		return domain.ValidationCheck{Name: "stack_compliance", Status: domain.CheckFailed, Details: problems}

@@ -1165,13 +1165,11 @@ Both halves are then proved from outside the code, by connecting:
   sealed, platform-managed `DATABASE_PASSWORD`, and rows from before that
   are moved there at startup — see **How Secret Management works** below,
   including the part that is still not solved: the key itself.
-- **`FR-064` (Backup Scheduling) is not implemented.** It needs a
-  scheduler this platform doesn't have and a frequency/retention policy
-  the requirement itself marks TBD. Inventing one would be inventing a
-  business decision.
+- **`FR-064` (Backup Scheduling)** is implemented with `DEC-025`'s policy
+  — see **How Database Backups work** below.
 - **`FR-065`'s "purge or retain-then-purge, per policy" is purge, full
-  stop.** Retention would need the data-retention policy FR-065 defers to,
-  which doesn't exist; a final backup would need FR-064, which isn't built.
+  stop.** Deleting an application deletes its database *and its backups*;
+  no policy asks for a final backup to be kept.
 - **`FR-062`'s detection half** ("a cross-application connection attempt is
   detected and logged as a policy violation") is not implemented — that
   needs Module Q's network policy layer. Only the *prevention* half is
@@ -1261,6 +1259,93 @@ For one application it then checks four more things:
   headless browser loads the page, sees the API connected, adds an item
   through the form and sees it listed;
 - deleting each application removes its database container.
+
+## How Database Backups work (FR-064, DEC-025)
+
+The policy the platform owner decided on 2026-10-23:
+
+- **When:** a **full** backup every Sunday, and a **differential** Monday
+  to Saturday (what changed since that Sunday's full), each from 01:00
+  Asia/Bangkok. Set by `BACKUP_FULL_WEEKDAY`, `BACKUP_HOUR` and
+  `BACKUP_TIMEZONE`.
+- **Retention:** once a new full backup **succeeds**, every older backup of
+  that database is deleted, file and all. A failed Sunday therefore never
+  leaves a database without a backup.
+- **Opting out:** an application can declare `database: backup: none`.
+  Validation rejects any other value than `weekly` or `none`, and
+  rejects `backup` without a `database.type`.
+
+How it works (`internal/service/backup_service.go`):
+
+- **Dump.** A logical dump is taken inside the database's own container, as
+  the application's own account: `mysqldump --single-transaction
+  --skip-extended-insert --order-by-primary --skip-dump-date …` or
+  `pg_dump --clean --if-exists …`. Both put one row per line in a stable
+  order.
+- **Differential.** A differential is a line-level delta of the day's dump
+  against Sunday's (`internal/backupdelta`). An unchanged table costs one
+  instruction, a changed row one line. Restoring it is Sunday's dump plus
+  that one delta, never a chain.
+- **Sealing.** Every backup is gzip-compressed and **sealed with
+  `PLATFORM_SECRET_KEY`** (AES-256-GCM, bound to its own record) before
+  it's written to the `platform-backups` volume. A SHA-256 of the complete
+  dump is checked before anything is restored.
+- **Scheduler.** It runs at startup and every 10 minutes
+  (`BACKUP_SWEEP_INTERVAL_SECONDS`) and backs up each live database once
+  a day. The first backup of a database is always a full. A failure is
+  recorded with its reason, owners get one notification per day
+  (`database_backup`), and it's retried after an hour.
+- **Owners** (`GET/POST /applications/{id}/backups`, Admin Portal
+  **Backups**) see the policy and every backup, and can take one now. An
+  on-request full replaces the week's set like Sunday's does.
+- **Restore** (`POST /applications/{id}/backups/{backupId}/restore`,
+  `{"confirm": "<application name>"}`, owner-only, audited) replaces the
+  database's contents. It **first takes a differential of what is there**,
+  so a restore can itself be undone. The MCP server deliberately has no
+  restore tool: replacing data is a person's decision.
+
+### Known gaps
+
+- **Same host.** Backups live in a Docker volume on the platform host. They
+  protect against mistakes and bad deploys, not against losing that
+  host's disk. Copy the `platform-backups` volume off the host; the files
+  are sealed, so the copy holds nothing readable without the key.
+- **The key is the same one as the secret store's** (`DEC-006`). Losing
+  `PLATFORM_SECRET_KEY` makes every backup unreadable, so back up the key
+  separately from the backups.
+- **Logical dumps.** Every backup, differential included, takes a full
+  dump of the database to compute what changed. Fine for the small
+  databases this platform hosts; a large one would want engine-level
+  incremental backups (binlog/WAL).
+- **No RPO/RTO figure was set.** What this gives is up to a day of data
+  at risk.
+
+### Verifying it
+
+```bash
+python services/platform-api/scripts/verify_backups.py
+```
+
+It runs against real MySQL **and** Postgres databases, with 200 real rows
+written from a client on each application's private network. Results:
+
+- With platform-api restarted after the deploy, the **scheduler** took a
+  full by itself.
+- The file is in the volume, and the rows' contents appear nowhere in it.
+- After a change, the next backup was a differential against that full
+  (143 bytes against the full's 1,967 for MySQL).
+- A restore without the exact name was refused. After `DROP TABLE`,
+  restoring the differential brought back exactly the rows at that point,
+  and restoring the full the earlier ones. Each restore made a
+  pre-restore backup first.
+- A new full deleted the previous set, records and files.
+- `backup: monthly` failed validation, and a `backup: none` application
+  was skipped by the scheduler.
+- Deleting each application deleted its backups.
+
+In a real browser, the Portal's **Backups** section took a backup on
+request. After a row was changed, restoring with the name confirmation put
+it back.
 
 ## How Secret Management works (Module O, FR-066/067/069/070)
 

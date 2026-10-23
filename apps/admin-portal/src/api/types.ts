@@ -351,6 +351,26 @@ export interface DeploymentActivityReport {
 
 // --- API error envelope ---
 
+// --- Database backups (FR-064, DEC-025) ------------------------------------
+
+export interface DatabaseBackup {
+  id: string;
+  kind: "full" | "differential";
+  base_backup_id?: string;
+  trigger: "scheduled" | "manual" | "pre_restore";
+  status: "succeeded" | "failed";
+  error?: string;
+  stored_bytes: number;
+  dump_bytes: number;
+  taken_at: string;
+}
+
+export interface BackupOverview {
+  policy: "weekly" | "none";
+  schedule: { full_weekday: string; hour: number; timezone: string; retention: string };
+  backups: DatabaseBackup[];
+}
+
 // --- Authentication -------------------------------------------------------
 
 export interface AuthUser {

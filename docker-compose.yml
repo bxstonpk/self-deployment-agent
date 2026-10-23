@@ -47,6 +47,11 @@ services:
       SCALE_SWEEP_INTERVAL_SECONDS: ${SCALE_SWEEP_INTERVAL_SECONDS:-30}
       METRICS_SAMPLE_INTERVAL_SECONDS: ${METRICS_SAMPLE_INTERVAL_SECONDS:-15}
       LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-90}
+      BACKUP_ENABLED: ${BACKUP_ENABLED:-true}
+      BACKUP_HOUR: ${BACKUP_HOUR:-1}
+      BACKUP_TIMEZONE: ${BACKUP_TIMEZONE:-Asia/Bangkok}
+      BACKUP_FULL_WEEKDAY: ${BACKUP_FULL_WEEKDAY:-sunday}
+      BACKUP_SWEEP_INTERVAL_SECONDS: ${BACKUP_SWEEP_INTERVAL_SECONDS:-600}
       HEALTH_SWEEP_INTERVAL_SECONDS: ${HEALTH_SWEEP_INTERVAL_SECONDS:-15}
       POST_ACTIVATION_ROLLBACK_WINDOW_SECONDS: ${POST_ACTIVATION_ROLLBACK_WINDOW_SECONDS:-300}
       OWNERSHIP_TRANSFER_WINDOW_SECONDS: ${OWNERSHIP_TRANSFER_WINDOW_SECONDS:-604800}
@@ -75,6 +80,11 @@ services:
       # service). In production this becomes a real, isolated build
       # cluster, not a host socket mount — see docs/10_System_Architecture.md.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Database backups (FR-064, DEC-025): sealed files, one directory per
+      # application. Back this volume up off the host — a backup on the
+      # same disk as the database protects against mistakes, not against
+      # losing the disk.
+      - platform-backups:/var/lib/platform/backups
     extra_hosts:
       # Deployment health checks (Module J) reach a just-started sibling
       # container via this host, since the container's own "localhost"
@@ -106,3 +116,4 @@ services:
 
 volumes:
   pgdata:
+  platform-backups:

@@ -58,7 +58,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-022 | Process & Governance | MVP pilot scope (participating departments/app types) | Platform Administrator + Management / Auditor | Before UAT | Open |
 | DEC-023 | Operational | Scale-to-zero idle timeout default and configurability | Platform Administrator | Before Technical Design | Open |
 | DEC-024 | Operational | Availability/SLA targets — control plane vs. hosted apps | Platform Administrator + Management / Auditor | Before Production Go-Live | Open |
-| DEC-025 | Operational | RPO/RTO targets and backup retention period for DR | IT Administrator + Application Owner | Before Production Go-Live | Open |
+| DEC-025 | Operational | RPO/RTO targets and backup retention period for DR | IT Administrator + Application Owner | Before Production Go-Live | **Decided (2026-10-23)** (backup schedule and retention; RPO/RTO not set) |
 | DEC-026 | Operational | Platform support model / on-call ownership | IT Administrator + Platform Administrator | Before Production Go-Live | Open |
 | DEC-027 | Operational | Application log retention period | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
 
@@ -407,7 +407,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Uniform RPO/RTO and retention for all apps regardless of tier; (b) tiered targets by `resources.tier` or by a criticality flag; (c) no formal target for MVP — best-effort daily backup only. |
 | Recommendation | (c) for MVP with a documented best-effort daily backup and 30-day retention as a provisional placeholder, moving to (b) once application criticality classification exists. |
 | Decision Owner | IT Administrator + Application Owner |
-| Status | Open |
+| Status | **Decided (2026-10-23)** — schedule and retention; no RPO/RTO figure was set |
+| Resolution | Decided by the platform owner on 2026-10-23. Each application's database gets:<br>• a **full backup every Sunday**;<br>• a **differential backup Monday to Saturday** (what changed since that Sunday's full);<br>• once the next Sunday's full has succeeded, the previous week's backups are **deleted**;<br>• the option to opt out entirely (`database: backup: none` in `deployment.yaml`).<br><br>Implementation (`services/platform-api`, "How Database Backups work"):<br>• logical dumps (`mysqldump` / `pg_dump`); a differential is a line-level delta of the day's dump against Sunday's;<br>• from 01:00 Asia/Bangkok by default;<br>• compressed, sealed with the platform's secret key, and kept in the `platform-backups` volume on the platform host;<br>• owners can also back up on request and restore any backup from the Admin Portal; a restore first backs up what it replaces.<br><br>What this gives is, in effect, an RPO of up to one day; no RTO was set. Backups sit on the same host as the databases, so IT must copy the volume off the host for protection against losing the host. |
 | Target Phase | Before Production Go-Live |
 
 #### DEC-026 — Platform Support Model / On-Call Ownership
