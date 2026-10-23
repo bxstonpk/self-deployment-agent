@@ -74,6 +74,12 @@ Invoke-WebRequest "$Downloads/$Wheel" -OutFile $WheelPath -UseBasicParsing
 if ((Invoke-Native $VenvPython @("-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--upgrade", $WheelPath)) -ne 0) {
     throw "Installing the MCP server failed (its dependencies come from PyPI or your pip mirror)."
 }
+# The wheel's version doesn't change between platform updates, so on a
+# re-run pip calls it "already installed" and keeps the old code. Replace
+# the package itself every time; its dependencies stay as installed above.
+if ((Invoke-Native $VenvPython @("-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--force-reinstall", "--no-deps", $WheelPath)) -ne 0) {
+    throw "Updating the MCP server failed."
+}
 Remove-Item $WheelPath -Force
 
 Step "Installing the Company Deployment skill into $SkillDir"

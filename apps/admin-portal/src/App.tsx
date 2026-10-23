@@ -13,6 +13,7 @@ import { AuditLog } from "./pages/AuditLog";
 import { Notifications } from "./pages/Notifications";
 import { Reports } from "./pages/Reports";
 import { Dashboard } from "./pages/Dashboard";
+import { Departments } from "./pages/Departments";
 import "./App.css";
 
 // Polled rather than pushed — there's no websocket/SSE channel anywhere in
@@ -113,6 +114,10 @@ function Layout({ children }: { children: React.ReactNode }) {
             <NavIcon d={ICONS.applications} />
             <span>Applications</span>
           </NavLink>
+          <NavLink to="/departments" className="nav-link">
+            <NavIcon d={ICONS.departments} />
+            <span>Departments</span>
+          </NavLink>
           <NavLink to="/notifications" className="nav-link">
             <NavIcon d={ICONS.notifications} />
             <span>
@@ -162,6 +167,7 @@ function BrandMark() {
 
 const ICONS = {
   dashboard: "M3 12h4l3-8 4 16 3-8h4",
+  departments: "M3 21h18M5 21V7l7-4 7 4v14M9 9h1M14 9h1M9 13h1M14 13h1M9 17h6",
   applications: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
   notifications: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0",
   reports: "M4 20V10M10 20V4M16 20v-7M22 20H2",
@@ -183,6 +189,14 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/applications" replace />} />
         <Route path="/sign-in" element={<SignIn />} />
+        <Route
+          path="/departments"
+          element={
+            <RequireIdentity>
+              <Departments />
+            </RequireIdentity>
+          }
+        />
         <Route
           path="/dashboard"
           element={

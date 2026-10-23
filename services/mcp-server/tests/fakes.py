@@ -16,6 +16,7 @@ class FakePlatformClient:
         self.departments: list[dict[str, Any]] = [
             {"id": "dept-eng", "name": "Engineering", "cost_center_code": "ENG-01", "status": "active"},
         ]
+        self.own_department_id = "dept-eng"  # the signed-in employee's, for whoami
         self.applications: dict[str, dict[str, Any]] = {}
         self.deployments: dict[str, dict[str, Any]] = {}
         self.stacks: list[dict[str, Any]] = [
@@ -76,6 +77,19 @@ class FakePlatformClient:
     async def list_departments(self) -> list[dict[str, Any]]:
         self._record("list_departments")
         return self.departments
+
+    async def create_department(self, name: str) -> dict[str, Any]:
+        self._record("create_department", name)
+        for d in self.departments:
+            if d["name"].lower() == name.lower():
+                return d
+        d = {"id": f"dept-{len(self.departments) + 1}", "name": name, "cost_center_code": "", "status": "active"}
+        self.departments.append(d)
+        return d
+
+    async def whoami(self) -> dict[str, Any]:
+        self._record("whoami")
+        return {"user": {"id": "user-1", "email": "dev@example.com", "department_id": self.own_department_id}}
 
     async def register_application(self, name, description, owning_department_id) -> dict[str, Any]:
         self._record("register_application", name, description, owning_department_id)

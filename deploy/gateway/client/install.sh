@@ -55,6 +55,11 @@ chmod 700 "$ROOT"
 curl -fsSL "$DOWNLOADS/$WHEEL" -o "$ROOT/$WHEEL"
 "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade "$ROOT/$WHEEL" \
   || fail "installing the MCP server failed (its dependencies come from PyPI or your pip mirror)"
+# The wheel's version doesn't change between platform updates, so on a
+# re-run pip calls it "already installed" and keeps the old code. Replace
+# the package itself every time; its dependencies stay as installed above.
+"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --force-reinstall --no-deps "$ROOT/$WHEEL" \
+  || fail "updating the MCP server failed"
 rm -f "$ROOT/$WHEEL"
 
 step "Installing the Company Deployment skill into $SKILL_DIR"

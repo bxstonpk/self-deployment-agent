@@ -9,17 +9,33 @@ from ..idempotency import IdempotencyConflict, IdempotencyStore
 from ..platform_client import PlatformClient
 
 
-async def _resolve_department_id(client: PlatformClient, department_name: str) -> str:
+async def _resolve_department(client: PlatformClient, department_name: str) -> tuple[str, str, bool]:
+    """Returns (department id, its name, whether it was just created).
+
+    Any department is accepted: one that doesn't exist yet is created, the
+    way registering under a new department name always created it — the
+    platform has no fixed list. With no name given, the application belongs
+    to the signed-in employee's own department.
+    """
+    name = " ".join((department_name or "").split())
     departments = await client.list_departments()
+    if not name:
+        me = await client.whoami()
+        own = (me.get("user") or {}).get("department_id")
+        for d in departments:
+            if d["id"] == own:
+                return d["id"], d["name"], False
+        known = ", ".join(sorted(d["name"] for d in departments)) or "(none yet)"
+        raise ToolError(
+            ErrorCode.VALIDATION_ERROR,
+            "no department given, and the signed-in account has none to default to",
+            details=[ErrorDetail(field="department", reason=f"name one; existing departments: {known}")],
+        )
     for d in departments:
-        if d["name"].lower() == department_name.lower():
-            return d["id"]
-    known = ", ".join(sorted(d["name"] for d in departments)) or "(none registered yet)"
-    raise ToolError(
-        ErrorCode.VALIDATION_ERROR,
-        f"unknown department {department_name!r}",
-        details=[ErrorDetail(field="department", reason=f"known departments: {known}")],
-    )
+        if d["name"].lower() == name.lower():
+            return d["id"], d["name"], False
+    created = await client.create_department(name)
+    return created["id"], created["name"], True
 
 
 async def create_application(
@@ -27,7 +43,7 @@ async def create_application(
     idempotency: IdempotencyStore,
     name: str,
     description: str,
-    department: str,
+    department: str = "",
     deployment_yaml: str | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
@@ -40,7 +56,7 @@ async def create_application(
         if cached is not None:
             return cached
 
-    department_id = await _resolve_department_id(client, department)
+    department_id, department_name, department_created = await _resolve_department(client, department)
     app = await client.register_application(name, description, department_id)
 
     if deployment_yaml:
@@ -52,6 +68,8 @@ async def create_application(
             "status": app.get("lifecycle_status"),
             "created_at": app.get("created_at"),
             "deployment_yaml_draft": app.get("deployment_yaml_draft"),
+            "department": department_name,
+            "department_created": department_created,
         }
     )
     if idempotency_key:

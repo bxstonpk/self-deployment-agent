@@ -1335,3 +1335,17 @@ form textarea {
   letter-spacing: 0.04em;
   line-height: 1;
 }
+
+/* Departments: the add form sits on one row where there's room. */
+.department-form {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.department-form label {
+  flex: 1 1 260px;
+  margin: 0;
+}

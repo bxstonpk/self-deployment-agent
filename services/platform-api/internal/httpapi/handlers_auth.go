@@ -105,6 +105,8 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "invalid_enrollment_code", err.Error())
 	case errors.Is(err, domain.ErrEmailNotAllowed):
 		writeError(w, http.StatusForbidden, "email_not_allowed", err.Error())
+	case errors.Is(err, domain.ErrInvalidDepartmentName):
+		writeError(w, http.StatusBadRequest, "invalid_department_name", err.Error())
 	case errors.Is(err, domain.ErrWeakPassword):
 		writeError(w, http.StatusBadRequest, "weak_password", err.Error())
 	case errors.Is(err, domain.ErrSessionRequired):

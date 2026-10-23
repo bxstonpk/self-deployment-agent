@@ -18,11 +18,42 @@ async def test_create_application_resolves_department_name_to_id():
     assert call[1] == ("overtime", "HR overtime tracker", "dept-eng")
 
 
-async def test_create_application_unknown_department_is_validation_error():
+async def test_create_application_new_department_is_created_not_refused():
     client = FakePlatformClient()
     idem = IdempotencyStore(ttl_seconds=60)
+    result = await application.create_application(client, idem, "overtime", "desc", "  Human   Resources ")
+    assert result["status"] == "success"
+    assert ("create_department", ("Human Resources",)) in client.calls
+    assert result["data"]["department"] == "Human Resources"
+    assert result["data"]["department_created"] is True
+    call = next(c for c in client.calls if c[0] == "register_application")
+    assert call[1][2] == next(d["id"] for d in client.departments if d["name"] == "Human Resources")
+
+
+async def test_create_application_matches_an_existing_department_regardless_of_case():
+    client = FakePlatformClient()
+    idem = IdempotencyStore(ttl_seconds=60)
+    result = await application.create_application(client, idem, "overtime", "desc", "engineering")
+    assert not any(c[0] == "create_department" for c in client.calls)
+    assert result["data"]["department"] == "Engineering"
+    assert result["data"]["department_created"] is False
+
+
+async def test_create_application_without_a_department_uses_the_employees_own():
+    client = FakePlatformClient()
+    idem = IdempotencyStore(ttl_seconds=60)
+    result = await application.create_application(client, idem, "overtime", "desc")
+    call = next(c for c in client.calls if c[0] == "register_application")
+    assert call[1][2] == "dept-eng"
+    assert result["data"]["department"] == "Engineering"
+
+
+async def test_create_application_without_a_department_or_one_of_their_own_is_validation_error():
+    client = FakePlatformClient()
+    client.own_department_id = None
+    idem = IdempotencyStore(ttl_seconds=60)
     with pytest.raises(ToolError) as exc_info:
-        await application.create_application(client, idem, "overtime", "desc", "Nonexistent Dept")
+        await application.create_application(client, idem, "overtime", "desc", "")
     assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
     assert "Engineering" in exc_info.value.details[0].reason
 
