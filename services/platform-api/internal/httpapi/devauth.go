@@ -9,11 +9,13 @@ import (
 	"platform-api/internal/domain"
 )
 
-// DevHeaderAuthenticator is a TEMPORARY stand-in for real SSO/IdP
-// authentication (DEC-001, docs/17_Decision_Log.md — still Open). It trusts
-// two request headers outright and must never be reachable from a
-// production/staging deployment; DevOnlyGuard middleware enforces that by
-// refusing to start unless PLATFORM_ENV=dev.
+// DevHeaderAuthenticator is the self-declared identity the platform used
+// before it authenticated anyone (DEC-001/DEC-003, revised 2026-10-23,
+// docs/17_Decision_Log.md). It trusts request headers outright, so it
+// now runs only under PLATFORM_AUTH_MODE=dev-header — for local test
+// scripts — and config.Load refuses that mode unless PLATFORM_ENV=dev;
+// DevOnlyGuard enforces the same per request. TokenAuthenticator
+// (tokenauth.go) is the real one.
 //
 // Callers identify themselves with:
 //

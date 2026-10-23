@@ -226,16 +226,33 @@ README for exactly what was tested and how):
     `/run/{app}/frontend` address;
   - nothing told an application which port to listen on, so it now gets
     `PORT`.
+- Authentication — every Claude Code machine fetches a key before it can
+  deploy (`DEC-001`/`DEC-003`, revised 2026-10-23). Employees register
+  with a password and IT's enrollment code, and sign in to the Admin
+  Portal. A machine runs `login` (an MCP tool) or `company-deploy login`
+  and gets a short code. The employee approves that code in the Portal,
+  and the machine collects an API key named after itself. The key is
+  stored only on that machine, never shown to the employee or the AI
+  agent, expires, and can be revoked from the Portal. A key can't manage
+  keys or approve devices, so an agent can't extend its own access. The
+  old self-declared header identity survives only as a local-testing
+  mode refused outside `PLATFORM_ENV=dev`. Verified against the live
+  stack from every side:
+  - over HTTP (`services/platform-api/scripts/verify_auth.py`), including
+    a full `pg_dump` containing no key, session, password or device code;
+  - through the real MCP protocol, where the key appears nowhere the
+    agent could see it;
+  - with the `company-deploy` CLI;
+  - in a real browser.
 
-**What doesn't exist, by decision, not because it's unfinished**: real
-authentication and RBAC. This platform is internal-only, self-hosted on a
-single existing on-prem Linux host, reachable only from the company LAN —
-not internet-facing, no cloud. Given that, `docs/17_Decision_Log.md`'s
-`DEC-001`/`DEC-002`/`DEC-003` (Decided 2026-09-11) are that employees
-self-declare their identity at sign-in (no password, no SSO) and every
-authorization check is "are you a registered owner of this application,"
-full stop — there are no IT/Platform/Security Administrator roles, and
-none are planned. Domain management (Module P) is similarly deferred
+**What doesn't exist, by decision, not because it's unfinished**: SSO and
+RBAC. This platform is internal-only, self-hosted on a single existing
+on-prem Linux host, reachable only from the company LAN — not
+internet-facing, no cloud. So `docs/17_Decision_Log.md`'s `DEC-001`
+keeps identity inside the platform (passwords, sessions and machine keys,
+no corporate IdP), and `DEC-002` is that every authorization check is
+"are you a registered owner of this application," full stop. There are
+no IT/Platform/Security Administrator roles, and none are planned. Domain management (Module P) is similarly deferred
 (`DEC-007`) — apps are reached via the platform's own `/run/{app}/{service}`
 address on the LAN, not a per-application DNS name. **What's still
 genuinely unfinished, not decided against**: Network management (Module Q,
@@ -290,10 +307,13 @@ Requires Docker, Go 1.25+, Python 3.11+, and Node 20+.
    cp .env.example .env
    docker compose up --build
    ```
-   `.env.example` leaves `PLATFORM_SECRET_KEY` empty on purpose: generate
-   one (`openssl rand -base64 32`) and set it in `.env`, or compose
-   refuses to start the platform rather than let it store secrets it can't
-   encrypt. See [`services/platform-api/README.md`](services/platform-api/README.md).
+   `.env.example` leaves `PLATFORM_SECRET_KEY` and
+   `PLATFORM_ENROLLMENT_CODE` empty on purpose. Generate the key with
+   `openssl rand -base64 32` and set it in `.env`, or compose refuses to
+   start the platform rather than let it store secrets it can't encrypt.
+   Pick an enrollment code (at least 8 characters) and give it to
+   employees, who need it to create an account; the platform won't start
+   without one. See [`services/platform-api/README.md`](services/platform-api/README.md).
 
    Deployed applications run as containers on the same Docker daemon,
    outside this compose project — `platform-run-*` for application
@@ -307,6 +327,7 @@ Requires Docker, Go 1.25+, Python 3.11+, and Node 20+.
    python -m venv .venv && source .venv/Scripts/activate  # or .venv/bin/activate
    pip install -e ".[dev]"
    cp .env.example .env   # then source it into your shell
+   company-deploy login --url http://localhost:8090   # approve the code in the Admin Portal
    python -m mcp_server.server
    ```
    See [`services/mcp-server/README.md`](services/mcp-server/README.md).
@@ -333,15 +354,11 @@ context.
 
 **Decided, not pending** — worth knowing, not something more building
 will change:
-- **No real authentication.** Every service uses a header-based identity
-  stub (`X-Dev-User-Email`) that trusts whatever it's given — self-declared
-  by each employee at sign-in, not verified against a password or an IdP.
-  Per `DEC-001`/`DEC-003` (Decided 2026-09-11), this is the platform's
-  **permanent** model: the LAN is the trust boundary, not a login. Accepted
-  risk, recorded not hidden: anyone with LAN access can self-declare any
-  email, including impersonating another employee — accepted for the
-  small, trusted internal user base this platform serves (some of whom
-  already share Claude accounts).
+- **No SSO, MFA or password reset.** `DEC-001` (revised 2026-10-23)
+  keeps identity inside the platform: passwords, Portal sessions and
+  per-machine API keys. The shared enrollment code is what stands between
+  "on the LAN" and "has an account". See `services/platform-api/README.md`,
+  **How authentication works**, for that section's full gap list.
 - **No RBAC beyond application ownership.** No IT/Platform/Security
   Administrator role exists anywhere, by decision (`DEC-002`, Decided
   2026-09-11) — every owner has full control over their own application

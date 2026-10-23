@@ -51,6 +51,16 @@ services:
       # generate one. Required: the platform refuses to start rather than
       # store secrets it can't encrypt.
       PLATFORM_SECRET_KEY: ${PLATFORM_SECRET_KEY:?set PLATFORM_SECRET_KEY in .env — see .env.example}
+      # Authentication (DEC-001/DEC-003 revised 2026-10-23) — see
+      # .env.example. In the default token mode the platform refuses to
+      # start without an enrollment code.
+      PLATFORM_AUTH_MODE: ${PLATFORM_AUTH_MODE:-token}
+      PLATFORM_ENROLLMENT_CODE: ${PLATFORM_ENROLLMENT_CODE:-}
+      PLATFORM_ALLOWED_EMAIL_DOMAINS: ${PLATFORM_ALLOWED_EMAIL_DOMAINS:-}
+      PLATFORM_PORTAL_URL: ${PLATFORM_PORTAL_URL:-http://localhost:5173}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-43200}
+      API_KEY_TTL_SECONDS: ${API_KEY_TTL_SECONDS:-2592000}
+      API_KEY_MAX_TTL_SECONDS: ${API_KEY_MAX_TTL_SECONDS:-7776000}
     ports:
       - "${PLATFORM_API_HOST_PORT:-8090}:8080" # 8080 is already used by another local project on this machine
     volumes:

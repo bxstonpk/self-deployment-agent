@@ -1,7 +1,10 @@
 import type { Identity } from "../identity";
-import { identityHeaders } from "../identity";
+import { identityHeaders, UNAUTHORIZED_EVENT } from "../identity";
 import {
   ApiError,
+  type ApiKey,
+  type AuthSession,
+  type PendingDevice,
   type Application,
   type ApplicationOwner,
   type AuditEntry,
@@ -31,12 +34,12 @@ import {
 const BASE_URL = import.meta.env.VITE_PLATFORM_API_BASE_URL ?? "http://localhost:8090";
 
 async function request<T>(
-  identity: Identity,
+  identity: Identity | null,
   method: string,
   path: string,
   options: { json?: unknown; body?: BodyInit; contentType?: string } = {},
 ): Promise<T> {
-  const headers: Record<string, string> = { ...identityHeaders(identity) };
+  const headers: Record<string, string> = identity ? { ...identityHeaders(identity) } : {};
   let body: BodyInit | undefined;
 
   if (options.json !== undefined) {
@@ -65,6 +68,9 @@ async function request<T>(
       }
     } catch {
       // body wasn't JSON — keep the generic message
+    }
+    if (res.status === 401 && identity) {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
     }
     throw new ApiError(res.status, code, message);
   }
@@ -367,4 +373,53 @@ export function deploymentActivity(identity: Identity, from?: string, to?: strin
   if (to) q.set("to", to);
   const query = q.toString();
   return request(identity, "GET", `/reports/deployment-activity${query ? `?${query}` : ""}`);
+}
+
+// --- Authentication (DEC-001/DEC-003 revised 2026-10-23) --------------------
+
+export function register(input: {
+  email: string;
+  password: string;
+  full_name?: string;
+  department?: string;
+  enrollment_code: string;
+}): Promise<AuthSession> {
+  return request(null, "POST", "/auth/register", { json: input });
+}
+
+export function login(email: string, password: string): Promise<AuthSession> {
+  return request(null, "POST", "/auth/login", { json: { email, password } });
+}
+
+export function logout(identity: Identity): Promise<void> {
+  return request(identity, "POST", "/auth/logout");
+}
+
+export function listApiKeys(identity: Identity): Promise<{ api_keys: ApiKey[] }> {
+  return request(identity, "GET", "/auth/api-keys");
+}
+
+// The only response that ever carries a key's value — shown once, then gone.
+export function createApiKey(
+  identity: Identity,
+  name: string,
+  expiresInDays: number,
+): Promise<{ api_key: string; credential: ApiKey }> {
+  return request(identity, "POST", "/auth/api-keys", { json: { name, expires_in_days: expiresInDays } });
+}
+
+export function revokeApiKey(identity: Identity, id: string): Promise<{ credential: ApiKey }> {
+  return request(identity, "DELETE", `/auth/api-keys/${encodeURIComponent(id)}`);
+}
+
+export function getPendingDevice(identity: Identity, userCode: string): Promise<{ device: PendingDevice }> {
+  return request(identity, "GET", `/auth/device/${encodeURIComponent(userCode)}`);
+}
+
+export function decideDevice(
+  identity: Identity,
+  userCode: string,
+  approve: boolean,
+): Promise<{ device: PendingDevice }> {
+  return request(identity, "POST", `/auth/device/${encodeURIComponent(userCode)}/${approve ? "approve" : "deny"}`);
 }

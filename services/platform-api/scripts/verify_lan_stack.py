@@ -28,6 +28,10 @@ Optionally, with PLAYWRIGHT_MODULE set to a Node Playwright install
 headless browser: the page renders, shows the API connected, and an item
 typed into its form appears in the list.
 
+It deploys the way a Claude Code machine does: with an API key fetched
+through a device approval (see platform_auth.py), not a self-declared
+identity.
+
 Set PLATFORM_API_BASE_URL if the API is not on the .env default port, and
 RUNTIMES (comma-separated) to verify a subset.
 """
@@ -46,6 +50,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from platform_auth import api_key_for  # noqa: E402
+
 BASE_URL = os.environ.get("PLATFORM_API_BASE_URL", "http://localhost:8099")
 EMPLOYEE_EMAIL = "lan-stack-verify@sti-th.com"
 RUNTIMES = [r for r in os.environ.get("RUNTIMES", "python,nodejs,typescript,go").split(",") if r]
@@ -55,6 +62,7 @@ TEMPLATES = Path(__file__).resolve().parents[3] / "company-deployment-skill" / "
 EXCLUDED = {"node_modules", "build", "dist", "__pycache__", ".git"}
 
 _failures: list[str] = []
+_api_key = ""
 
 
 def _check(cond: bool, msg: str) -> bool:
@@ -67,9 +75,7 @@ def _check(cond: bool, msg: str) -> bool:
 def _api(method: str, path: str, body=None, raw: bytes | None = None, expect=(200, 201)):
     data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
     req = urllib.request.Request(BASE_URL + path, data=data, method=method)
-    req.add_header("X-Dev-User-Email", EMPLOYEE_EMAIL)
-    req.add_header("X-Dev-User-Name", "LAN Stack Verifier")
-    req.add_header("X-Dev-Department", "IT")
+    req.add_header("Authorization", f"Bearer {_api_key}")
     if raw is None and data is not None:
         req.add_header("Content-Type", "application/json")
     elif raw is not None:
@@ -291,6 +297,8 @@ def _teardown(app_id: str, app_name: str) -> None:
 
 
 def main() -> int:
+    global _api_key
+    _api_key = api_key_for(BASE_URL, EMPLOYEE_EMAIL, "verify_lan_stack.py")
     print(f"=== LAN standard verification against {BASE_URL} — runtimes {RUNTIMES} ===\n", flush=True)
     catalog = _api("GET", "/supported-stacks")
     names = {(s.get("kind") or s.get("Kind"), s.get("name") or s.get("Name")) for s in catalog.get("stacks", catalog.get("supported_stacks", []))}

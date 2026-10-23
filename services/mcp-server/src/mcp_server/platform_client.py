@@ -4,9 +4,10 @@ in the MCP layer... forwards the request to the Platform API, and relays the
 Platform API's authoritative response"), this module does no independent
 authorization or validation — every check is the Platform API's, re-derived
 server-side on every call. This module's only job is: shape the HTTP call,
-translate the Platform API's dev-mode-header identity and its
-{"error": {"code": ..., "message": ...}} responses into the vocabulary the
-rest of this server uses (a typed exception with an MCP ErrorCode).
+authenticate it with this machine's API key (credentials.py), and
+translate the Platform API's {"error": {"code": ..., "message": ...}}
+responses into the vocabulary the rest of this server uses (a typed
+exception with an MCP ErrorCode).
 """
 
 from __future__ import annotations
@@ -15,8 +16,16 @@ from typing import Any
 
 import httpx
 
+from . import credentials
 from .config import Config
 from .envelope import ErrorCode, ToolError
+
+NOT_SIGNED_IN = (
+    "This machine is not signed in to the Company Platform, or its key has "
+    "expired or been revoked. Call the `login` tool, ask the employee to "
+    "approve the code it shows in the Admin Portal, then call "
+    "`complete_login` (or run `company-deploy login` in a terminal)."
+)
 
 # Platform API error `code` strings that specifically mean "the operation is
 # well-formed but the target is in the wrong lifecycle state for it" —
@@ -55,6 +64,8 @@ def _map_error(status_code: int, body: dict[str, Any] | None) -> ToolError:
     if body and isinstance(body.get("error"), dict):
         platform_code = str(body["error"].get("code", ""))
         message = str(body["error"].get("message", message))
+    if status_code == 401 and platform_code == "unauthorized":
+        message = NOT_SIGNED_IN
 
     if platform_code in _WRONG_STATE_CODES:
         mcp_code = ErrorCode.VALIDATION_ERROR
@@ -67,16 +78,15 @@ def _map_error(status_code: int, body: dict[str, Any] | None) -> ToolError:
 
 
 class PlatformClient:
-    """One instance per MCP server process, bound to the single employee
-    identity that process acts on behalf of (see config.py). Every request
-    carries that identity via the same X-Dev-* headers
-    services/platform-api/internal/httpapi/devauth.go trusts — the same
-    DEC-001-blocked stand-in platform-api's own console path uses, not a
-    separate mechanism invented here."""
+    """One instance per MCP server process. Every request carries this
+    machine's API key, read from the credentials file on each call — so a
+    `login` completed mid-session, or `company-deploy login` run in another
+    terminal, takes effect without restarting the server. With no key, a
+    request is not even attempted."""
 
     def __init__(self, config: Config, http_client: httpx.AsyncClient | None = None):
         self._base_url = config.platform_api_base_url
-        self._employee = config.employee
+        self._credentials_path = config.credentials_path
         self._client = http_client or httpx.AsyncClient(
             base_url=self._base_url, timeout=config.platform_api_timeout_seconds
         )
@@ -84,18 +94,24 @@ class PlatformClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def stored_credential(self) -> credentials.StoredCredential | None:
+        return credentials.for_platform(self._base_url, self._credentials_path)
+
     def _headers(self) -> dict[str, str]:
-        headers = {"X-Dev-User-Email": self._employee.email}
-        if self._employee.full_name:
-            headers["X-Dev-User-Name"] = self._employee.full_name
-        if self._employee.department:
-            headers["X-Dev-Department"] = self._employee.department
-        return headers
+        cred = self.stored_credential()
+        if cred is None:
+            raise ToolError(ErrorCode.UNAUTHORIZED, NOT_SIGNED_IN, platform_code="not_signed_in")
+        return {"Authorization": f"Bearer {cred.api_key}"}
 
     async def _request(
-        self, method: str, path: str, extra_headers: dict[str, str] | None = None, **kwargs: Any
+        self, method: str, path: str, extra_headers: dict[str, str] | None = None,
+        authenticated: bool = True, **kwargs: Any
     ) -> dict[str, Any]:
-        headers = self._headers()
+        headers = self._headers() if authenticated else {}
         if extra_headers:
             headers.update(extra_headers)
         try:
@@ -116,6 +132,22 @@ class PlatformClient:
         if not resp.content:
             return {}
         return resp.json()
+
+    # --- Authentication (device authorization) ---------------------------
+
+    async def start_device_authorization(self, client_name: str) -> dict[str, Any]:
+        return await self._request("POST", "/auth/device", authenticated=False, json={"client_name": client_name})
+
+    async def poll_device_authorization(self, device_code: str) -> dict[str, Any]:
+        return await self._request(
+            "POST", "/auth/device/token", authenticated=False, json={"device_code": device_code}
+        )
+
+    async def whoami(self) -> dict[str, Any]:
+        return await self._request("GET", "/auth/me")
+
+    async def revoke_own_key(self) -> None:
+        await self._request("POST", "/auth/logout")
 
     # --- Departments -----------------------------------------------------
 
