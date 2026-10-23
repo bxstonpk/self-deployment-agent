@@ -71,6 +71,7 @@ stdio, and a real Claude Code session. Each claim is backed by a script
 | Ownership | Co-owners and contributors; a primary-ownership transfer the new owner must accept | Module E |
 | MCP server | 25 tools: sign-in, discovery, lifecycle, deploy from a project folder (`.env` files and keys never uploaded), status with per-service URLs and active alerts, logs, metrics, audit, ownership | `services/mcp-server` |
 | Skill | How Claude must use the MCP server: sign in first, start from the templates, test before production, never handle secrets or infrastructure | `company-deployment-skill` |
+| Administrators' dashboard | A task manager for the platform, for `PLATFORM_ADMIN_EMAILS` only: the host's CPU, memory, load and disk with 15-minute charts, traffic across every application, and every application with its owner, instances, CPU, memory, requests, errors and latency, refreshed every 5s | platform-api: How the administrators' dashboard works |
 | Admin Portal | Every owner action above for a person. Also: machine approval, access keys, backups and restore, alerts. | `apps/admin-portal` |
 | LAN gateway and installers | One port serves the Portal, API, applications and downloads. A one-line installer per machine (Windows, macOS/Linux) sets up the MCP server, the skill and sign-in. | `deploy/gateway`, `docs/LAN_Deployment_Standard.md` |
 | TPM-sealed key | The encryption key is sealed with the host's TPM, unsealed into RAM at boot, with an offline escrow copy | `deploy/host` |

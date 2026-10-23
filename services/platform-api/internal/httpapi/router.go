@@ -11,6 +11,7 @@ import (
 type RouterConfig struct {
 	Authenticator Authenticator
 	Applications  *ApplicationHandler
+	Admin         *AdminHandler
 	Departments   *DepartmentHandler
 	Validation    *ValidationHandler
 	Stacks        *StackHandler
@@ -82,6 +83,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 				r.Post("/device/{userCode}/approve", cfg.Auth.ApproveDevice)
 				r.Post("/device/{userCode}/deny", cfg.Auth.DenyDevice)
 			})
+		})
+	}
+
+	if cfg.Admin != nil {
+		r.Route("/admin", func(r chi.Router) {
+			useDevGuard(r, cfg)
+			r.Use(RequireAuth(cfg.Authenticator))
+			r.Get("/overview", cfg.Admin.Overview)
 		})
 	}
 

@@ -453,3 +453,75 @@ export function decideDevice(
 ): Promise<{ device: PendingDevice }> {
   return request(identity, "POST", `/auth/device/${encodeURIComponent(userCode)}/${approve ? "approve" : "deny"}`);
 }
+
+// --- The signed-in account (GET /auth/me) ---
+
+export interface MeResponse {
+  user: { id: string; email: string; full_name: string; department_id: string };
+  // Whether this account is a platform administrator (PLATFORM_ADMIN_EMAILS):
+  // what decides whether the Portal offers the dashboard. The API checks
+  // again on every dashboard request.
+  is_admin: boolean;
+}
+
+export function getMe(identity: Identity): Promise<MeResponse> {
+  return request(identity, "GET", "/auth/me");
+}
+
+// --- The administrators' dashboard (GET /admin/overview) ---
+
+export interface HostStatus {
+  available: boolean;
+  cpu_count: number;
+  cpu_percent: number;
+  memory_used_bytes: number;
+  memory_total_bytes: number;
+  load_1: number;
+  load_5: number;
+  load_15: number;
+  uptime_seconds: number;
+  sampled_at: string;
+}
+
+export interface HostPoint {
+  at: string;
+  cpu_percent: number;
+  memory_used_bytes: number;
+  memory_total_bytes: number;
+}
+
+export interface TrafficPoint {
+  minute: string;
+  requests: number;
+  errors: number;
+}
+
+export interface AdminApplication {
+  id: string;
+  name: string;
+  status: string;
+  department: string;
+  owner_email: string;
+  environments: string;
+  instances: number;
+  cpu_percent: number;
+  memory_bytes: number;
+  requests: number;
+  errors: number;
+  latency_ms_avg: number;
+  url: string;
+}
+
+export interface AdminOverview {
+  generated_at: string;
+  host: HostStatus;
+  host_history: HostPoint[];
+  disk_used_percent: number | null;
+  traffic: TrafficPoint[];
+  traffic_window_seconds: number;
+  applications: AdminApplication[];
+}
+
+export function getAdminOverview(identity: Identity): Promise<AdminOverview> {
+  return request(identity, "GET", "/admin/overview");
+}

@@ -23,6 +23,7 @@ import (
 	"platform-api/internal/config"
 	"platform-api/internal/db"
 	"platform-api/internal/hostdisk"
+	"platform-api/internal/hostinfo"
 	"platform-api/internal/httpapi"
 	"platform-api/internal/imagescan"
 	"platform-api/internal/repository/postgres"
@@ -154,7 +155,7 @@ func main() {
 		policy.APIKeyMaxTTL = cfg.APIKeyMaxTTL
 		authService := service.NewAuthService(postgres.NewAuthRepo(pool), userRepo, departmentRepo, auditService, policy)
 		authenticator = httpapi.NewTokenAuthenticator(authService)
-		authHandler = httpapi.NewAuthHandler(authService, cfg.PortalURL)
+		authHandler = httpapi.NewAuthHandler(authService, cfg.PortalURL, admins.IsAdmin)
 		log.Printf("auth: token mode — sessions %s, API keys %s (max %s), devices approved at %s/device",
 			cfg.SessionTTL, cfg.APIKeyTTL, cfg.APIKeyMaxTTL, cfg.PortalURL)
 	}
@@ -177,8 +178,15 @@ func main() {
 		log.Printf("approvals: no PLATFORM_APPROVER_KEYS — an application's own owner approves its %v deployments", cfg.ApprovalEnvironments)
 	}
 
+	// The administrators' dashboard: the host's own CPU and memory, read
+	// every 5s and kept for 15 minutes.
+	hostSampler := hostinfo.NewSampler("/proc", 180)
+	adminService := service.NewAdminOverviewService(postgres.NewAdminRepo(pool), hostSampler, admins,
+		func() (float64, error) { return hostdisk.UsedPercent(cfg.BackupDir) }, cfg.MetricsSampleInterval)
+
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,
+		Admin:              httpapi.NewAdminHandler(adminService, cfg.PublicBaseURL),
 		Applications:       httpapi.NewApplicationHandler(applicationService),
 		Departments:        httpapi.NewDepartmentHandler(departmentRepo),
 		Validation:         httpapi.NewValidationHandler(validationService),
@@ -205,6 +213,7 @@ func main() {
 
 	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)
 	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
+	go runHostSampler(ctx, hostSampler, 5*time.Second)
 	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)
 	if cfg.BackupEnabled {
 		go runBackupScheduler(ctx, backupService, cfg.BackupSweep)
@@ -378,6 +387,28 @@ func runHealthSweeper(ctx context.Context, healthService *service.HealthMonitorS
 			}
 			if remediated > 0 {
 				log.Printf("health sweeper: remediated %d unhealthy instance(s)", remediated)
+			}
+		}
+	}
+}
+
+// runHostSampler reads the host's CPU and memory for the administrators'
+// dashboard. Without /proc (not Linux) it says so once and stops.
+func runHostSampler(ctx context.Context, sampler *hostinfo.Sampler, interval time.Duration) {
+	if err := sampler.Sample(time.Now()); err != nil {
+		log.Printf("host sampler: host CPU and memory unavailable on this machine: %v", err)
+		return
+	}
+	log.Printf("host sampler: reading host CPU and memory every %s", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case t := <-ticker.C:
+			if err := sampler.Sample(t); err != nil {
+				log.Printf("host sampler: %v", err)
 			}
 		}
 	}

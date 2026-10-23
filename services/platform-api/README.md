@@ -2151,6 +2151,26 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   approver-independence point above — there is no distinct approver role
   to gate on.
 
+## How the administrators' dashboard works
+
+`GET /admin/overview` answers only accounts in `PLATFORM_ADMIN_EMAILS` (case-insensitive); anyone else gets 403. `GET /auth/me` carries `is_admin`, which the Portal uses to offer the **Dashboard** page. The API checks again on every request.
+
+- **The host.** CPU, memory, load and uptime come from `/proc/stat`, `/proc/meminfo`, `/proc/loadavg` and `/proc/uptime`. Docker doesn't namespace these, so inside platform-api's container they describe the whole host. They're read every 5s and the last 15 minutes are kept in memory for the charts. CPU is the non-idle share between two readings, with iowait counted as idle. Memory used is MemTotal minus MemAvailable, the figure `free` shows. Without `/proc` (a developer's Windows or macOS) the host is reported unavailable, not invented. Disk is the same reading the disk alert uses: the volume holding the backups.
+- **Applications.** Every application that isn't deleted, with its department, primary owner, the environments it runs in and how many containers serve it now. CPU and memory are each serving container's latest reading from the metrics sampler (Module T), summed. Requests, errors and mean latency cover the last 5 minutes of proxy traffic.
+- **Traffic.** Requests and errors per minute across every application, for the last 15 minutes.
+
+### Verifying it
+
+`internal/hostinfo` and `admin_overview_service_test.go` test the parsing, the CPU arithmetic, the history window, the admin check and how readings are combined.
+
+On the local stack, with a test account as the administrator, a real browser:
+- signed in and saw the Dashboard menu entry;
+- read the host (12 cores, 3.1 of 7.6 GB);
+- saw the 43 requests just sent to an application, with every application listed under its owner;
+- found no sideways scroll at 390px.
+
+With no administrator configured, `/admin/overview` without a session is 401.
+
 ## How authentication works (DEC-001/DEC-003, revised 2026-10-23)
 
 Every endpoint except `/healthz` and the application proxy (`/run/...`)

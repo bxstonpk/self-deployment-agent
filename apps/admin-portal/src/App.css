@@ -1136,3 +1136,202 @@ form textarea {
 .sparkline rect.errors {
   fill: var(--danger);
 }
+
+/* ---------------------------------------------------------------------
+   Dashboard (administrators): a task manager for the platform
+   --------------------------------------------------------------------- */
+
+.dash .page-header {
+  align-items: flex-start;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.dash .page-header .hint {
+  margin: var(--space-1) 0 0;
+}
+
+.dash-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.dash-updated {
+  font-size: 0.85rem;
+  color: var(--text-faint);
+  margin-right: var(--space-2);
+}
+
+.dash-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.dash-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.dash-tile-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.dash-tile-head span {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.dash-tile-head strong {
+  font-family: var(--font-heading, "Prompt", Tahoma, sans-serif);
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--navy);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-sub {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.dash-meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--neutral-soft);
+  overflow: hidden;
+}
+
+.dash-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue);
+  transition: width 0.4s ease;
+}
+
+.dash-meter.dash-warm span {
+  background: var(--warning);
+}
+
+.dash-meter.dash-hot span {
+  background: var(--danger);
+}
+
+.dash-spark {
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin-top: auto;
+}
+
+.dash-spark-area {
+  fill: var(--blue-soft);
+}
+
+.dash-spark-line {
+  fill: none;
+  stroke: var(--blue);
+  stroke-width: 1.6;
+}
+
+.dash-spark-empty {
+  display: grid;
+  place-items: center;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.dash-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.dash-table-head h2 {
+  margin: 0;
+}
+
+.dash-table-head input {
+  flex: 1 1 220px;
+  max-width: 340px;
+}
+
+.dash-table th {
+  white-space: nowrap;
+}
+
+.dash-sort {
+  all: unset;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.dash-sort:focus-visible {
+  box-shadow: var(--focus-ring);
+  border-radius: 4px;
+}
+
+.dash-owner {
+  font-size: 0.8rem;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.dash-table td.numeric {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Like a task manager: a cell is shaded by how much of the whole host this
+   application uses — a bar from the right edge, stronger when hotter. */
+.dash-heat {
+  background-image: linear-gradient(to left, rgba(47, 111, 176, 0.14) var(--share, 0%), transparent var(--share, 0%));
+}
+
+.dash-heat.dash-warm {
+  background-image: linear-gradient(to left, rgba(183, 121, 31, 0.2) var(--share, 0%), transparent var(--share, 0%));
+}
+
+.dash-heat.dash-hot {
+  background-image: linear-gradient(to left, rgba(178, 58, 58, 0.22) var(--share, 0%), transparent var(--share, 0%));
+}
+
+.dash-error-count {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* The STI mark: the company's initials, not a generic icon. */
+.brand-mark-text {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
