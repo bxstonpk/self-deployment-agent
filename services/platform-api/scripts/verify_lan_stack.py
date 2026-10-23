@@ -327,11 +327,26 @@ const {{ chromium }} = require({json.dumps(module)});
            f"a real browser renders the React app, sees the API connected and adds an item ({(r.stdout or r.stderr).strip()[:300]})")
 
 
+def _exists(kind: str, name: str) -> bool:
+    """docker {volume,network} inspect prints [] for a missing one, so only
+    its exit code says whether it exists."""
+    return subprocess.run(["docker", kind, "inspect", name], capture_output=True).returncode == 0
+
+
 def _teardown(app_id: str, app_name: str) -> None:
+    db = _db_container(app_name)
+    volumes = _docker("inspect", "-f", "{{range .Mounts}}{{.Name}} {{end}}", db).split() if db else []
+    networks = list(json.loads(_docker("inspect", "-f", "{{json .NetworkSettings.Networks}}", db))) if db else []
     _api("POST", f"/applications/{app_id}/suspend", expect=(200, 400, 409, 422))
     _api("POST", f"/applications/{app_id}/archive")
     _api("POST", f"/applications/{app_id}/delete", {"confirm": True})
     _check(_db_container(app_name) == "", f"{app_name}: deleting the application removed its database")
+    # The data, not only the container: the database images keep their
+    # files in an anonymous volume, which used to outlive the container.
+    left = [v for v in volumes if _exists("volume", v)]
+    _check(bool(volumes) and not left, f"{app_name}: ...and its data volume ({len(volumes)} before, {len(left)} left)")
+    left = [n for n in networks if _exists("network", n)]
+    _check(not left, f"{app_name}: ...and its private network ({left or 'gone'})")
 
 
 def main() -> int:
