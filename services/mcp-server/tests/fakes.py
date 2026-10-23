@@ -38,6 +38,7 @@ class FakePlatformClient:
             "by_department": {},
         }
         self.owners: dict[str, list[dict[str, Any]]] = {}
+        self.active_alerts: dict[str, list[dict[str, Any]]] = {}
         # Per-application secret metadata, and the applications whose secret
         # list this fake caller may not see (the Platform API's 403).
         self.secrets: dict[str, list[dict[str, Any]]] = {}
@@ -101,6 +102,10 @@ class FakePlatformClient:
             raise ToolError(ErrorCode.NOT_FOUND, "application not found")
         return dict(app)
 
+    async def get_alerts(self, application_id: str) -> dict[str, Any]:
+        self._record("get_alerts", application_id)
+        return {"active": list(self.active_alerts.get(application_id, [])), "recent": []}
+
     async def trigger_build(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
         self._record("trigger_build", application_id, source_archive)
         return dict(self.next_build_result)
@@ -125,8 +130,9 @@ class FakePlatformClient:
         self._record("get_supported_stacks")
         return self.stacks
 
-    async def deploy_application(self, application_id: str, environment: str) -> dict[str, Any]:
+    async def deploy_application(self, application_id: str, environment: str, test_report: str | None = None) -> dict[str, Any]:
         self._record("deploy_application", application_id, environment)
+        self.last_test_report = test_report
         app = self.applications[application_id]
         dep_id = f"dep-{uuid.uuid4().hex[:8]}"
         status = "pending_approval" if environment == "production" else "running"

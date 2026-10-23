@@ -55,6 +55,18 @@ const (
 	AuditActionDeleteSecret        AuditAction = "secret.delete"
 	AuditActionRotateSecret        AuditAction = "secret.rotate"
 	AuditActionReadLogs            AuditAction = "application.read_logs"
+	// Authentication (DEC-001/DEC-003 revised 2026-10-23). Each is
+	// recorded against the employee it concerns, so it appears in their
+	// own audit view; resource_type is "credential".
+	AuditActionRegister         AuditAction = "auth.register"
+	AuditActionLogin            AuditAction = "auth.login"
+	AuditActionIssueAPIKey      AuditAction = "auth.issue_api_key"
+	AuditActionRevokeCredential AuditAction = "auth.revoke_credential"
+	AuditActionDecideDevice     AuditAction = "auth.decide_device"
+	// Database backups (FR-064, DEC-025). Scheduled backups have no actor
+	// and aren't audited; an owner's own backup and every restore are.
+	AuditActionBackupDatabase  AuditAction = "database.backup"
+	AuditActionRestoreDatabase AuditAction = "database.restore"
 )
 
 // AuditEntry is one append-only row. PrevHash/EntryHash implement FR-106:

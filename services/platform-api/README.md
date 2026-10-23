@@ -211,15 +211,14 @@ successful build, and runs:
    and counts are all persisted and returned, not just a boolean.
 2. **Production Approval Gate** (FR-042) — `dev` skips straight to step 3.
    `production` pauses with `status: "pending_approval"` and creates a
-   `deployment_approvals` row; `POST /deployments/{id}/approve` with
-   `{"decision": "approve"|"reject", "reason": "..."}` resumes or rejects it.
-   **By decision, not a gap awaiting one:** this does not require the
-   approver to be a different person than the requester. Module A/B's
-   RBAC/Platform Administrator role modeling would be needed to guarantee a
-   genuinely independent approver, and per `DEC-001`/`DEC-002` (Decided
-   2026-09-11) this platform will not have one — requiring a *different*
-   owner would make single-owner applications undeployable to production,
-   a worse outcome for this LAN-only, ownership-only permission model.
+   `deployment_approvals` row (with any `test_report` the request
+   carried). With **`PLATFORM_APPROVER_KEYS`** set, the normal case per
+   `DEC-017`, only a decision **signed with a platform administrator's
+   private key** moves it on; see **How signed approvals work** below.
+   Without keys, `POST /deployments/{id}/approve` with
+   `{"decision": "approve"|"reject", "reason": "..."}` from an owner
+   resumes or rejects it, as it did before `DEC-017`.
+   `APPROVAL_REQUIRED_ENVIRONMENTS` (default `production`) can add `dev`.
 3. **Deploy** — `internal/runtimeengine` (real Docker Engine API — the
    platform's actual, permanent runtime per `DEC-004`'s 2026-09-11
    revision, a single existing on-prem Docker host rather than a future
@@ -809,11 +808,10 @@ application rather than working around this gap.
 ### Validation report shape
 
 `POST /applications/{id}/validate` returns `{"application": {...}, "report": {"valid": bool, "checks": [...]}}`.
-Each check is `passed`, `failed`, or **`skipped`** — `resource_quota` is
-always `skipped` because Module M (Resource Manager) doesn't exist yet and
-exact quota numbers are TBD (`DEC-014`). This mirrors the docs' rule of
-never inventing a business decision: an honest "not implemented yet" beats a
-fake pass.
+Each check is `passed`, `failed`, or **`skipped`**. `resource_quota` is
+always `passed`, because `DEC-014` (decided 2026-10-23) is that there are no
+quotas. Its detail says so, so nobody reads it as a limit that was checked.
+Until that decision it was reported `skipped` rather than given a fake pass.
 
 The one concretely-enforced part of FR-031 (security pre-check) so far: any
 top-level field outside `app/services/database/scaling/resources/domain` is
@@ -1166,13 +1164,11 @@ Both halves are then proved from outside the code, by connecting:
   sealed, platform-managed `DATABASE_PASSWORD`, and rows from before that
   are moved there at startup — see **How Secret Management works** below,
   including the part that is still not solved: the key itself.
-- **`FR-064` (Backup Scheduling) is not implemented.** It needs a
-  scheduler this platform doesn't have and a frequency/retention policy
-  the requirement itself marks TBD. Inventing one would be inventing a
-  business decision.
+- **`FR-064` (Backup Scheduling)** is implemented with `DEC-025`'s policy
+  — see **How Database Backups work** below.
 - **`FR-065`'s "purge or retain-then-purge, per policy" is purge, full
-  stop.** Retention would need the data-retention policy FR-065 defers to,
-  which doesn't exist; a final backup would need FR-064, which isn't built.
+  stop.** Deleting an application deletes its database *and its backups*;
+  no policy asks for a final backup to be kept.
 - **`FR-062`'s detection half** ("a cross-application connection attempt is
   detected and logged as a policy violation") is not implemented — that
   needs Module Q's network policy layer. Only the *prevention* half is
@@ -1262,6 +1258,93 @@ For one application it then checks four more things:
   headless browser loads the page, sees the API connected, adds an item
   through the form and sees it listed;
 - deleting each application removes its database container.
+
+## How Database Backups work (FR-064, DEC-025)
+
+The policy the platform owner decided on 2026-10-23:
+
+- **When:** a **full** backup every Sunday, and a **differential** Monday
+  to Saturday (what changed since that Sunday's full), each from 01:00
+  Asia/Bangkok. Set by `BACKUP_FULL_WEEKDAY`, `BACKUP_HOUR` and
+  `BACKUP_TIMEZONE`.
+- **Retention:** once a new full backup **succeeds**, every older backup of
+  that database is deleted, file and all. A failed Sunday therefore never
+  leaves a database without a backup.
+- **Opting out:** an application can declare `database: backup: none`.
+  Validation rejects any other value than `weekly` or `none`, and
+  rejects `backup` without a `database.type`.
+
+How it works (`internal/service/backup_service.go`):
+
+- **Dump.** A logical dump is taken inside the database's own container, as
+  the application's own account: `mysqldump --single-transaction
+  --skip-extended-insert --order-by-primary --skip-dump-date …` or
+  `pg_dump --clean --if-exists …`. Both put one row per line in a stable
+  order.
+- **Differential.** A differential is a line-level delta of the day's dump
+  against Sunday's (`internal/backupdelta`). An unchanged table costs one
+  instruction, a changed row one line. Restoring it is Sunday's dump plus
+  that one delta, never a chain.
+- **Sealing.** Every backup is gzip-compressed and **sealed with
+  `PLATFORM_SECRET_KEY`** (AES-256-GCM, bound to its own record) before
+  it's written to the `platform-backups` volume. A SHA-256 of the complete
+  dump is checked before anything is restored.
+- **Scheduler.** It runs at startup and every 10 minutes
+  (`BACKUP_SWEEP_INTERVAL_SECONDS`) and backs up each live database once
+  a day. The first backup of a database is always a full. A failure is
+  recorded with its reason, owners get one notification per day
+  (`database_backup`), and it's retried after an hour.
+- **Owners** (`GET/POST /applications/{id}/backups`, Admin Portal
+  **Backups**) see the policy and every backup, and can take one now. An
+  on-request full replaces the week's set like Sunday's does.
+- **Restore** (`POST /applications/{id}/backups/{backupId}/restore`,
+  `{"confirm": "<application name>"}`, owner-only, audited) replaces the
+  database's contents. It **first takes a differential of what is there**,
+  so a restore can itself be undone. The MCP server deliberately has no
+  restore tool: replacing data is a person's decision.
+
+### Known gaps
+
+- **Same host.** Backups live in a Docker volume on the platform host. They
+  protect against mistakes and bad deploys, not against losing that
+  host's disk. Copy the `platform-backups` volume off the host; the files
+  are sealed, so the copy holds nothing readable without the key.
+- **The key is the same one as the secret store's** (`DEC-006`). Losing
+  `PLATFORM_SECRET_KEY` makes every backup unreadable, so back up the key
+  separately from the backups.
+- **Logical dumps.** Every backup, differential included, takes a full
+  dump of the database to compute what changed. Fine for the small
+  databases this platform hosts; a large one would want engine-level
+  incremental backups (binlog/WAL).
+- **No RPO/RTO figure was set.** What this gives is up to a day of data
+  at risk.
+
+### Verifying it
+
+```bash
+python services/platform-api/scripts/verify_backups.py
+```
+
+It runs against real MySQL **and** Postgres databases, with 200 real rows
+written from a client on each application's private network. Results:
+
+- With platform-api restarted after the deploy, the **scheduler** took a
+  full by itself.
+- The file is in the volume, and the rows' contents appear nowhere in it.
+- After a change, the next backup was a differential against that full
+  (143 bytes against the full's 1,967 for MySQL).
+- A restore without the exact name was refused. After `DROP TABLE`,
+  restoring the differential brought back exactly the rows at that point,
+  and restoring the full the earlier ones. Each restore made a
+  pre-restore backup first.
+- A new full deleted the previous set, records and files.
+- `backup: monthly` failed validation, and a `backup: none` application
+  was skipped by the scheduler.
+- Deleting each application deleted its backups.
+
+In a real browser, the Portal's **Backups** section took a backup on
+request. After a row was changed, restoring with the name confirmation put
+it back.
 
 ## How Secret Management works (Module O, FR-066/067/069/070)
 
@@ -1380,13 +1463,15 @@ socket check would call it ready a moment too early.
 
 ### Known gaps
 
-- **The key is not managed.** One static key from an environment
-  variable: no rotation, no re-encryption tool, and anyone who can read
-  platform-api's environment (`docker inspect` on its container) can read
-  it. Changing it makes every stored secret unreadable — which fails
-  closed, as above, but is still an outage for every application with a
-  secret. Choosing a real backend is `DEC-006`, still Open;
-  `internal/secretbox` is the seam it would replace.
+- **The key is sealed with the host's TPM** (`DEC-006`, decided
+  2026-10-23). On the platform host it is unsealed into RAM at boot and
+  read from `PLATFORM_SECRET_KEY_FILE`, so it is neither in `.env` nor in
+  the container's environment. Setup, recovery and verification are in
+  `deploy/host/README.md`. Without that setup (a development machine),
+  `PLATFORM_SECRET_KEY` still works, and setting both is refused. Still
+  missing: **rotation**. There is no re-encryption tool, so changing the
+  key makes every stored secret (and every backup) unreadable. That
+  fails closed, as above, but is an outage.
 - **Anyone with access to the Docker daemon can read injected values**
   from a running container's environment. That is inherent to FR-067's
   environment-variable delivery, and Docker daemon access is
@@ -1531,10 +1616,15 @@ every state.
 
 ### Known gaps
 
-- **FR-088 (retention and purge) is not implemented.** The retention
-  period is TBD in the requirement itself, so nothing is purged: lines
-  accumulate, including a deleted application's (Delete is a status
-  change, and the rows stay with it).
+- **Retention (FR-088) is 90 days** (`DEC-027`). platform-api deletes
+  lines older than `LOG_RETENTION_DAYS` (default 90) at startup and then
+  hourly, in batches, using an index on `logged_at` (migration 0019).
+  When collection resumes after a restart, it reaches back no further
+  than the retention period. A container quiet for longer than that
+  doesn't get its already-purged output collected again. A deleted
+  application's lines age out the same way. Verified by planting a line
+  100 days old and one 10 days old in the real database: a restart
+  purged only the first.
 - **Log levels aren't parsed.** Each line carries its stream (stdout or
   stderr) instead, so FR-087's severity filter has nothing to filter on;
   the MCP tool says so when asked for one.
@@ -1659,11 +1749,8 @@ cross-application administrator view would be audited — it doesn't exist.
 
 ### Known gaps
 
-- **FR-092 (threshold alerting) is not implemented.** FR-092 defers the
-  thresholds to the non-functional requirements, which set none for
-  metrics, so building it would mean inventing the numbers that decide
-  when someone gets woken up. The pieces it would need are here: the
-  metrics, and Module X's notifications.
+- **FR-092 (threshold alerting)** is implemented with `DEC-028`'s
+  thresholds — see **How Alerts work** below.
 - **FR-093 (platform-wide dashboard) is not implemented** — not a gap, a
   decision: it is explicitly an administrator and auditor view, and by
   `DEC-002` (Decided 2026-09-11) those roles don't exist, permanently, for
@@ -1718,6 +1805,142 @@ byte-identical to a random id's. Finally it suspends the application and
 confirms that the answer then contains no samples at all — not zeros —
 and says why, that no audit entry is written for a metrics read, and that
 deleting the application leaves no container behind.
+
+## How signed approvals work (DEC-017)
+
+The platform owner decided that deployments needing approval (production)
+are approved by the platform administrator, who holds the private key. The
+platform only ever has the public key:
+
+```
+# on the administrator's machine, once
+company-deploy approver keygen         # passphrase-encrypted Ed25519 key; prints the line below
+# on the platform host's .env, then restart platform-api
+PLATFORM_APPROVER_KEYS=admin@sti-th.com=ed25519:<base64>
+# whenever a deployment waits
+company-deploy approvals               # what's waiting
+company-deploy approve <deployment>    # shows images, scan results and the test report; signs
+company-deploy approve <deployment> --reject --reason "run the integration tests"
+```
+
+- **What is signed.** The text is built from the platform's own records:
+  the deployment, the application, the environment, the build, every image
+  reference, the SHA-256 of the requester's test report, the decision, the
+  reason, and the signing time (`domain.ApprovalSubject`). The platform
+  rebuilds it to verify, so a signature for one deployment, for a rebuilt
+  one, or with another test report does not verify. A signature dated more
+  than 10 minutes from now is refused.
+- **Who may sign.** Only a signed-in account whose email matches a
+  configured key, and only with that key. The API key or session that
+  sends the decision is not enough by itself, and an owner's
+  `POST /deployments/{id}/approve` gets `403 signed_approval_required`.
+- **The test report.** The requester (Claude, via
+  `deploy_application(test_report=…)`, or `POST …/deploy
+  {"test_report": …}`) says which tests ran and how they went. The
+  approver reads it before signing, and its hash is part of what's signed.
+- **Records.** The approval row keeps the signer's fingerprint, the signing
+  time and the signature. The audit entry reads `approved (signed with key
+  SHA256:…)`. Approvers are notified in-app with the command to run.
+
+### Known gaps
+
+- **No Portal UI for approving**, by design: a browser would need the
+  private key. Approval happens in the CLI on the administrator's machine.
+- **Losing the key file** means nothing can be approved until a new public
+  key is configured. Keep an offline copy.
+- **Rollback** doesn't pass the approval gate (unchanged; see **How
+  Rollback works**).
+
+### Verifying it
+
+```bash
+services/mcp-server/.venv/Scripts/python services/platform-api/scripts/verify_signed_approval.py
+```
+
+It runs with a real key made by `company-deploy approver keygen` and real
+production deployments. platform-api is restarted with that public key,
+and without it at the end. Results:
+
+- **Pausing and access:** a production deploy with a test report paused,
+  and the approver was notified with the command. The owner's old-style
+  approve got 403, the owner couldn't see the queue, and
+  `company-deploy approvals` listed it for the approver.
+- **Refusals:** a decision signed with another key was refused, and a
+  wrong passphrase signed nothing (the deployment stayed waiting).
+- **Approval:** `company-deploy approve` showed the test report, signed,
+  and the build went live. The audit log named the key, and the record
+  kept the signer, time, signature and report. Deciding again was refused
+  (409).
+- **Rejection and dev:** `--reject` rejected the next deployment, and a
+  dev deployment still went straight through.
+
+## How Alerts work (FR-092, DEC-028)
+
+Every 60 seconds (`ALERT_EVAL_INTERVAL_SECONDS`) platform-api judges each
+running service against the decided thresholds (set B). It uses its own
+measurements (Module T) and the host's data disk:
+
+| Rule | Over | Warning | Critical |
+|---|---|---|---|
+| 5xx rate (only from 20 requests up) | 5 min | 5% | 20% |
+| Mean latency (from 5 requests) | 5 min | 1 s | 3 s |
+| CPU, *every* sample over the line, readings covering ¾ of the window | 10 min | 85% | 95% |
+| Memory, as a share of the limit (the host's RAM: no quotas) | 5 min | 80% | 95% |
+| The host's data disk (where databases, backups and logs live) | now | 85% | 95% |
+
+**The rhythm** is what the platform owner chose. An alert is announced:
+- once when it **starts**;
+- once if it **becomes critical**;
+- as a **reminder at most once an hour** while it lasts;
+- once when it **clears**.
+
+A drop from critical back to warning isn't announced. A service that
+stops being measured (scaled to zero, stopped) counts as cleared.
+
+**State.** What is firing lives in `alert_states`, so a restart neither
+forgets an alert nor announces it again. Every announcement is kept in
+`alert_events` for 90 days (`DEC-027`).
+
+**Recipients.** Application alerts go to the application's owners.
+Platform alerts (the disk) go to `PLATFORM_ADMIN_EMAILS`. Both arrive in
+the in-app inbox (category `alert`). Owners also see what's firing:
+- on the application page in the Portal;
+- at `GET /applications/{id}/alerts` (current state, the last 7 days, and
+  the thresholds in force);
+- in the MCP's `get_application_status` (`active_alerts`).
+
+Every number is overridable through `ALERT_*` (see `.env.example`).
+
+### Known gaps
+
+- **In-app only.** No e-mail, Slack, Teams or LINE: no channel has been
+  chosen (`DEC-018`).
+- **Means, not percentiles.** Latency is a mean: Module T keeps a total
+  and a maximum per minute, not a distribution.
+- **No alert on a service that's down.** A service that never answers
+  produces 502s at the proxy, which the error-rate rule catches. Module R
+  already restarts unhealthy instances and notifies owners.
+
+### Verifying it
+
+```bash
+python services/platform-api/scripts/verify_alerts.py
+```
+
+It deploys a real application and drives real traffic through the proxy,
+with platform-api restarted on short windows so the run takes minutes.
+Each check is read from the notifications the owner and the admin actually
+received:
+- slow responses raised a latency warning, which resolved once diluted;
+- 7% 5xx raised a warning, and more failures escalated it to critical,
+  announced once;
+- a platform-api restart did not announce it again;
+- after the reminder interval came exactly one "Still critical";
+- the owner's alerts endpoint showed it with its history (another
+  employee got a 404), and healthy traffic resolved it;
+- a real busy loop in the container raised a CPU alert, which resolved
+  when it stopped;
+- the disk alert reached the admin and not the owner.
 
 ## How Continuous Health Monitoring works (Module R, FR-084/085)
 
@@ -1831,15 +2054,16 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   Deployment step talk to — that's the intended permanent shape, per
   `DEC-004`'s revision, not a stand-in for a multi-host setup that isn't
   planned.
-- Real authentication — not a gap, a decision: see **Self-declared
-  identity** below (`DEC-001`, Decided).
-- Resource quota enforcement (FR-032) — depends on Module M, not built yet.
+- Enterprise SSO/IdP integration — not a gap, a decision (`DEC-001`).
+  The platform authenticates employees itself: see **How authentication
+  works** below.
+- Resource quota enforcement (FR-032) — not a gap, a decision: `DEC-014`
+  (2026-10-23) is no quotas, so Module M is not built.
 - Full RBAC / Role / Permission tables (Module A/B) — not a gap, a
-  decision: `DEC-002` (Decided 2026-09-11) is that there is no role beyond
-  application ownership. This is also why the production approval gate
-  doesn't require an approver distinct from the requester — it isn't
-  going to, by design, not pending Module A/B — see **How Deploy works**
-  above.
+  decision: `DEC-002` is that there is no role beyond application
+  ownership, with one addition from `DEC-017`. A platform administrator
+  holding an approver key approves deployments, and receives platform
+  alerts (`PLATFORM_ADMIN_EMAILS`).
 - Stack version governance (FR-022, deprecated/blocked versions) — the
   catalog only tracks active/deprecated/blocked per whole runtime name, not
   per version range yet.
@@ -1888,42 +2112,119 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   approver-independence point above — there is no distinct approver role
   to gate on.
 
-## Self-declared identity (permanent — see DEC-001)
+## How authentication works (DEC-001/DEC-003, revised 2026-10-23)
 
-There is no Identity Provider integration, and per
-[`17_Decision_Log.md`](../../docs/17_Decision_Log.md)'s `DEC-001` (**Decided
-2026-09-11**), there won't be one: this platform is internal-only, runs on a
-single existing on-prem Linux host, and is reachable only from the company
-LAN — not internet-facing, no cloud. With network access to the platform
-already the trust boundary, an employee identifies themselves with these
-headers rather than a password:
+Every endpoint except `/healthz` and the application proxy (`/run/...`)
+needs `Authorization: Bearer <token>`. A token is one of two kinds of
+credential (`internal/domain/auth.go`):
+
+- **Portal session** (`cps_…`, 12h by default). An employee gets one by
+  registering or signing in with email and password.
+- **API key** (`cpk_…`, 30 days by default). Each Claude Code machine
+  fetches its own through a **device authorization** before it can deploy.
+
+Only a SHA-256 of each token is stored, and passwords are bcrypt. The
+pg_dump check in `scripts/verify_auth.py` confirms neither appears in the
+database.
 
 ```
-X-Dev-User-Email: alice@example.com
-X-Dev-User-Name:  Alice Employee      # optional
-X-Dev-Department: Engineering         # optional, defaults to "Unassigned"
+POST /auth/register   {email, password, full_name, department, enrollment_code}  -> session
+POST /auth/login      {email, password}                                         -> session
+POST /auth/device     {client_name}         -> device_code, user_code, verification_uri(_complete)
+POST /auth/device/token {device_code}       -> authorization_pending | access_denied | expired_token | api_key
+GET  /auth/me                               -> who this credential is
+POST /auth/logout                           -> revoke the credential used
+# session only — never an API key:
+GET/POST /auth/api-keys, DELETE /auth/api-keys/{id}
+GET /auth/device/{userCode}, POST /auth/device/{userCode}/approve|deny
 ```
 
-The user/department are upserted on first use. This mechanism
-(`internal/httpapi/devauth.go`) sits behind the `Authenticator` interface,
-same as before — so it *could* still be swapped for real SSO later if the
-deployment context ever changes (`NFR-051`), but that is no longer an
-expected near-term step, just a door left open.
+**The device flow.**
+1. The machine asks `/auth/device` and shows the employee a code such as
+   `BCDF-GHJK` and a link to the Admin Portal's `/device` page.
+2. The employee signs in there with their own password and approves the
+   code.
+3. The machine's next poll of `/auth/device/token` receives a key named
+   after the machine.
 
-**Accepted risk, recorded not hidden:** anyone with LAN access can type any
-email in these headers, including impersonating another employee — nothing
-here verifies the claim. Per `DEC-001`, `DEC-002`, and `DEC-003`
-(all Decided 2026-09-11), this is accepted for a small, trusted internal
-user base, together with **no RBAC beyond application ownership** — no
-Platform/Security/IT Administrator role exists anywhere, by design, not
-because it's unfinished. See those three entries in the Decision Log for
-the full reasoning.
+The key is generated at that moment, so it exists in plaintext only on its
+way to the machine. A device code yields exactly one key and expires after
+10 minutes. Device codes follow RFC 8628's error vocabulary.
 
-The `PLATFORM_ENV=dev` config value that gates this code path is a name
-left over from when it was assumed temporary — it is still the correct
-value to run with even though this is now the platform's permanent,
-intended mode, not a stopgap. Nothing reads that name as a promise that a
-different value is coming.
+**What a key cannot do.** It can do everything its employee can, except
+credential management:
+- listing, issuing or revoking keys;
+- approving or denying a device.
+
+Those take a Portal session. So an AI agent holding a key can never mint
+itself another key or approve its own request.
+
+**Registration** needs `PLATFORM_ENROLLMENT_CODE`, the shared code IT sets
+and hands to employees. It is compared in constant time, and the platform
+refuses to start in token mode without one. `PLATFORM_ALLOWED_EMAIL_DOMAINS`
+can additionally limit which emails may register. An account the old
+self-declared identity created has applications but no password; the
+first registration with that email **claims** it, keeping its id and
+applications, and only once.
+
+**Sign-in** gives the same answer for an unknown email, a wrong password
+and an account with no password yet. After 5 failures in 15 minutes an
+email is locked out for the rest of that window, even with the right
+password. The failure count is in memory, so a restart forgets it.
+
+**Audit.** Registering, signing in (and failing to), issuing and revoking
+keys, and deciding devices are recorded as `auth.*` actions against the
+employee they concern (`resource_type = credential`). They appear in that
+employee's own audit view.
+
+**Authorization is unchanged** (DEC-002): there is still no role beyond
+application ownership. Authentication only makes the "who" real.
+
+### The dev-header mode
+
+`PLATFORM_AUTH_MODE=dev-header` brings back the old self-declared identity
+(`X-Dev-User-Email` and friends, `internal/httpapi/devauth.go`) for local
+testing only. `config.Load` refuses it unless `PLATFORM_ENV=dev`. The
+older verification scripts (`verify_module_n.py` and the others before
+this change) still authenticate that way, so they need this mode.
+`verify_auth.py`, `verify_lan_stack.py` and the MCP end-to-end script sign
+in for real (`scripts/platform_auth.py`).
+
+### Known gaps
+
+- **No password reset and no MFA.** An employee who forgets their
+  password needs IT to clear `users.password_hash`, after which
+  registering with the enrollment code sets a new one.
+- **The enrollment code is shared.** Anyone who has it and an
+  unregistered email (in an allowed domain, if set) can create an account.
+  Rotate it by changing `PLATFORM_ENROLLMENT_CODE` and restarting;
+  existing accounts are unaffected.
+- **Lockout is per email, in memory, and not per source address.**
+- **Starting a device authorization needs no credential**, by design (the
+  machine has none yet), and isn't rate-limited. Unapproved requests grant
+  nothing and expire after 10 minutes, but they are not purged.
+- **The Portal keeps its session in `localStorage`**, readable by any
+  script running on the Portal's origin.
+
+### Verifying it
+
+```bash
+docker compose up -d --build      # from the repo root, with .env present
+python services/platform-api/scripts/verify_auth.py
+```
+
+It checks the following, over real HTTP against the live stack:
+- nothing answers without a credential, and the old header is refused;
+- registration needs the code;
+- sign-in doesn't reveal which emails exist, and locks out;
+- the device flow, end to end: pending, approved, collected once, denied;
+- the key registers and validates an application owned by the employee
+  who approved it, which another employee can't act on;
+- the key can't touch credentials;
+- revoked keys and signed-out sessions stop at once;
+- every event is in the audit log;
+- a full `pg_dump` contains none of the key, session, password or device
+  code.
 
 ## Running locally
 
@@ -1932,6 +2233,7 @@ From the repo root, first time only:
 ```
 cp .env.example .env   # then edit POSTGRES_PASSWORD if you want a non-default value
 openssl rand -base64 32   # required: paste the output into .env as PLATFORM_SECRET_KEY
+python -c "import secrets; print(secrets.token_urlsafe(12))"   # required: .env's PLATFORM_ENROLLMENT_CODE
 ```
 
 `.env` is git-ignored — `docker-compose.yml` reads all credentials from it
@@ -1949,16 +2251,18 @@ docker compose up --build
 Then:
 
 ```
-curl -X POST localhost:8080/applications \
-  -H "X-Dev-User-Email: alice@example.com" \
+curl -X POST localhost:8090/auth/register -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"at-least-10-chars","department":"Engineering","enrollment_code":"<from .env>"}'
+# -> {"token":"cps_...", ...}; send it as a Bearer credential from here on
+curl localhost:8090/departments -H "Authorization: Bearer cps_..."
+curl -X POST localhost:8090/applications -H "Authorization: Bearer cps_..." \
   -H "Content-Type: application/json" \
-  -d '{"name":"overtime","description":"HR overtime tracker","owning_department_id":"<department-uuid>"}'
+  -d '{"name":"overtime","description":"HR overtime tracker","owning_department_id":"<department id>"}'
 ```
 
-(`owning_department_id` must be a real department UUID — dev-mode auth
-auto-creates one from `X-Dev-Department` on first request; fetch it from the
-`departments` table, or extend this flow with a `GET /departments` endpoint
-in a future state.)
+(Registering creates the department you name if it doesn't exist yet.
+A Claude Code machine uses an API key instead of a session — see **How
+authentication works**.)
 
 To exercise a real build, after registering + saving a valid
 `deployment.yaml` + validating: `POST` a `tar.gz` archive as the raw request

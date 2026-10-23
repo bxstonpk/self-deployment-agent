@@ -351,6 +351,88 @@ export interface DeploymentActivityReport {
 
 // --- API error envelope ---
 
+// --- Alerts (FR-092, DEC-028) ----------------------------------------------
+
+export interface ActiveAlert {
+  service: string;
+  rule: "error_rate" | "latency" | "cpu" | "memory" | "host_disk";
+  level: "warning" | "critical";
+  value: number;
+  message: string;
+  started_at: string;
+}
+
+export interface AlertEvent {
+  service: string;
+  rule: string;
+  level: string;
+  kind: "fired" | "escalated" | "reminded" | "resolved";
+  value: number;
+  message: string;
+  at: string;
+}
+
+export interface ApplicationAlerts {
+  active: ActiveAlert[];
+  recent: AlertEvent[];
+  thresholds: Record<string, unknown>;
+}
+
+// --- Database backups (FR-064, DEC-025) ------------------------------------
+
+export interface DatabaseBackup {
+  id: string;
+  kind: "full" | "differential";
+  base_backup_id?: string;
+  trigger: "scheduled" | "manual" | "pre_restore";
+  status: "succeeded" | "failed";
+  error?: string;
+  stored_bytes: number;
+  dump_bytes: number;
+  taken_at: string;
+}
+
+export interface BackupOverview {
+  policy: "weekly" | "none";
+  schedule: { full_weekday: string; hour: number; timezone: string; retention: string };
+  backups: DatabaseBackup[];
+}
+
+// --- Authentication -------------------------------------------------------
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  full_name: string;
+  department_id: string;
+}
+
+export interface AuthSession {
+  token: string;
+  expires_at: string;
+  user: AuthUser;
+}
+
+export interface ApiKey {
+  id: string;
+  kind: "api_key" | "session";
+  name: string;
+  prefix: string;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  active: boolean;
+}
+
+export interface PendingDevice {
+  user_code: string;
+  client_name: string;
+  status: "pending" | "approved" | "denied" | "consumed";
+  created_at: string;
+  expires_at: string;
+}
+
 export interface ApiErrorBody {
   error: { code: string; message: string };
 }

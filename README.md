@@ -1,414 +1,205 @@
 # Company AI Application Deployment Platform
 
-An internal, self-service platform that lets employees using AI coding
-agents (Claude Code) build, validate, and deploy approved internal
-applications without one-off IT intervention per deployment. Full business
-case and requirements: [`docs/01_BRD.md`](docs/01_BRD.md).
+An internal, self-service platform for deploying the applications employees
+build with Claude Code. An employee asks Claude to deploy. Claude follows the
+Company Deployment Skill and calls the Company Deployment MCP server. The
+platform validates, builds, scans, deploys and runs the application, with no
+one-off IT work per deployment.
 
-This README orients a new contributor/maintainer picking up the project:
-what exists, what doesn't, how the pieces fit together, and where to start.
+```
+Employee → Claude Code → Company Deployment Skill → Company Deployment MCP
+         → Platform API → Build / Image scan / Deploy → Docker → Application
+```
 
-**Deployment context (confirmed 2026-09-11, see `docs/17_Decision_Log.md`):**
-this platform is internal-only, for one company's own employees, and runs
-on a single existing on-prem Linux host — no cloud, no Kubernetes cluster,
-reachable only from the company LAN. Several things documented elsewhere
-as "not yet built" (real SSO/IdP integration, RBAC/administrator roles,
-Domain management, a container registry, a Kubernetes migration) are, for
-this deployment, **decided against, permanently** — not gaps waiting on
-more work. Each is called out explicitly where it comes up below and in
-`docs/17_Decision_Log.md`'s `DEC-001` through `DEC-009`.
+The business case and requirements are in [`docs/01_BRD.md`](docs/01_BRD.md).
+This README is the map: what exists, where it lives, and how to run it.
+Each component's own README has the implementation detail, its gaps, and
+exactly how it was verified.
 
-## Status: early-stage, ~35–40% of the full documented scope
+## Deployment context
 
-**What's real and tested** (every claim below has been verified against a
-live, running system — Docker builds, real HTTP calls, a real headless
-browser — not just written and assumed correct; see each component's own
-README for exactly what was tested and how):
+Internal-only, for one company's employees. The platform runs on **a single
+on-prem Linux host with Docker**, reachable only from the company LAN: no
+cloud, no Kubernetes. Each decision behind that is recorded in
+[`docs/17_Decision_Log.md`](docs/17_Decision_Log.md). The ones that shape
+the system most:
 
-- The full Application Lifecycle (Draft → Validated → Build → Deploying →
-  Running → Suspended → Rolled Back → Archived → Deleted) — backend + a
-  browser-driven frontend.
-- An append-only, hash-chained Audit Log (Module W) recording every
-  state-changing action across that lifecycle — verified against a real
-  database, including that direct `UPDATE`/`DELETE` attempts are rejected
-  and a simulated out-of-band tamper is detected.
-- An in-app Notification inbox (Module X) for deployment status and
-  production-approval events — verified against a real deploy/build/
-  approve flow, including that a rejected production deployment notifies
-  every owner, not just the one who rejected it.
-- Co-Owner/Contributor Management (Module E, `FR-017`) — an application's
-  primary owner can grant/revoke a teammate day-to-day access, using data
-  model support (`application_owners`) that existed since the very first
-  PR but was never wired to an actual endpoint until now. Verifying it for
-  real surfaced and fixed a genuine, previously-unreachable bug in Module
-  W: audit entries for a deploy/build weren't visible to the application's
-  own primary owner unless they happened to be the one who performed the
-  action — invisible before this PR because there was never a second
-  owner to expose it.
-- Ownership Transfer (Module E, `FR-016`) — the primary owner nominates a
-  new one, who is notified and must explicitly accept before anything
-  changes; the prior owner's record is revoked, not deleted, for audit
-  history. Verified with a real (not mocked) expiry: set the acceptance
-  window to 2 real seconds, waited 3, confirmed acceptance was correctly
-  rejected — which is also how a real gap in `docker-compose.yml` (the new
-  config value wasn't being forwarded into the container at all) was
-  found and fixed.
-- An MCP server exposing that lifecycle to an AI agent (Claude Code),
-  matching the platform's own `docs/07_MCP_Requirements.md` tool catalog —
-  plus eight tools beyond it, exposing Audit Log, Notification, Reporting
-  and ownership management, all of which shipped after that catalog was
-  written. One of them, `get_application_inventory`, closes a gap older
-  than the modules themselves: the documented catalog is entirely
-  single-application, so until now nothing could answer "which
-  applications do I have?" at all. Ownership *transfer* is deliberately
-  left out — making someone accountable for an application is a decision
-  a human should take in their own name, not one an agent takes for
-  them.
-- A Markdown skill package instructing Claude Code how to use that MCP
-  server correctly.
-- A React admin portal covering the same lifecycle for a human, calling
-  the Platform API directly — including an Audit Log view (per-application
-  and platform-wide, with filtering, CSV export, and chain-integrity
-  verification), a Notifications inbox (unread-count header badge,
-  mark-read, unread-only filter), an Owners section for granting/
-  revoking co-owner/contributor access, a Transfer primary ownership
-  flow (nominate, notify, accept), a Reports page (a KPI row of
-  deployment outcomes over a selectable range, plus the application
-  inventory), a Secrets section where an owner sets write-only values
-  the page can never show again, a Logs section showing what an
-  application's containers printed, secrets already redacted and
-  owners-only, and a Metrics section with the platform's own measurements
-  (requests, errors, latency, CPU and memory, with sparklines) — verified
-  with up to three genuinely
-  independent signed-in identities at once (separate browser contexts),
-  confirming a newly-granted co-owner gets real day-to-day access, a
-  revoked one is genuinely locked out on their very next request, and a
-  non-nominee can't accept someone else's transfer. That verification
-  also caught and fixed a real API design mistake: checking for a pending
-  transfer 404'd on every single page view (the ordinary case for most
-  applications most of the time), not just an occasional mistaken lookup —
-  fixed to a real `200` with a null payload instead.
-- Reporting (Module AB, `FR-127`/`FR-128`) — an application inventory and
-  a deployment activity report (outcomes by environment and department),
-  both derived entirely from data the platform already holds. Verified
-  against FR-128's own acceptance criterion for real: ran two real
-  deploys and a real rollback, then confirmed the report's
-  succeeded/failed/rolled-back totals reconcile exactly with the raw
-  audit log queried independently.
-- Database Management (Module N, `FR-061`/`062`/`063`/`065`) — declaring
-  `database: type: postgres` in `deployment.yaml` provisions a real,
-  dedicated Postgres container on the application's own private network,
-  with a platform-generated password injected into the application's
-  runtime and kept sealed in Module O's secret store (below) — never in
-  `deployment.yaml`, source control or build logs; deleting the
-  application tears it down. Verified by connecting rather
-  than by reading configuration (see
-  `services/platform-api/scripts/verify_module_n.py`): a client on the
-  private network reads and writes real data, the identical connection
-  from off that network fails by name *and* by raw IP, and the deployed
-  application itself completes a Postgres handshake using the injected
-  environment — which survives resume, restart and a real scale-to-zero
-  cold start, each of which starts a brand-new container. That
-  verification is what caught the isolation being wrong in the first
-  place: the database container was on Docker's default bridge as well as
-  its private network, reachable by every other application, and it
-  passed every unit test while it was.
-- Secret Management (Module O, `FR-066`/`067`/`069`/`070`) — an owner
-  registers a secret by name, in the Admin Portal or through the API; the
-  platform stores it AES-256-GCM
-  encrypted, injects it into every container the application starts as an
-  environment variable, and never returns the value again, from any
-  endpoint or the audit log. Module N's database passwords moved into it,
-  existing plaintext ones are sealed at startup, and an owner can rotate
-  one: the old password stops authenticating and running instances are
-  restarted onto the new one. Verified the way an
-  attacker would look (see `services/platform-api/scripts/verify_module_o.py`):
-  a full `pg_dump` of the platform database, every layer of the built
-  image and the platform's own logs contain the value nowhere, while the
-  running application received exactly it; a ciphertext copied straight
-  into another application's database row gets that application a failed
-  start, not the secret; and restarting the platform with a different key
-  makes applications fail closed — without stopping the ones already
-  running — until the key is restored. Over MCP, an agent sees secret
-  *names* only (in `get_application_status`, so it can tell an employee
-  which ones to set before a deploy) — never a value, and no tool accepts
-  one: the security requirements forbid a secret value ever passing
-  through the agent or its transcript.
-- Logging (Module S, `FR-086`/`087`/`089`) — every line an application's
-  containers print is collected as it's written and stored centrally,
-  tagged with its deployment, service, stream and container, with every
-  secret value the platform injected redacted before it's stored. Owners
-  read their application's logs, filtered and paged, through the
-  Platform API or the MCP server's `get_application_logs`; anyone else
-  gets the same 404 a nonexistent application gets, and every read is
-  audited. Verified against real containers (see
-  `services/platform-api/scripts/verify_module_s.py`): an application
-  that prints its own secrets on purpose has them redacted, and they
-  appear nowhere in a full `pg_dump` of the platform database; a crash on
-  the first deploy leaves its reason readable after the platform has
-  removed the container; a replaced container's last line, printed as it
-  was being stopped, is kept; and after platform-api itself is stopped
-  and started again, every line is there exactly once, including the
-  ones written while it was down.
-- Monitoring (Module T, `FR-090`/`091`) — CPU and memory are read from
-  each running container on an interval, and requests, errors and latency
-  are counted at the platform's own proxy, so an application gets metrics
-  without instrumenting anything. That proxy is also the address the
-  platform reports as an application's URL
-  (`/run/{application}/{service}`), which is what keeps it working after
-  the container behind it is replaced — it used to report the container's
-  own published port, which broke on every restart and went around the
-  proxy entirely. Owners query them through the Platform
-  API or the MCP server's `get_application_metrics`; anyone else gets the
-  same 404 a nonexistent application gets. Verified against real work (see
-  `services/platform-api/scripts/verify_module_t.py`): an application that
-  burns CPU on demand moved the reading from 0% to 97.7%, allocating
-  96 MiB moved memory from 1.6 MB to 103 MB, the proxy's counts matched
-  the requests actually made — a 5xx counted as an error, a 404 only as a
-  request — the deliberately slow request showed up in the latency
-  maximum, and a suspended application produced no samples at all, with
-  the answer saying why rather than looking like an outage.
-- Continuous Health Monitoring & Remediation (Module R, `FR-084`/`085`) —
-  until now, the health check every instance passes at deploy time
-  (`FR-083`) only ever ran once; nothing re-checked it afterward, so a
-  service that started healthy and later hung just kept receiving traffic.
-  A background sweeper now re-checks every running instance on an
-  interval, and when one starts failing, stops and replaces it — the same
-  sequence a manual restart already used, just system-triggered — then
-  health-checks the replacement before it rejoins. A service that gets
-  remediated repeatedly in a short window is left stopped rather than
-  restarted forever, and the owner is notified either way. Verified
-  against a real Docker daemon (see
-  `services/platform-api/scripts/verify_module_r.py`): the platform's own
-  sweeper — not the verification script — detected a real instance failing
-  real HTTP health checks and replaced it, proven by both the Docker
-  container id and the application's own hostname changing, with the
-  application still serving throughout at its stable URL. Verifying it for
-  real caught an actual bug: the new notification category had nowhere to
-  go, silently rejected by a database check constraint that predated it —
-  found because the "owner was notified" check failed even though
-  remediation itself worked, and fixed with a migration.
-- Automatic Rollback on Failed Health Check (`FR-099`) — closes what had
-  been a documented gap since Module V (Rollback) first shipped: a
-  recently-activated version that Module R's own restart-in-place can
-  never fix (its circuit breaker keeps tripping, or a replacement instance
-  never comes up healthy) is now automatically rolled back to the last
-  known-good version, no human involved. Verified against a real Docker
-  daemon (see `services/platform-api/scripts/verify_fr099_rollback.py`):
-  a version engineered to pass its own pre-activation health check but
-  fail every one after — deterministically, even from a freshly restarted
-  container, so restarting it can never actually fix it — got detected,
-  had its restart-in-place fail three times in a row, tripped Module R's
-  circuit breaker, and was automatically rolled back to the prior version,
-  which resumed serving at the application's stable URL with no request
-  from the verification script.
-- The LAN development standard — a React frontend, one API in Python,
-  JavaScript (`nodejs`), TypeScript or Go, and a MySQL database. MySQL
-  and TypeScript joined the supported-stack catalog. MySQL is provisioned
-  like Postgres: a dedicated container on the application's private
-  network, a platform-generated password in the secret store, and
-  rotation. Starter templates for every part live in
-  `company-deployment-skill/templates/`. Verified by building and
-  deploying all four combinations from those templates (see
-  `services/platform-api/scripts/verify_lan_stack.py`, 67 checks). Each
-  API reached its own MySQL, and data written through the platform's
-  address came back. A real browser rendered the React app and added an
-  item through it. The database was unreachable from off its network,
-  and after a password rotation the old password was refused while the
-  API reconnected with its data intact. Doing that for real found four
-  platform bugs, all fixed:
-  - every Node-based image failed the image scan on a CRITICAL in npm's
-    own bundled `tar`, so runtime images no longer carry npm and static
-    frontends run on nginx;
-  - database provisioning never pulled its image, so only Postgres had
-    ever worked;
-  - frontends with relative asset paths rendered blank at their bare
-    `/run/{app}/frontend` address;
-  - nothing told an application which port to listen on, so it now gets
-    `PORT`.
+| Decision | What it means here |
+|---|---|
+| `DEC-004` | One Docker host, not a cluster |
+| `DEC-001` / `DEC-003` (revised 2026-10-23) | The platform authenticates people itself. Employees register with a password and IT's enrollment code. **Each Claude Code machine fetches its own API key**, approved by its employee, **before it can deploy**. No corporate SSO. |
+| `DEC-002` + `DEC-017` | Permissions are application ownership, plus one role: the **platform administrator**, who approves production deployments by **signing with a private key only they hold** |
+| `DEC-014` | No resource quotas |
+| `DEC-025` | Database backups: a full every Sunday, differentials Monday–Saturday, the previous week deleted after the next full |
+| `DEC-027` | Application logs kept 90 days |
+| `DEC-028` | Alert thresholds, and the rhythm: on start, on escalation, at most hourly while ongoing, on clear |
+| `DEC-006` | The platform's encryption key is sealed with the host's TPM |
+| `DEC-007` | No per-application DNS: applications live at `/run/<app>/<service>/` on the platform's address |
 
-**What doesn't exist, by decision, not because it's unfinished**: real
-authentication and RBAC. This platform is internal-only, self-hosted on a
-single existing on-prem Linux host, reachable only from the company LAN —
-not internet-facing, no cloud. Given that, `docs/17_Decision_Log.md`'s
-`DEC-001`/`DEC-002`/`DEC-003` (Decided 2026-09-11) are that employees
-self-declare their identity at sign-in (no password, no SSO) and every
-authorization check is "are you a registered owner of this application,"
-full stop — there are no IT/Platform/Security Administrator roles, and
-none are planned. Domain management (Module P) is similarly deferred
-(`DEC-007`) — apps are reached via the platform's own `/run/{app}/{service}`
-address on the LAN, not a per-application DNS name. **What's still
-genuinely unfinished, not decided against**: Network management (Module Q,
-beyond the per-application Docker network isolation Module N already
-provides) and Resource quotas (Module M). See "Known gaps" below and each
-component's own README for the honest, itemized list — nothing here claims
-these exist when they don't. Note in particular that Module O above ships
-with a real limitation of its own, listed there — a module being
-implemented is not the same as it being safe to rely on.
+## The application standard
+
+New applications use:
+- a **React** frontend;
+- one API in **Python, JavaScript (Node.js), TypeScript or Go**;
+- a **MySQL** database, which the platform provisions per application.
+
+PostgreSQL, Vue and Next.js are also supported. Starter code for every part
+is in [`company-deployment-skill/templates/`](company-deployment-skill/templates/),
+and the installer puts it on every Claude Code machine with the skill.
+
+## What is built
+
+Everything below has been verified against a running system: real Docker
+builds, real HTTP, real databases, a real headless browser, real MCP over
+stdio, and a real Claude Code session. Each claim is backed by a script
+(see [Verification](#verification)).
+
+| Area | What it does | Detail |
+|---|---|---|
+| Application lifecycle | Draft → Validated → Build → Deploying → Running → Suspended / Rolled back → Archived → Deleted, enforced server-side | `services/platform-api` |
+| Build and deploy | One governed build recipe per runtime, with no package manager in runtime images. Every image must pass a CRITICAL-severity Trivy scan. Health checks run before traffic, and redeploys never take down a working version. | platform-api: How Build / Deploy work |
+| Scale-to-zero | Idle services stop; the first request cold-starts them at the same stable address | Module L |
+| Health and rollback | Running instances are re-checked continuously and replaced when unhealthy. A version that keeps failing right after release is rolled back automatically. | Modules R, V |
+| Databases | A dedicated MySQL or Postgres per application, on its own private network. The generated password is never in source, and can be rotated. | Module N |
+| Backups | The weekly schedule above, sealed with the platform key, restorable by an owner (who confirms the name) after a safety backup | platform-api: How Database Backups work |
+| Secrets | Write-only values, AES-256-GCM encrypted, injected at container start, never returned by any API or MCP tool | Module O |
+| Logs and metrics | Every line an application prints, with secrets redacted, kept 90 days. CPU, memory, requests, errors and latency are measured by the platform itself. | Modules S, T |
+| Alerts | Error rate, latency, CPU, memory and host disk against `DEC-028`'s thresholds. In-app delivery: owners get application alerts, administrators get platform alerts. | platform-api: How Alerts work |
+| Authentication | Passwords, Portal sessions, and per-machine API keys from a device approval. A key can't mint keys or approve devices. Only hashes are stored. | platform-api: How authentication works |
+| Signed approval | Production waits for the administrator's Ed25519 signature over the exact deployment, images and test report | platform-api: How signed approvals work |
+| Audit, notifications, reports | A hash-chained, append-only audit log; an in-app inbox; inventory and deployment-activity reports | Modules W, X, AB |
+| Ownership | Co-owners and contributors; a primary-ownership transfer the new owner must accept | Module E |
+| MCP server | 25 tools: sign-in, discovery, lifecycle, deploy from a project folder (`.env` files and keys never uploaded), status with per-service URLs and active alerts, logs, metrics, audit, ownership | `services/mcp-server` |
+| Skill | How Claude must use the MCP server: sign in first, start from the templates, test before production, never handle secrets or infrastructure | `company-deployment-skill` |
+| Admin Portal | Every owner action above for a person. Also: machine approval, access keys, backups and restore, alerts. | `apps/admin-portal` |
+| LAN gateway and installers | One port serves the Portal, API, applications and downloads. A one-line installer per machine (Windows, macOS/Linux) sets up the MCP server, the skill and sign-in. | `deploy/gateway`, `docs/LAN_Deployment_Standard.md` |
+| TPM-sealed key | The encryption key is sealed with the host's TPM, unsealed into RAM at boot, with an offline escrow copy | `deploy/host` |
+
+## Getting started
+
+**IT, on the platform host (once)**: follow
+[`docs/LAN_Deployment_Standard.md`](docs/LAN_Deployment_Standard.md), section 3:
+1. Fill in `.env` (secret key, enrollment code, the gateway's address,
+   administrators).
+2. Run `docker compose up -d --build`.
+3. Open only the gateway port to the LAN.
+4. Seal the key with the TPM ([`deploy/host/README.md`](deploy/host/README.md)).
+5. Set up the administrator's approver key (`company-deploy approver keygen`).
+
+**Each employee (once per machine):**
+
+```powershell
+irm http://<platform-host>:8080/downloads/install.ps1 | iex           # Windows
+```
+```bash
+curl -fsSL http://<platform-host>:8080/downloads/install.sh | sh     # macOS / Linux
+```
+
+Then approve the code it shows in the Admin Portal. From then on, ask Claude
+Code to deploy the project. It signs in, follows the standard, validates,
+deploys, and reports the URLs.
+
+**Developers, on a workstation:** Docker, Go 1.25+, Python 3.11+, Node 20+.
+
+```bash
+cp .env.example .env
+# set PLATFORM_SECRET_KEY (openssl rand -base64 32) and PLATFORM_ENROLLMENT_CODE (8+ characters)
+docker compose up --build          # postgres, platform-api (:8090) and the gateway (:8080)
+```
+
+- Open `http://localhost:8080` to create an account.
+- The Portal can also run from source (`apps/admin-portal`, `npm run dev`),
+  as can the MCP server (`services/mcp-server`, `pip install -e ".[dev]"`,
+  then `company-deploy login --url http://localhost:8090`). See their
+  READMEs.
+- Deployed applications run as `platform-run-*` / `platform-db-*`
+  containers on the same Docker daemon. `docker compose down` doesn't
+  remove them; deleting the application does.
 
 ## Repository map
 
 ```
-docs/                     BRD, Architecture, SDLC, and 15 more requirements/
-                           design documents — the original specification
-                           this implementation works from. Written before
-                           any code; read docs/README.md first.
-
-services/platform-api/    Go. The single authoritative backend — the ONLY
-                           thing that talks to Postgres/Docker directly.
-                           Everything else (MCP server, admin portal) is a
-                           client of this API. Start here to understand
-                           what's actually implemented server-side.
-
-services/mcp-server/      Python. The Model Context Protocol server Claude
-                           Code calls to act on an employee's behalf —
-                           translates MCP tool calls into Platform API
-                           calls, nothing more.
-
-company-deployment-skill/ Markdown. The instruction set Claude Code reads
-                           to know HOW to use the MCP server correctly
-                           (when to call what, how to handle failures,
-                           what it must never do).
-
-apps/admin-portal/        React + TypeScript. A human-operated web UI,
-                           calling the Platform API directly (not through
-                           the MCP server) — the same capabilities Claude
-                           Code has, reachable without an AI agent.
+docs/                       The original BRD, requirements and design (01–17), the
+                            Decision Log, and the LAN Deployment Standard.
+services/platform-api/      Go. The only component that touches Postgres and Docker.
+                            Everything else is a client of its API.
+services/mcp-server/        Python. The MCP server Claude Code uses, and the
+                            `company-deploy` CLI (sign-in, approvals).
+company-deployment-skill/   Markdown. The skill Claude Code follows, the deployment.yaml
+                            schema, and the starter templates.
+apps/admin-portal/          React + TypeScript. The web UI for people.
+deploy/gateway/             nginx: the one LAN address; builds the Portal and the
+                            per-machine installers.
+deploy/host/                The platform host: TPM sealing of the encryption key.
 ```
 
-Each directory above has its own README with real implementation detail,
-an honest gap list specific to that component, and exactly what was
-verified and how. **Read those, not just this file** — this README is an
-orientation map, not a substitute for them.
+## Verification
 
-## Running everything locally
+Each script runs against the live compose stack and cleans up after itself.
+Some restart `platform-api` with temporary settings and restore them
+afterwards.
 
-Requires Docker, Go 1.25+, Python 3.11+, and Node 20+.
+| Script | Proves |
+|---|---|
+| `services/platform-api/scripts/verify_lan_stack.py` | React + each of Python/JS/TS/Go + MySQL, built from the templates, deployed and used end to end, including in a real browser |
+| `services/platform-api/scripts/verify_auth.py` | Registration, sign-in, device approval, key limits, revocation, audit; and a `pg_dump` containing no token or password |
+| `services/platform-api/scripts/verify_backups.py` | Scheduled full, differential, exact restore, weekly retention, opt-out, deletion, on MySQL and Postgres |
+| `services/platform-api/scripts/verify_alerts.py` | The alert rhythm on real traffic and real CPU load; platform alerts to administrators |
+| `services/platform-api/scripts/verify_signed_approval.py` | Production waits for a signature from a real key; forged or replayed signatures are refused; approve and reject both work |
+| `services/mcp-server/scripts/e2e_verify.py` | All 25 MCP tools over real stdio, including sign-in, deploy from a folder, rebuild and rollback |
+| `deploy/host/verify-tpm.sh` | Seal and unseal against a software TPM 2.0: bound to the TPM, escrow recovery, PCR binding |
+| `verify_module_n/o/r/s/t.py`, `verify_stable_url.py`, `verify_fr099_rollback.py` | Databases, secrets, health remediation, logs, metrics, stable URLs, automatic rollback. These older scripts use the self-declared identity, so they need `PLATFORM_AUTH_MODE=dev-header`. |
 
-1. **Platform API** (start this first — everything else depends on it):
-   ```
-   cp .env.example .env
-   docker compose up --build
-   ```
-   `.env.example` leaves `PLATFORM_SECRET_KEY` empty on purpose: generate
-   one (`openssl rand -base64 32`) and set it in `.env`, or compose
-   refuses to start the platform rather than let it store secrets it can't
-   encrypt. See [`services/platform-api/README.md`](services/platform-api/README.md).
+Unit tests: `go test ./...` (platform-api), `pytest` (mcp-server), and
+`npx vitest run` (admin-portal).
 
-   Deployed applications run as containers on the same Docker daemon,
-   outside this compose project — `platform-run-*` for application
-   containers and, for an application that declares a database,
-   `platform-db-*` plus a `platform-net-*` network. `docker compose down`
-   does not remove those; deleting the application through the API does.
+## Known gaps
 
-2. **MCP server** (optional — only needed to test the AI-agent path):
-   ```
-   cd services/mcp-server
-   python -m venv .venv && source .venv/Scripts/activate  # or .venv/bin/activate
-   pip install -e ".[dev]"
-   cp .env.example .env   # then source it into your shell
-   python -m mcp_server.server
-   ```
-   See [`services/mcp-server/README.md`](services/mcp-server/README.md).
+**Decided against for this deployment** (not pending work):
+- corporate SSO and MFA;
+- roles beyond ownership plus the approver;
+- per-application DNS/TLS (`DEC-007`);
+- a container registry (`DEC-005`);
+- Kubernetes (`DEC-004`);
+- resource quotas (`DEC-014`).
 
-3. **Admin portal** (optional — only needed to test the human-facing UI):
-   ```
-   cd apps/admin-portal
-   npm install
-   cp .env.example .env.local
-   npm run dev
-   ```
-   If your `CORS_ALLOWED_ORIGINS` (root `.env`) doesn't match the port Vite
-   actually prints, add it — see
-   [`apps/admin-portal/README.md`](apps/admin-portal/README.md)'s
-   port-collision note.
+**Open**:
+- **No external alert channel.** Alerts and notifications are in-app only:
+  no e-mail, Slack, Teams or LINE until one is chosen (`DEC-018`).
+- **Metrics are kept forever:** their retention (`NFR-032`) is undecided.
+- **No rotation of the encryption key.** There is no re-encryption tool,
+  so changing the key makes stored secrets and backups unreadable. Root on
+  the running host can read the unsealed key.
+- **The TPM scripts have only run against a software TPM.** Run them once
+  on the real host's chip.
+- **Everything is on one host.** Backups live on the same host as the
+  databases, so copy the `platform-backups` volume and the escrowed key
+  elsewhere. There is no high availability.
+- **Deploys run synchronously.** That's fine at this scale, but there is
+  no job queue.
+- **No password reset.** IT clears the account's password and the
+  employee registers again.
+- **Application containers also publish a random host port.** They can be
+  reached around the platform's proxy, which bypasses its request metrics.
+- **Machines need PyPI or a mirror** to install the MCP server's
+  dependencies.
+- **Smaller gaps:**
+  - cross-application connection attempts are blocked but not logged as
+    policy violations (Module Q);
+  - log levels aren't parsed;
+  - latency has means, not percentiles;
+  - the Portal is the application catalog (MOD-19), not a full
+    administration portal.
 
-## Known gaps (the honest, load-bearing ones)
+Each component README lists its own gaps in more detail.
 
-Two categories here: decisions already made for this platform's actual
-deployment context (internal-only, self-hosted on a single existing
-on-prem Linux host, LAN-only access — see `docs/17_Decision_Log.md`), and
-gaps that genuinely still block real production use regardless of that
-context.
+## Contributing
 
-**Decided, not pending** — worth knowing, not something more building
-will change:
-- **No real authentication.** Every service uses a header-based identity
-  stub (`X-Dev-User-Email`) that trusts whatever it's given — self-declared
-  by each employee at sign-in, not verified against a password or an IdP.
-  Per `DEC-001`/`DEC-003` (Decided 2026-09-11), this is the platform's
-  **permanent** model: the LAN is the trust boundary, not a login. Accepted
-  risk, recorded not hidden: anyone with LAN access can self-declare any
-  email, including impersonating another employee — accepted for the
-  small, trusted internal user base this platform serves (some of whom
-  already share Claude accounts).
-- **No RBAC beyond application ownership.** No IT/Platform/Security
-  Administrator role exists anywhere, by decision (`DEC-002`, Decided
-  2026-09-11) — every owner has full control over their own application
-  and none over anyone else's or the platform as a whole. This is also
-  why there's no distinct production-approval role and no platform-wide
-  admin dashboard (`FR-093`).
-- **No Domain management** (Module P). Deferred (`DEC-007`) — apps are
-  reached via the platform's own `/run/{app}/{service}` address on the
-  LAN, not a per-application DNS name; there's no DNS zone or TLS CA to
-  decide on for a deployment that never leaves the LAN.
+Every change goes through a feature branch and a pull request into `main`.
+Verify against the running system, not only with unit tests, and update the
+READMEs to say what was verified and what wasn't. Commit messages record the
+real bugs that verification found.
 
-**Still genuinely open** — these would need real work regardless of the
-decisions above:
-- **`deploy_application`/the admin portal's Deploy runs synchronously**,
-  not as a real queued/async job — fine at today's scale, a real gap
-  before this could serve many concurrent deployments.
-- **The secret store's key is not managed.** Module O encrypts every
-  secret — and every generated database password — with one static key
-  from `PLATFORM_SECRET_KEY`. There is no key rotation or re-encryption
-  tool, and anyone who can read platform-api's environment can read the
-  key and, with it, every secret. The platform database alone no longer
-  yields anything, which is what the requirements ask of the store; a
-  managed backend chosen under `DEC-006` (still Open, though its urgency
-  is lower now that the host is single, LAN-only, and physically
-  controlled) would go further. See `services/platform-api/README.md`'s
-  "How Secret Management works" for this and Module O's other gaps
-  (rotation covers only what the platform itself issues, on demand;
-  production-secret approval and injection auditing are missing).
-- **No Network management** (Module Q, beyond the per-application Docker
-  network isolation Module N already provides). Its absence means
-  `FR-062`'s *detection* half is missing: a cross-application database
-  connection attempt is prevented, but not detected or logged as a
-  policy violation. `FR-064` (database backups) is not implemented
-  either — it needs a scheduler this platform doesn't have and a retention
-  policy the requirement itself marks TBD. See
-  `services/platform-api/README.md`'s "How Database Management works" for
-  the full scope.
-- **Observability stops short of alerting and retention.** Logging
-  (Module S) and Monitoring (Module T) both collect and serve, but
-  `FR-088`'s and `NFR-032`'s retention periods are TBD, so nothing is
-  purged; `FR-092`'s alert thresholds are specified nowhere, so no alert
-  is raised on numbers nobody agreed to; `FR-093`'s platform-wide
-  dashboard needs administrator roles that don't exist; log levels aren't
-  parsed; latency has no percentiles; and nothing streams — reading logs
-  is a page-at-a-time query in the Portal and over MCP alike. See
-  `services/platform-api/README.md`'s "How Logging works" and "How
-  Monitoring works". (Modules W, X and AB — Audit Log, Notification and
-  Reporting — are implemented; see `services/platform-api/README.md`'s
-  "How Audit Logging works", "How Notifications work" and "How Reporting
-  works" sections for what each does and doesn't cover. Notably Module X
-  is in-app only, no email/Slack/webhook delivery, and Module AB covers
-  `FR-127`/`FR-128` but not `FR-129`, which reports against quotas that
-  Module M would have to define first.)
-- **No resource quota enforcement** (Module M) — `validate_application`
-  always reports this check as `skipped`, never a fake pass.
-- **The Admin Portal is intentionally scoped to MOD-19 (Application
-  Catalog), not the full MOD-18 (Administration Portal)** the original
-  tech-stack decision named — MOD-18 needs the RBAC that, per `DEC-002`,
-  this platform will not have. See `apps/admin-portal/README.md`'s
-  "Scope" section for the full reasoning.
-
-## Contributing / continuing this work
-
-Every change so far has gone through a feature branch and a pull request
-against `main` — `git log --oneline` and the closed PRs on GitHub are a
-reasonably complete build log of what was built, in what order, and why
-(commit messages document real bugs found during manual verification, not
-just what changed). Follow the same pattern: branch, implement, verify for
-real (not just unit tests — every component's README explains what "real"
-verification meant for it), open a PR.
+When PRs are stacked (each based on the one before), merging one into its
+base branch does not bring it to `main`. Check `git log origin/main` after
+merging a stack.

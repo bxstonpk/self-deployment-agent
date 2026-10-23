@@ -137,8 +137,8 @@ func (s *ValidationService) Validate(ctx context.Context, applicationID, request
 
 	checks = append(checks,
 		domain.ValidationCheck{
-			Name: "resource_quota", Status: domain.CheckSkipped,
-			Details: []string{"Department resource quotas are not yet enforced — Module M (Resource Manager) is not implemented and exact quota numbers are TBD (DEC-014, docs/17_Decision_Log.md)."},
+			Name: "resource_quota", Status: domain.CheckPassed,
+			Details: []string{"No resource quotas apply: DEC-014 (decided 2026-10-23, docs/17_Decision_Log.md) sets none for this platform."},
 		},
 		domain.ValidationCheck{
 			Name: "naming_domain_conflict", Status: domain.CheckPassed,
@@ -248,6 +248,13 @@ func (s *ValidationService) checkStackCompliance(ctx context.Context, parsed dom
 		} else if !ok {
 			problems = append(problems, fmt.Sprintf("database.type declares unsupported database %q", dbType))
 		}
+	}
+	switch backup := parsed.Database.Backup; {
+	case backup == "":
+	case parsed.Database.Type == "":
+		problems = append(problems, domain.ErrBackupWithoutDatabase.Error())
+	case backup != domain.BackupPolicyWeekly && backup != domain.BackupPolicyNone:
+		problems = append(problems, fmt.Sprintf("%s (got %q)", domain.ErrInvalidBackupPolicy.Error(), backup))
 	}
 
 	if len(problems) > 0 {

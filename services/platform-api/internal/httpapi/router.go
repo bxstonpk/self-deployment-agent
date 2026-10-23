@@ -25,9 +25,18 @@ type RouterConfig struct {
 	Secrets       *SecretHandler
 	Logs          *LogHandler
 	Metrics       *MetricsHandler
-	// PlatformEnv gates DevOnlyGuard. The only Authenticator implementation
-	// today is DevHeaderAuthenticator, so this is always enforced until a
-	// real one lands per DEC-001 (docs/17_Decision_Log.md).
+	Backups       *BackupHandler
+	Alerts        *AlertHandler
+	Approvals     *ApprovalHandler
+	// Auth serves /auth/*. Nil under the dev-header mode, which has no
+	// accounts to sign in to.
+	Auth *AuthHandler
+	// AuthMode is "token" (real authentication: Portal sessions and
+	// machine API keys) or "dev-header" (the old self-declared identity,
+	// kept only for local test scripts and refused outside
+	// PLATFORM_ENV=dev). See DEC-001/DEC-003 revised 2026-10-23.
+	AuthMode string
+	// PlatformEnv gates DevOnlyGuard under the dev-header mode.
 	PlatformEnv string
 	// CORSAllowedOrigins lets a browser-based client (apps/admin-portal,
 	// served from its own dev-server origin) call this API cross-origin.
@@ -46,7 +55,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Use(cors.Handler(cors.Options{
 			AllowedOrigins:   cfg.CORSAllowedOrigins,
 			AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Content-Type", "X-Dev-User-Email", "X-Dev-User-Name", "X-Dev-Department"},
+			AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Dev-User-Email", "X-Dev-User-Name", "X-Dev-Department"},
 			AllowCredentials: false,
 			MaxAge:           300,
 		}))
@@ -56,8 +65,28 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	if cfg.Auth != nil {
+		r.Route("/auth", func(r chi.Router) {
+			r.Post("/register", cfg.Auth.Register)
+			r.Post("/login", cfg.Auth.Login)
+			r.Post("/device", cfg.Auth.StartDevice)
+			r.Post("/device/token", cfg.Auth.DeviceToken)
+			r.Group(func(r chi.Router) {
+				r.Use(RequireAuth(cfg.Authenticator))
+				r.Get("/me", cfg.Auth.Me)
+				r.Post("/logout", cfg.Auth.Logout)
+				r.Get("/api-keys", cfg.Auth.ListAPIKeys)
+				r.Post("/api-keys", cfg.Auth.CreateAPIKey)
+				r.Delete("/api-keys/{id}", cfg.Auth.RevokeAPIKey)
+				r.Get("/device/{userCode}", cfg.Auth.GetDevice)
+				r.Post("/device/{userCode}/approve", cfg.Auth.ApproveDevice)
+				r.Post("/device/{userCode}/deny", cfg.Auth.DenyDevice)
+			})
+		})
+	}
+
 	r.Route("/applications", func(r chi.Router) {
-		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Post("/", cfg.Applications.Register)
 		r.Get("/", cfg.Applications.List)
@@ -88,22 +117,30 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Post("/{id}/secrets/{name}/rotate", cfg.Secrets.Rotate)
 		r.Get("/{id}/logs", cfg.Logs.Query)
 		r.Get("/{id}/metrics", cfg.Metrics.Query)
+		if cfg.Alerts != nil {
+			r.Get("/{id}/alerts", cfg.Alerts.ForApplication)
+		}
+		if cfg.Backups != nil {
+			r.Get("/{id}/backups", cfg.Backups.List)
+			r.Post("/{id}/backups", cfg.Backups.BackupNow)
+			r.Post("/{id}/backups/{backupId}/restore", cfg.Backups.Restore)
+		}
 	})
 
 	r.Route("/supported-stacks", func(r chi.Router) {
-		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Stacks.List)
 	})
 
 	r.Route("/departments", func(r chi.Router) {
-		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Departments.List)
 	})
 
 	r.Route("/audit-log", func(r chi.Router) {
-		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Audit.Query)
 		r.Get("/export", cfg.Audit.Export)
@@ -111,27 +148,36 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	})
 
 	r.Route("/notifications", func(r chi.Router) {
-		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Notifications.List)
 		r.Post("/{id}/read", cfg.Notifications.MarkRead)
 	})
 
 	r.Route("/reports", func(r chi.Router) {
-		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/application-inventory", cfg.Reports.ApplicationInventory)
 		r.Get("/deployment-activity", cfg.Reports.DeploymentActivity)
 	})
 
 	r.Route("/ownership-transfers", func(r chi.Router) {
-		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Post("/{transferId}/accept", cfg.Applications.AcceptTransfer)
 	})
 
+	if cfg.Approvals != nil {
+		r.Route("/approvals", func(r chi.Router) {
+			r.Use(RequireAuth(cfg.Authenticator))
+			r.Get("/pending", cfg.Approvals.Pending)
+			r.Get("/{deploymentId}", cfg.Approvals.Get)
+			r.Post("/{deploymentId}/decision", cfg.Approvals.Decide)
+		})
+	}
+
 	r.Route("/deployments", func(r chi.Router) {
-		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+		useDevGuard(r, cfg)
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/{deploymentId}", cfg.Deploys.GetDeployment)
 		r.Post("/{deploymentId}/approve", cfg.Deploys.DecideApproval)
@@ -142,4 +188,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Handle("/run/*", cfg.Proxy)
 
 	return r
+}
+
+// useDevGuard applies DevOnlyGuard only under the dev-header mode: the
+// self-declared identity must never serve outside PLATFORM_ENV=dev, while
+// real token authentication has no such restriction.
+func useDevGuard(r chi.Router, cfg RouterConfig) {
+	if cfg.AuthMode == "dev-header" {
+		r.Use(DevOnlyGuard(cfg.PlatformEnv))
+	}
 }

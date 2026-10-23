@@ -9,7 +9,7 @@ actual message; it's written to be specific, not a template to work around).
 | `VALIDATION_ERROR` | The request is malformed, or fails a structural/business rule (bad `deployment.yaml` field, unknown department name, wrong lifecycle state for this operation, a build's source failed to compile) | Surface the specific reason from `error.message`/`error.details` to the employee in plain language. Don't retry with guessed values — only resubmit once the employee has confirmed a correction |
 | `UNSUPPORTED_STACK` | A declared runtime isn't on the current supported list | Re-check `get_supported_stacks` (live, not cached). Ask the employee whether to change the stack or request an exception through IT — never silently substitute a "close enough" runtime |
 | `QUOTA_EXCEEDED` | A resource limit was hit (today: mainly source-archive size — 50MiB) | Tell the employee; for an oversized archive, check for accidentally-included `node_modules`/`vendor`/build artifacts that shouldn't be in the upload |
-| `UNAUTHORIZED` | Missing/invalid session identity, or the identity isn't an owner of the target application | Don't retry under a different claimed identity. Tell the employee they (or an existing owner) need to grant them ownership, or that re-authentication is needed |
+| `UNAUTHORIZED` | Either this machine isn't signed in (no key, or its key expired or was revoked — the message says to call `login`), or the employee the key belongs to isn't an owner of the target application | Not signed in: follow `SKILL.md`'s "Before anything else" — `login`, the employee approves the code, `complete_login`. Not an owner: don't look for another way in; tell the employee they (or an existing owner) need to grant them access |
 | `NOT_FOUND` | The referenced application, deployment, or department doesn't exist | Confirm the identifier with the employee — never fabricate or guess one. For `rollback_application`, this can mean there's no prior successful version to roll back to |
 | `CONFLICT` | An `idempotency_key` was reused with different input, or a build/deploy is already in flight for this application | Check current state via `get_application_status`/`get_deployment_status` before retrying; surface the conflict to the employee if it doesn't self-resolve |
 | `RATE_LIMITED` | Too many calls in a time window (not currently enforced by this platform, but handle it in case that changes) | Back off; never tight-loop retry |
@@ -48,10 +48,18 @@ rather than treating every `VALIDATION_ERROR` as generic:
 - `"services.<name> declares unsupported runtime \"X\""` — re-check
   `get_supported_stacks`; the exact runtime name matters (`go`, not
   `golang`).
-- `"no successful build exists for this application, and no
-  source_archive_base64 was given to build one..."` — pass
-  `source_archive_base64` on the `deploy_application` call (see
-  `SKILL.md`, Step 8) rather than assuming a build already happened.
+- `"no successful build exists for this application, and no source was
+  given to build one..."` — pass `project_path` on the
+  `deploy_application` call (see `SKILL.md`, Step 8) rather than assuming
+  a build already happened.
+- `"each service in deployment.yaml needs a folder of the same name in the
+  project; missing: ..."` — the project's folders must be named like
+  `deployment.yaml`'s services (`frontend/`, `api/`). Rename the folder or
+  the service, re-validate, and deploy again.
+- `"the packed source is N MiB, over the platform's 50 MiB limit"` —
+  something large that shouldn't ship is in a service folder (data,
+  media, generated files). Find it with the employee; don't delete files
+  on your own.
 - `"deletion is irreversible and requires explicit confirmation
   (\"confirm\": true)"` / a `delete_application` confirmation mismatch —
   ask the employee to state the application's exact name before calling

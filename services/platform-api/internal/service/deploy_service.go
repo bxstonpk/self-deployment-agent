@@ -92,6 +92,37 @@ type DeploymentService struct {
 	audit         AuditRecorder
 	notifications NotificationRecorder
 	resources     ResourceProvisioner
+
+	// Approval policy (FR-042, DEC-017). approvalEnvs are the environments
+	// whose deployments pause for approval — production unless configured
+	// otherwise. With signedApprovals on, only a decision signed with a
+	// platform administrator's key (DecideSignedApproval) moves one on;
+	// notifyApprovers tells those administrators one is waiting.
+	approvalEnvs    map[domain.Environment]bool
+	signedApprovals bool
+	notifyApprovers func(ctx context.Context, app domain.Application, deployment domain.Deployment)
+}
+
+// SetApprovalEnvironments sets which environments' deployments need approval.
+func (s *DeploymentService) SetApprovalEnvironments(envs []domain.Environment) {
+	s.approvalEnvs = map[domain.Environment]bool{}
+	for _, e := range envs {
+		s.approvalEnvs[e] = true
+	}
+}
+
+// RequireSignedApprovals makes signed decisions the only way through the
+// approval gate, and tells the approvers whenever one is waiting.
+func (s *DeploymentService) RequireSignedApprovals(notify func(ctx context.Context, app domain.Application, deployment domain.Deployment)) {
+	s.signedApprovals = true
+	s.notifyApprovers = notify
+}
+
+func (s *DeploymentService) requiresApproval(env domain.Environment) bool {
+	if s.approvalEnvs == nil {
+		return env == domain.EnvironmentProduction
+	}
+	return s.approvalEnvs[env]
 }
 
 func NewDeploymentService(
@@ -247,7 +278,7 @@ func (s *DeploymentService) runScanThenBeyond(ctx context.Context, app domain.Ap
 			"image scan found blocking-severity (CRITICAL) vulnerabilities — see scan_reports for detail")
 	}
 
-	if deployment.Environment == domain.EnvironmentProduction {
+	if s.requiresApproval(deployment.Environment) {
 		deployment, err = s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentPendingApproval)
 		if err != nil {
 			return domain.Deployment{}, err
@@ -261,6 +292,9 @@ func (s *DeploymentService) runScanThenBeyond(ctx context.Context, app domain.Ap
 			fmt.Sprintf("%s: production deployment awaiting approval", app.Name),
 			fmt.Sprintf("Deployment %s is awaiting production approval.", deployment.ID),
 			"deployment", deployment.ID)
+		if s.notifyApprovers != nil {
+			s.notifyApprovers(ctx, app, deployment)
+		}
 		return deployment, nil // pipeline pauses here — FR-042 main flow step 1
 	}
 
@@ -285,9 +319,32 @@ func (s *DeploymentService) DecideApproval(ctx context.Context, deploymentID, ap
 	if deployment.Status != domain.DeploymentPendingApproval {
 		return domain.Deployment{}, domain.ErrDeploymentNotPendingApproval
 	}
+	if s.signedApprovals {
+		return domain.Deployment{}, domain.ErrSignedApprovalRequired
+	}
 	if err := s.requireOwner(ctx, deployment.ApplicationID, approverID); err != nil {
 		return domain.Deployment{}, err
 	}
+	return s.decide(ctx, deployment, approverID, approve, reason, "")
+}
+
+// DecideSignedApproval applies a decision whose signature the caller has
+// already verified against an approver key (ApprovalService). The approver
+// is a platform administrator, not necessarily an owner, so there is no
+// owner check here — the signature is the authority.
+func (s *DeploymentService) DecideSignedApproval(ctx context.Context, deploymentID, approverID string, approve bool, reason, signerFingerprint string) (domain.Deployment, error) {
+	deployment, err := s.deployments.GetByID(ctx, deploymentID)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if deployment.Status != domain.DeploymentPendingApproval {
+		return domain.Deployment{}, domain.ErrDeploymentNotPendingApproval
+	}
+	return s.decide(ctx, deployment, approverID, approve, reason, signerFingerprint)
+}
+
+func (s *DeploymentService) decide(ctx context.Context, deployment domain.Deployment, approverID string, approve bool, reason, signerFingerprint string) (_ domain.Deployment, err error) {
+	deploymentID := deployment.ID
 
 	// Audited from here on. Unlike auditDeployOutcome (InitiateDeploy/
 	// Rollback), a Rejected deployment.Status here is NOT a failure of THIS
@@ -302,6 +359,9 @@ func (s *DeploymentService) DecideApproval(ctx context.Context, deploymentID, ap
 			if reason != "" {
 				detail = "rejected: " + reason
 			}
+		}
+		if signerFingerprint != "" {
+			detail += " (signed with key " + signerFingerprint + ")"
 		}
 		if err != nil {
 			outcome, detail = domain.AuditFailure, err.Error()

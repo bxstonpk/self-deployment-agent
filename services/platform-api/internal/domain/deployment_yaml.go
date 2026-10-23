@@ -18,6 +18,9 @@ type DeploymentYAML struct {
 	} `yaml:"services"`
 	Database struct {
 		Type string `yaml:"type"`
+		// Backup is "weekly" (the default: DEC-025's Sunday full plus
+		// daily differentials) or "none".
+		Backup string `yaml:"backup"`
 	} `yaml:"database"`
 	Scaling struct {
 		Min *int `yaml:"min"`

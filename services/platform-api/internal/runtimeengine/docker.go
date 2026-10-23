@@ -37,6 +37,10 @@ type DockerRuntime struct {
 
 	// Module S collection (logs.go); nil until EnableLogCollection.
 	logs      LogSink
+	// logRetention bounds how far back a resumed collection reaches, so a
+	// container silent for longer than the retention period doesn't have
+	// already-purged output collected again. Zero: no bound.
+	logRetention time.Duration
 	followMu  sync.Mutex
 	followers map[string]*follower
 }
@@ -48,6 +52,9 @@ func NewDockerRuntime(cli *client.Client) *DockerRuntime {
 // EnableLogCollection turns on Module S: from here on, every application
 // container this runtime starts is followed from its first line, and Stop
 // waits for a container's last lines before removing it.
+// SetLogRetention tells collection how long logs are kept (DEC-027).
+func (r *DockerRuntime) SetLogRetention(d time.Duration) { r.logRetention = d }
+
 func (r *DockerRuntime) EnableLogCollection(sink LogSink) {
 	r.logs = sink
 }

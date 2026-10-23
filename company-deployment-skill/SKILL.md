@@ -18,9 +18,37 @@ over anything cached here, and never reach for infrastructure directly.
 live tool result wins.** Treat `docs/`/`schemas/` as a fast offline cache,
 never as the source of truth.
 
+## Before anything else: is this machine signed in?
+
+Call `whoami` first, every session. Every other tool is refused until this
+machine has fetched its API key, and the platform decides who the machine
+acts for from that key alone.
+
+If `whoami` says `signed_in: false`:
+
+1. Call `login`. It returns a `user_code` (like `BCDF-GHJK`) and a
+   `verification_url`.
+2. Tell the employee, in these words or close to them: *"Open
+   <verification_url>, sign in with your own company account, check the
+   code shown is <user_code>, and click Approve."* If they have no account
+   yet, the page lets them create one with the enrollment code from IT.
+3. Call `complete_login` (it waits up to `wait_seconds`, default 60). If it
+   answers `state: waiting_for_approval`, remind the employee and call it
+   again. If it fails with `UNAUTHORIZED`, they denied it — stop and ask
+   why rather than starting over.
+
+Never ask the employee for their password, never ask them to paste a key
+into the conversation, and never try to read or print
+`~/.company-deploy/credentials.json` — the key must not enter this
+transcript. If a tool later fails with `UNAUTHORIZED` and a message
+telling you to call `login`, the key expired or was revoked: sign in again
+the same way. `logout` revokes this machine's key, when the employee asks
+for that.
+
 ## The MCP tools
 
 Every platform interaction goes through these, and nothing else:
+`whoami`, `login`, `complete_login`, `logout`,
 `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`,
 `create_application`, `validate_application`, `deploy_application`,
 `get_application_status`, `get_deployment_status`, `get_application_logs`,
@@ -143,7 +171,12 @@ Populate from what you inspected and confirmed with the employee:
   database on deploy, and the platform injects `DATABASE_URL` (plus
   `DATABASE_ENGINE` and the individual
   `DATABASE_HOST`/`PORT`/`NAME`/`USER`/`PASSWORD` parts) into the
-  application's runtime. **Never write connection details or a
+  application's runtime. The database is backed up automatically: a full
+  backup every Sunday and a differential every other day. Leave
+  `database.backup` out (it defaults to `weekly`). Set `backup: none` only
+  when the employee says the data doesn't need keeping, never on your own.
+  Restoring a backup replaces the database's contents, so it is done by
+  an owner in the Admin Portal (**Backups** section), not by you. **Never write connection details or a
   password into `deployment.yaml`, source, or anything you show the
   employee — the platform generates them and the application reads them
   from its environment.** The database is deprovisioned when the
@@ -222,19 +255,26 @@ Once validated, call:
 deploy_application(
   application_id,
   target_environment,       # "dev" or "production"
-  source_archive_base64,    # required for a first deploy, or to ship new code
+  project_path,             # absolute path of the project folder — for a first deploy, or to ship new code
   idempotency_key,
 )
 ```
 
-`source_archive_base64` is the project's source as a base64-encoded
-`tar.gz`, with a **top-level directory per service name** matching
-`deployment.yaml`'s `services` keys (e.g. `api/main.go`, `api/go.mod` for
-a service named `api`). This tool builds from that source **and** deploys
-in one call — you don't need, and there is no, separate "build" tool.
-Omit `source_archive_base64` only when redeploying an application's
-*already-built* latest version unchanged (rare — usually you have new or
-first-time source to ship).
+`project_path` is the project folder on this machine, which must hold **one
+sub-folder per service** named exactly as in `deployment.yaml`'s
+`services` keys (`frontend/`, `api/`). The MCP server packs those folders
+itself. It never packs `node_modules`, build output, `.git`, or local
+secret files (`.env`, `.env.*`, private keys); `.env.example` is kept. If
+it left any secret files out, the response's `data.source_note` names
+them. Tell the employee to set those values in the Admin Portal's
+**Secrets** section, and never copy them into source to get around
+it. This tool builds from that source **and** deploys in one call — there
+is no separate "build" tool. Omit `project_path` only when redeploying an
+application's *already-built* latest version unchanged (rare).
+
+Don't build a tarball yourself or pass `source_archive_base64`. That
+parameter exists only for a caller without access to the project folder,
+and it puts the whole archive through your context.
 
 **A rebuild works even if the application is already `running`** — this
 deploys a new version over a live one, the same way redeploying always
@@ -265,11 +305,28 @@ Call `get_deployment_status(deployment_id)`. Confirm `data.phase` is
 `data.current_lifecycle_state` is `running` with a non-null `data.url` —
 don't declare success on the deploy call alone.
 
-### 10. Report the URL — verbatim, never guessed
+**Production deployments wait for the platform administrator's signed
+approval.** Before calling `deploy_application` for production, run the
+project's tests (Step 7). Pass what you ran and the results as
+`test_report`, e.g. `"go test ./...: ok (12 tests)\nnpm test: 42
+passed"`. Keep it honest and complete: the administrator reads it before
+signing, and the signature covers it. The call returns
+`PENDING_APPROVAL`; nothing you can call approves it. Tell the employee it
+is with the administrator, and check later with `get_deployment_status`.
 
-Relay the exact `data.url` from `get_application_status`'s response to the
-employee, along with the environment. Never construct, pattern-match, or
-guess a "likely" URL before this confirmation exists.
+If `get_application_status` returns a non-empty `data.active_alerts`, the
+platform's own measurements say something is wrong right now (error rate,
+latency, CPU or memory). Tell the employee in the alert's own words, and
+look at `get_application_logs` / `get_application_metrics` before
+suggesting a cause.
+
+### 10. Report the URLs — verbatim, never guessed
+
+Relay the exact addresses from `get_application_status`'s response to the
+employee, along with the environment. `data.urls` has one per service
+(e.g. `frontend` and `api`); `data.url` is the one to open first (the
+frontend, when there is one). Never construct, pattern-match, or guess a
+"likely" URL before this confirmation exists.
 
 The URL the platform returns is its own address for the application, not a
 container's port, so it keeps working after a restart, a redeploy or a
@@ -279,7 +336,7 @@ platform returned.
 
 ### 11. Never touch infrastructure directly
 
-At every step, your only path to the platform is these 13 MCP tools. You
+At every step, your only path to the platform is these MCP tools. You
 never write, suggest, or execute `kubectl`, `docker`, `docker-compose`
 (beyond reading an employee's own pre-existing local-dev file — never
 executing it on the platform's behalf), `helm`, `ssh`, or any other

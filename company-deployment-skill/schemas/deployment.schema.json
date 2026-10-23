@@ -55,6 +55,11 @@
           "type": "string",
           "enum": ["mysql", "postgres"],
           "description": "'mysql' (the company LAN standard) or 'postgres' as of this package's last update — confirm against the live catalog."
+        },
+        "backup": {
+          "type": "string",
+          "enum": ["weekly", "none"],
+          "description": "'weekly' (the default when omitted): a full backup every Sunday and a differential every other day, the previous week's set deleted once a new full succeeds. 'none': no scheduled backups. Requires database.type."
         }
       }
     },

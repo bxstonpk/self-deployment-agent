@@ -33,6 +33,9 @@ func NewDeployHandler(svc *service.DeploymentService, apps ApplicationNamer, pub
 
 type deployRequest struct {
 	Environment string `json:"environment"`
+	// TestReport is what the requester tells the approver about the tests
+	// they ran: shown to the approver and bound into what they sign.
+	TestReport string `json:"test_report"`
 }
 
 type deploymentResponse struct {
@@ -101,7 +104,12 @@ func (h *DeployHandler) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		environment = domain.EnvironmentDev
 	}
 
-	deployment, err := h.svc.InitiateDeploy(r.Context(), id, caller.ID, environment)
+	if len(req.TestReport) > domain.MaxTestReportBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "test_report_too_large", domain.ErrTestReportTooLarge.Error())
+		return
+	}
+	ctx := domain.WithTestReport(r.Context(), req.TestReport)
+	deployment, err := h.svc.InitiateDeploy(ctx, id, caller.ID, environment)
 	if err != nil {
 		writeDeployError(w, err)
 		return
@@ -238,6 +246,8 @@ func writeDeployError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "deployment_in_flight", err.Error())
 	case errors.Is(err, domain.ErrDeploymentNotPendingApproval):
 		writeError(w, http.StatusConflict, "not_pending_approval", err.Error())
+	case errors.Is(err, domain.ErrSignedApprovalRequired):
+		writeError(w, http.StatusForbidden, "signed_approval_required", err.Error())
 	case errors.Is(err, domain.ErrInvalidEnvironment):
 		writeError(w, http.StatusBadRequest, "invalid_environment", err.Error())
 	case errors.Is(err, domain.ErrInvalidLifecycleTransition):

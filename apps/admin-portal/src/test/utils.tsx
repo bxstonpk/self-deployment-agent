@@ -3,11 +3,11 @@ import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { IdentityProvider } from "../context/IdentityContext";
 
-// Pre-seeds a signed-in dev identity in localStorage so pages behind
+// Pre-seeds a signed-in session in localStorage so pages behind
 // RequireIdentity render immediately, matching how a returning user (one
 // who already signed in this browser) experiences the app.
 export function signInAs(email = "alice@example.com") {
-  localStorage.setItem("admin-portal.identity", JSON.stringify({ email }));
+  localStorage.setItem("admin-portal.identity", JSON.stringify({ email, token: `cps_test-session-${email}` }));
 }
 
 export function renderWithProviders(ui: ReactElement, { route = "/" }: { route?: string } = {}) {

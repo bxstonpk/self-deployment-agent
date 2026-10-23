@@ -34,12 +34,26 @@ app doesn't pretend to offer anything they can't actually deliver.
 
 ## What's implemented
 
-- **Sign in** (`src/pages/SignIn.tsx`) — dev-mode identity (email, optional
-  name/department), stored in `localStorage`, sent as
-  `X-Dev-User-Email`/`X-Dev-User-Name`/`X-Dev-Department` on every request —
-  the exact same headers `platform-api`'s own `DevHeaderAuthenticator`
-  trusts (`internal/httpapi/devauth.go`). Not a security boundary; see
-  **Known gaps**.
+- **Sign in / Create an account** (`SignIn.tsx`, `Register.tsx`) — email
+  and password, exchanged for a Platform API session (DEC-001, revised
+  2026-10-23). Registering needs the enrollment code IT hands out. An
+  account from before passwords existed is claimed by registering with
+  the same email, so its applications stay. The session token is kept in
+  `localStorage` and sent as `Authorization: Bearer` on every request.
+  The password is never stored. A `401` from the API (expired or revoked
+  session) signs the tab out, and **Sign out** revokes the session on the
+  platform as well.
+- **Approve a machine** (`DeviceApproval.tsx`, `/device?code=…`) — where an
+  employee approves the code a Claude Code machine shows them (`login`
+  tool or `company-deploy login`). It shows which machine is asking, then
+  Approve or Deny. The machine receives its API key directly; this page
+  never sees it. Opened while signed out, the link goes through sign-in
+  (or registration) and comes back with the code still filled in.
+- **Access keys** (`AccessKeys.tsx`) — every key that can act as this
+  employee, by name and the key's first characters only, with status,
+  last use and expiry. Each can be revoked, which takes effect on the
+  key's very next request. A key can also be issued by hand for a machine
+  that can't run the sign-in; its value is shown exactly once.
 - **Application list** (`ApplicationList.tsx`) — every registered
   application, with client-side search-by-name and filter-by-lifecycle-status.
 - **Register application** (`RegisterApplication.tsx`) — name/description/
@@ -171,11 +185,10 @@ enforcing anything.
 
 ## Known gaps (documented, not hidden)
 
-- **Self-declared identity only, not a real session — by decision, not a
-  gap.** Mirrors `platform-api`'s own `DEC-001` (Decided 2026-09-11): this
-  is an internal, LAN-only platform, so any email typed at sign-in is
-  trusted, nothing is password-checked. This app adds no security of its
-  own; every real check still happens server-side.
+- **No password reset or change, and no MFA.** See `platform-api`'s
+  README, **How authentication works**, for this and the other gaps in
+  authentication itself. The session token lives in `localStorage`, so
+  any script running on this origin can read it.
 - **No RBAC-aware UI, permanently.** Every signed-in identity sees the
   exact same screens and the exact same enabled/disabled buttons — there's
   no Administrator-only view because `DEC-002` (Decided 2026-09-11) is
@@ -252,9 +265,29 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Sign in with any email at the prompt — the Platform API creates the
-user/department on first use, exactly like every other dev-mode client in
-this project.
+Create an account at the prompt with the enrollment code from the repo
+root's `.env` (`PLATFORM_ENROLLMENT_CODE`). The Platform API's
+`PLATFORM_PORTAL_URL` should be this dev server's address: it's where a
+machine's sign-in request tells the employee to approve it.
+
+### Authentication, verified for real
+
+Driven in a real headless Chromium (Playwright) against the live Platform
+API and this dev server. A "machine" started a device authorization over
+HTTP, and its approval link was opened signed out:
+
+- the link went to sign-in, remembering where to return;
+- a wrong enrollment code was refused on the page;
+- registering returned to the approval page with the code filled in and
+  the machine's name shown;
+- the machine's poll stayed `authorization_pending` until **Approve** was
+  clicked, then collected a key acting as the new employee, and the key
+  never appeared in the page;
+- **Access keys** listed it by prefix, and **Revoke** made the key fail
+  (`401`) on its next request;
+- **Sign out** revoked the session on the platform too (`401`);
+- a wrong password was refused, and the right one signed back in to the
+  page the session had ended on.
 
 ## Running tests
 

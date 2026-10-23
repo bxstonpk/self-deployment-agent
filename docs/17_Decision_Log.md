@@ -34,12 +34,12 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 
 | DEC ID | Group | Topic | Decision Owner | Target Phase | Status |
 |---|---|---|---|---|---|
-| DEC-001 | Identity & Access | Identity Provider / SSO integration | IT Administrator + Security Administrator | Before Technical Design | **Decided** |
+| DEC-001 | Identity & Access | Identity Provider / SSO integration | IT Administrator + Security Administrator | Before Technical Design | **Decided (revised 2026-10-23)** |
 | DEC-002 | Identity & Access | RBAC/permission model source of truth | Platform Administrator + Security Administrator | Before Technical Design | **Decided** |
-| DEC-003 | Identity & Access | MCP/AI-agent authentication mechanism | Security Administrator + Platform Administrator | Before Technical Design | **Decided** |
+| DEC-003 | Identity & Access | MCP/AI-agent authentication mechanism | Security Administrator + Platform Administrator | Before Technical Design | **Decided (revised 2026-10-23)** |
 | DEC-004 | Infrastructure & Hosting | Final infrastructure implementation choice | Platform Administrator + IT Administrator (sign-off: Management) | Before Solution Architecture sign-off | **Decided (revised)** |
 | DEC-005 | Infrastructure & Hosting | Container registry & image vulnerability scanning tooling | IT Administrator + Security Administrator | Before Technical Design | **Decided** |
-| DEC-006 | Infrastructure & Hosting | Secret management backend | Security Administrator + IT Administrator | Before Technical Design | Open |
+| DEC-006 | Infrastructure & Hosting | Secret management backend | Security Administrator + IT Administrator | Before Technical Design | **Decided (2026-10-23)** |
 | DEC-007 | Infrastructure & Hosting | Domain naming, DNS zone ownership, TLS certificate authority | IT Administrator | Before Technical Design | **Deferred** |
 | DEC-008 | Infrastructure & Hosting | Environment topology beyond dev/staging/production | Platform Administrator | Before Solution Architecture sign-off | Open |
 | DEC-009 | Infrastructure & Hosting | Multi-region / cross-datacenter high availability requirement | IT Administrator + Management / Auditor | Before Solution Architecture sign-off | **Decided** |
@@ -47,10 +47,10 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-011 | Compliance & Data | Data residency / hosting location constraints | IT Administrator + Management / Auditor | Before Solution Architecture sign-off | Open |
 | DEC-012 | Compliance & Data | Data classification policy for platform-hosted apps | Security Administrator + Management / Auditor | Before Production Go-Live | Open |
 | DEC-013 | Compliance & Data | Whether public-internet ("external") visibility is permitted in v1 | Security Administrator + Platform Administrator | Before Solution Architecture sign-off | Open |
-| DEC-014 | Financial / Quota | Resource quota tiers and numeric limits (small/medium/large) | Platform Administrator + IT Administrator | Before Technical Design | Open |
+| DEC-014 | Financial / Quota | Resource quota tiers and numeric limits (small/medium/large) | Platform Administrator + IT Administrator | Before Technical Design | **Decided (2026-10-23)** |
 | DEC-015 | Financial / Quota | Budget/cost ceiling for control-plane infra and tooling/licensing | Management / Auditor | Before Solution Architecture sign-off | Open |
 | DEC-016 | Financial / Quota | Department/cost-center chargeback or showback model | Management / Auditor | Before Production Go-Live | Open |
-| DEC-017 | Process & Governance | Production deployment approval workflow and tooling | Platform Administrator + Security Administrator | Before Technical Design | Open |
+| DEC-017 | Process & Governance | Production deployment approval workflow and tooling | Platform Administrator + Security Administrator | Before Technical Design | **Decided (2026-10-23)** |
 | DEC-018 | Process & Governance | Notification channels to integrate | IT Administrator + Platform Administrator | Before Development | Open |
 | DEC-019 | Process & Governance | Governance process for supported-stack changes | Platform Administrator + IT Administrator | Before Production Go-Live | Open |
 | DEC-020 | Process & Governance | Application ownership transfer process on employee departure | Application Owner + Platform Administrator | Before Production Go-Live | Open |
@@ -58,8 +58,10 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-022 | Process & Governance | MVP pilot scope (participating departments/app types) | Platform Administrator + Management / Auditor | Before UAT | Open |
 | DEC-023 | Operational | Scale-to-zero idle timeout default and configurability | Platform Administrator | Before Technical Design | Open |
 | DEC-024 | Operational | Availability/SLA targets — control plane vs. hosted apps | Platform Administrator + Management / Auditor | Before Production Go-Live | Open |
-| DEC-025 | Operational | RPO/RTO targets and backup retention period for DR | IT Administrator + Application Owner | Before Production Go-Live | Open |
+| DEC-025 | Operational | RPO/RTO targets and backup retention period for DR | IT Administrator + Application Owner | Before Production Go-Live | **Decided (2026-10-23)** (backup schedule and retention; RPO/RTO not set) |
 | DEC-026 | Operational | Platform support model / on-call ownership | IT Administrator + Platform Administrator | Before Production Go-Live | Open |
+| DEC-027 | Operational | Application log retention period | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
+| DEC-028 | Operational | Alert thresholds and notification rhythm | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
 
 ---
 
@@ -75,8 +77,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Integrate with the company's existing corporate IdP via SAML/OIDC; (b) stand up a dedicated IdP instance for the platform; (c) federate multiple IdPs (corporate AD for employees + a separate issuer for machine/MCP service accounts). |
 | Recommendation | (a) — integrate with the existing corporate IdP via OIDC/SAML to avoid duplicating identity and inherit existing MFA/lifecycle management. Pending confirmation of which IdP the company currently operates. |
 | Decision Owner | IT Administrator + Security Administrator |
-| Status | **Decided (2026-09-11)** |
-| Resolution | **No enterprise IdP integration.** The platform is internal-only, self-hosted on a single existing on-prem Linux host, reachable only from the company LAN — not internet-facing, and no cloud. Since network-level access is already the trust boundary, employees self-declare their name/email/department at sign-in (the platform's existing header-based identity mechanism); this is the **permanent** identity model, not a stopgap pending SSO integration. Accepted risk, recorded not hidden: anyone with LAN access can self-declare any email, including impersonating another employee — accepted given the small, trusted internal user base (Claude accounts are already shared among some staff). Revisit if the platform is ever exposed beyond the LAN or the user base grows past a size where this trust assumption holds. |
+| Status | **Decided (2026-09-11); revised (2026-10-23)** |
+| Resolution | **Revised 2026-10-23:** the platform owner asked that every machine authenticate and fetch a key before it deploys, as part of the LAN development standard for Claude Code. The platform now authenticates employees itself — still **no enterprise IdP integration**, for the reasons below. An employee registers with an email, a password (bcrypt) and an **enrollment code** that IT sets in the platform's environment (`PLATFORM_ENROLLMENT_CODE`; registration can also be limited to company email domains). Signing in gives a short-lived Portal session (12h by default). The self-declared header identity survives only as an explicit local-testing mode (`PLATFORM_AUTH_MODE=dev-header`), refused unless `PLATFORM_ENV=dev`. Existing accounts keep their applications: the first registration with an existing email sets its password. Remaining accepted risk: the enrollment code is shared, so anyone who has it and an unregistered company email can create an account; there is no password reset or MFA. **Original resolution (2026-09-11), superseded:** no enterprise IdP integration — the platform is internal-only, self-hosted on a single existing on-prem Linux host, reachable only from the company LAN — not internet-facing, and no cloud. Since network-level access is already the trust boundary, employees self-declared their name/email/department at sign-in (the header-based identity mechanism). Accepted risk at the time: anyone with LAN access could self-declare any email. |
 | Target Phase | Before Technical Design |
 
 #### DEC-002 — RBAC/Permission Model Source of Truth
@@ -103,8 +105,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Delegated OAuth2 token scoped to the employee's session; (b) long-lived personal API key stored locally by Claude Code; (c) broker service issuing short-lived, just-in-time credentials per MCP call. |
 | Recommendation | (a) or (c) — short-lived, employee-attributable, revocable credentials. Long-lived personal API keys (b) are discouraged as higher risk. Final mechanism to be finalized jointly with 11_Security_Requirements.md. |
 | Decision Owner | Security Administrator + Platform Administrator |
-| Status | **Decided (2026-09-11)** |
-| Resolution | **Same mechanism as DEC-001, passed through unchanged.** Claude Code (as the MCP client) sends the same self-declared identity headers the employee already provided when signing in; the MCP server and Platform API trust them for the same reason DEC-001 does — the LAN is the trust boundary, not a per-call credential. No delegated OAuth token, personal API key, or broker service — those options assumed a real IdP existed to issue against, which DEC-001 rules out for this deployment. |
+| Status | **Decided (2026-09-11); revised (2026-10-23)** |
+| Resolution | **Revised 2026-10-23, with DEC-001:** each Claude Code machine fetches its own **API key** before it can deploy, through a device authorization (the OAuth 2.0 device grant's shape, RFC 8628). The machine — the MCP server's `login` tool, or `company-deploy login` in a terminal — asks the platform for a short code. The employee opens the Admin Portal, signs in with their own password, checks the code and approves it. The machine then collects a key named after itself. The key is stored only in that machine's `~/.company-deploy/credentials.json`, and no MCP tool ever returns it, so it never enters the agent's transcript. Keys expire (30 days by default; at most 90 for one issued by hand) and are revocable from the Portal's **Access keys** page. Only a SHA-256 of each key is stored. A key can do everything its employee can except manage credentials: listing, issuing or revoking keys and approving devices require a signed-in Portal session, so an agent can never mint itself another key or approve its own request. This is option (b), with the recommendation's "short-lived, employee-attributable, revocable" properties added. **Original resolution (2026-09-11), superseded:** Claude Code sent the same self-declared identity headers as the Portal; no per-call credential. |
 | Target Phase | Before Technical Design |
 
 ## 5. Infrastructure & Hosting
@@ -147,7 +149,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) HashiCorp Vault (self-hosted); (b) cloud-native secrets manager; (c) platform-native secret store scoped to the chosen container platform. |
 | Recommendation | No default recommended without knowing whether the company already standardizes on a secrets tool; flag as a joint decision with the Security Administrator once DEC-004 narrows the infrastructure options. |
 | Decision Owner | Security Administrator + IT Administrator |
-| Status | Open |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **The platform's encryption key is bound to the host's TPM.** Three options were proposed on 2026-10-23: a keyring with a key file, OpenBao/Vault, or the TPM. The platform owner chose the TPM.<br>• `PLATFORM_SECRET_KEY` is sealed with the host's TPM 2.0 (`deploy/host/tpm-seal-key.sh`, optionally also bound to PCRs).<br>• It is unsealed into RAM at boot (`company-platform-unseal.service`), and platform-api reads it from that file (`PLATFORM_SECRET_KEY_FILE`) instead of `.env`. It is then neither on disk in the clear nor in the container's environment.<br>• A passphrase-encrypted escrow copy, kept offline, is the recovery path if the TPM or mainboard is lost.<br>• Not provided: key rotation/re-encryption, and protection against root on the running host. See `deploy/host/README.md`. |
 | Note (2026-09-11) | DEC-004 revised to a single, LAN-only, physically-controlled host, which likely reduces the urgency here (the current single-static-key encryption already in place — see Module O's README — may be an acceptable permanent posture for this deployment rather than an MVP stopgap). Not decided, only noted: this still needs an explicit answer from Security, the same as before. |
 | Target Phase | Before Technical Design |
 
@@ -258,7 +261,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Adopt provisional numbers benchmarked from typical internal-tool workloads; (b) mirror an existing internal infrastructure standard, if one exists; (c) start conservative and revise after MVP usage data. |
 | Recommendation | (c) — publish provisional numbers for MVP, explicitly labeled as subject to revision after the pilot generates real usage data. |
 | Decision Owner | Platform Administrator + IT Administrator |
-| Status | Open |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **No resource quotas.** The platform owner decided on 2026-10-23 that applications are not limited by quota. Module M (Resource Manager) is therefore not built, and `validate_application`'s `resource_quota` check reports `passed` with this decision as its reason, rather than `skipped`. `resources.tier` remains an accepted `deployment.yaml` field with no enforcement behind it. What keeps an application from exhausting the single host is human review, not a limit. |
 | Target Phase | Before Technical Design |
 
 #### DEC-015 — Budget/Cost Ceiling for Control-Plane Infrastructure and Tooling
@@ -299,7 +303,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Application Owner self-approves with Platform Administrator spot-audits; (b) mandatory two-party approval (Application Owner + Platform/Security Administrator) via the Administration Portal; (c) ticket-based approval integrated with an existing ITSM tool. |
 | Recommendation | (b) for production; auto-approval (a-style) remains acceptable for dev, per the stated business rule. Final workflow to be confirmed jointly with IT/Security. |
 | Decision Owner | Platform Administrator + Security Administrator |
-| Status | Open |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **The platform administrator approves, by signing with a private key only they hold.** The platform owner decided this on 2026-10-23 ("I approve code after running the tests; I am the Admin and I hold the private key").<br><br>• A deployment needing approval pauses until a decision signed with an administrator's **Ed25519 private key** arrives. That is production by default (`APPROVAL_REQUIRED_ENVIRONMENTS`; dev keeps deploying on its own, as the BRD allows).<br>• The key is generated and used only on the administrator's machine (`company-deploy approver keygen` / `approve`), encrypted with a passphrase. The platform holds the public key (`PLATFORM_APPROVER_KEYS`).<br>• The signature covers the deployment, its build, every image and the SHA-256 of the test report the requester attached. A signature can't be reused for another deployment or a rebuilt one, and is refused more than 10 minutes from its signing time.<br>• An application's owner can no longer approve their own production deployment. The audit log and the approval record keep the signing key's fingerprint.<br><br>This adds one role to DEC-002's ownership-only model: approver, defined by holding a configured key. With no key configured, the previous owner approval applies. |
 | Target Phase | Before Technical Design |
 
 #### DEC-018 — Notification Channels to Integrate
@@ -405,7 +410,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Uniform RPO/RTO and retention for all apps regardless of tier; (b) tiered targets by `resources.tier` or by a criticality flag; (c) no formal target for MVP — best-effort daily backup only. |
 | Recommendation | (c) for MVP with a documented best-effort daily backup and 30-day retention as a provisional placeholder, moving to (b) once application criticality classification exists. |
 | Decision Owner | IT Administrator + Application Owner |
-| Status | Open |
+| Status | **Decided (2026-10-23)** — schedule and retention; no RPO/RTO figure was set |
+| Resolution | Decided by the platform owner on 2026-10-23. Each application's database gets:<br>• a **full backup every Sunday**;<br>• a **differential backup Monday to Saturday** (what changed since that Sunday's full);<br>• once the next Sunday's full has succeeded, the previous week's backups are **deleted**;<br>• the option to opt out entirely (`database: backup: none` in `deployment.yaml`).<br><br>Implementation (`services/platform-api`, "How Database Backups work"):<br>• logical dumps (`mysqldump` / `pg_dump`); a differential is a line-level delta of the day's dump against Sunday's;<br>• from 01:00 Asia/Bangkok by default;<br>• compressed, sealed with the platform's secret key, and kept in the `platform-backups` volume on the platform host;<br>• owners can also back up on request and restore any backup from the Admin Portal; a restore first backs up what it replaces.<br><br>What this gives is, in effect, an RPO of up to one day; no RTO was set. Backups sit on the same host as the databases, so IT must copy the volume off the host for protection against losing the host. |
 | Target Phase | Before Production Go-Live |
 
 #### DEC-026 — Platform Support Model / On-Call Ownership
@@ -419,6 +425,32 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Recommendation | (a) for MVP given team size and cost constraints, with (b) revisited once the platform hosts production-tier applications. |
 | Decision Owner | IT Administrator + Platform Administrator |
 | Status | Open |
+| Target Phase | Before Production Go-Live |
+
+#### DEC-027 — Application Log Retention
+
+| Field | Detail |
+|---|---|
+| Topic | How long application logs (Module S) are kept before purge |
+| Question | FR-088 requires logs to be retained for a period and then purged, and leaves the period TBD. What is it? |
+| Why It Matters | Without a period nothing is purged and the platform database grows without bound; too short loses evidence for troubleshooting. |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **90 days.** platform-api deletes application log lines older than 90 days, hourly (`LOG_RETENTION_DAYS=90`; 0 would keep them forever). This covers what applications print (Module S) only. The audit log is immutable by design (FR-106) and its retention remains DEC-010. Metric retention (NFR-032) has not been decided. |
+| Target Phase | Before Production Go-Live |
+
+---
+
+#### DEC-028 — Alert Thresholds and Notification Rhythm
+
+| Field | Detail |
+|---|---|
+| Topic | When FR-092 raises an alert, and how often it tells people |
+| Question | FR-092 requires alerts on metric thresholds and defers the numbers, which no other requirement sets. What are they, and how often should an ongoing problem be announced? |
+| Options Considered | Three threshold sets were proposed on 2026-10-23: A (strict), B (balanced) and C (lenient). |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **Rhythm** (chosen explicitly): announce once when an alert starts, once more when it becomes critical, at most once an hour while it continues, and once when it clears. **Thresholds:** set B, the proposed default; the owner chose the rhythm and did not pick another set:<br>• 5xx rate over 5 minutes, judged from 20 requests: warning 5%, critical 20%;<br>• mean latency over 5 minutes: warning 1 s, critical 3 s;<br>• CPU sustained over 10 minutes: warning 85%, critical 95%;<br>• memory over 5 minutes, as a share of the limit (the host's RAM, since there are no quotas): warning 80%, critical 95%;<br>• the host's data disk: warning 85%, critical 95%.<br><br>Each is overridable (`ALERT_*`). Application alerts go to the application's owners; platform alerts go to `PLATFORM_ADMIN_EMAILS`. Delivery is the in-app inbox only, since no external channel has been chosen (DEC-018 remains open). |
 | Target Phase | Before Production Go-Live |
 
 ---

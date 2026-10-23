@@ -19,7 +19,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — see .env.example}
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env — see .env.example}
     ports:
-      - "${POSTGRES_HOST_PORT:-5436}:5432" # 5432-5435 are already used by other local projects on this machine
+      # Loopback only: the platform's own database must not be reachable
+      # from the LAN, which every other published port here is.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5436}:5432" # 5432-5435 are already used by other local projects on this machine
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -44,13 +46,58 @@ services:
       SCALE_TO_ZERO_IDLE_SECONDS: ${SCALE_TO_ZERO_IDLE_SECONDS:-300}
       SCALE_SWEEP_INTERVAL_SECONDS: ${SCALE_SWEEP_INTERVAL_SECONDS:-30}
       METRICS_SAMPLE_INTERVAL_SECONDS: ${METRICS_SAMPLE_INTERVAL_SECONDS:-15}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-90}
+      BACKUP_ENABLED: ${BACKUP_ENABLED:-true}
+      BACKUP_HOUR: ${BACKUP_HOUR:-1}
+      BACKUP_TIMEZONE: ${BACKUP_TIMEZONE:-Asia/Bangkok}
+      BACKUP_FULL_WEEKDAY: ${BACKUP_FULL_WEEKDAY:-sunday}
+      BACKUP_SWEEP_INTERVAL_SECONDS: ${BACKUP_SWEEP_INTERVAL_SECONDS:-600}
+      # Platform administrators: they receive platform-level alerts (and
+      # approve production deployments). Comma-separated account emails.
+      PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:-}
+      # Signed approvals (DEC-017): the administrators' public keys, and
+      # which environments' deployments need a signed approval.
+      PLATFORM_APPROVER_KEYS: ${PLATFORM_APPROVER_KEYS:-}
+      APPROVAL_REQUIRED_ENVIRONMENTS: ${APPROVAL_REQUIRED_ENVIRONMENTS:-production}
+      # Alerts (FR-092, DEC-028). Empty means the decided default; see
+      # .env.example.
+      ALERT_ERROR_RATE_WARNING_PERCENT: ${ALERT_ERROR_RATE_WARNING_PERCENT:-}
+      ALERT_ERROR_RATE_CRITICAL_PERCENT: ${ALERT_ERROR_RATE_CRITICAL_PERCENT:-}
+      ALERT_MIN_REQUESTS: ${ALERT_MIN_REQUESTS:-}
+      ALERT_LATENCY_WARNING_MS: ${ALERT_LATENCY_WARNING_MS:-}
+      ALERT_LATENCY_CRITICAL_MS: ${ALERT_LATENCY_CRITICAL_MS:-}
+      ALERT_CPU_WARNING_PERCENT: ${ALERT_CPU_WARNING_PERCENT:-}
+      ALERT_CPU_CRITICAL_PERCENT: ${ALERT_CPU_CRITICAL_PERCENT:-}
+      ALERT_MEMORY_WARNING_PERCENT: ${ALERT_MEMORY_WARNING_PERCENT:-}
+      ALERT_MEMORY_CRITICAL_PERCENT: ${ALERT_MEMORY_CRITICAL_PERCENT:-}
+      ALERT_DISK_WARNING_PERCENT: ${ALERT_DISK_WARNING_PERCENT:-}
+      ALERT_DISK_CRITICAL_PERCENT: ${ALERT_DISK_CRITICAL_PERCENT:-}
+      ALERT_TRAFFIC_WINDOW_SECONDS: ${ALERT_TRAFFIC_WINDOW_SECONDS:-}
+      ALERT_CPU_WINDOW_SECONDS: ${ALERT_CPU_WINDOW_SECONDS:-}
+      ALERT_MEMORY_WINDOW_SECONDS: ${ALERT_MEMORY_WINDOW_SECONDS:-}
+      ALERT_REMINDER_SECONDS: ${ALERT_REMINDER_SECONDS:-}
+      ALERT_EVAL_INTERVAL_SECONDS: ${ALERT_EVAL_INTERVAL_SECONDS:-}
       HEALTH_SWEEP_INTERVAL_SECONDS: ${HEALTH_SWEEP_INTERVAL_SECONDS:-15}
       POST_ACTIVATION_ROLLBACK_WINDOW_SECONDS: ${POST_ACTIVATION_ROLLBACK_WINDOW_SECONDS:-300}
       OWNERSHIP_TRANSFER_WINDOW_SECONDS: ${OWNERSHIP_TRANSFER_WINDOW_SECONDS:-604800}
       # Module O's secret-store key (FR-066) — see .env.example for how to
       # generate one. Required: the platform refuses to start rather than
       # store secrets it can't encrypt.
-      PLATFORM_SECRET_KEY: ${PLATFORM_SECRET_KEY:?set PLATFORM_SECRET_KEY in .env — see .env.example}
+      # Either inline from .env, or — on a host that seals it with its TPM
+      # (DEC-006, deploy/host/README.md) — as a file the host unseals at
+      # boot, added by deploy/host/docker-compose.tpm.yml. platform-api
+      # refuses to start with neither, or both.
+      PLATFORM_SECRET_KEY: ${PLATFORM_SECRET_KEY:-}
+      # Authentication (DEC-001/DEC-003 revised 2026-10-23) — see
+      # .env.example. In the default token mode the platform refuses to
+      # start without an enrollment code.
+      PLATFORM_AUTH_MODE: ${PLATFORM_AUTH_MODE:-token}
+      PLATFORM_ENROLLMENT_CODE: ${PLATFORM_ENROLLMENT_CODE:-}
+      PLATFORM_ALLOWED_EMAIL_DOMAINS: ${PLATFORM_ALLOWED_EMAIL_DOMAINS:-}
+      PLATFORM_PORTAL_URL: ${PLATFORM_PORTAL_URL:-http://localhost:5173}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-43200}
+      API_KEY_TTL_SECONDS: ${API_KEY_TTL_SECONDS:-2592000}
+      API_KEY_MAX_TTL_SECONDS: ${API_KEY_MAX_TTL_SECONDS:-7776000}
     ports:
       - "${PLATFORM_API_HOST_PORT:-8090}:8080" # 8080 is already used by another local project on this machine
     volumes:
@@ -62,6 +109,11 @@ services:
       # service). In production this becomes a real, isolated build
       # cluster, not a host socket mount — see docs/10_System_Architecture.md.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Database backups (FR-064, DEC-025): sealed files, one directory per
+      # application. Back this volume up off the host — a backup on the
+      # same disk as the database protects against mistakes, not against
+      # losing the disk.
+      - platform-backups:/var/lib/platform/backups
     extra_hosts:
       # Deployment health checks (Module J) reach a just-started sibling
       # container via this host, since the container's own "localhost"
@@ -79,5 +131,18 @@ services:
       postgres:
         condition: service_healthy
 
+  # The platform's one address on the LAN: the Admin Portal at /, the
+  # Platform API at /api/, applications at /run/, and the installer for
+  # Claude Code machines at /downloads/. See docs/LAN_Deployment_Standard.md.
+  gateway:
+    build:
+      context: .
+      dockerfile: deploy/gateway/Dockerfile
+    ports:
+      - "${GATEWAY_HOST_PORT:-8080}:80"
+    depends_on:
+      - platform-api
+
 volumes:
   pgdata:
+  platform-backups:

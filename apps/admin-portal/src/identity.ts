@@ -1,14 +1,18 @@
-// Dev-mode identity, mirroring services/platform-api's own DevHeaderAuthenticator
-// (internal/httpapi/devauth.go) — the same DEC-001-blocked stand-in used
-// everywhere else in this project (the MCP server binds one identity per
-// process; this binds one identity per browser tab via localStorage). Not a
-// security boundary — the Platform API re-derives every real check
-// server-side regardless of what's sent here.
+// The signed-in employee, per DEC-001/DEC-003 (revised 2026-10-23,
+// docs/17_Decision_Log.md): an email and password exchanged for a session
+// token, which every Platform API call carries as a Bearer credential. The
+// Platform API re-derives every real check from that token server-side;
+// nothing else here is trusted.
+//
+// Kept in localStorage so a reload stays signed in for the session's
+// lifetime (12h by default). An identity saved by the old self-declared
+// sign-in has no token and is ignored, which signs that browser out.
 
 export interface Identity {
   email: string;
   name?: string;
-  department?: string;
+  token: string;
+  expiresAt?: string;
 }
 
 const STORAGE_KEY = "admin-portal.identity";
@@ -18,7 +22,8 @@ export function loadIdentity(): Identity | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Identity;
-    if (!parsed.email) return null;
+    if (!parsed.email || !parsed.token) return null;
+    if (parsed.expiresAt && Date.parse(parsed.expiresAt) <= Date.now()) return null;
     return parsed;
   } catch {
     return null;
@@ -34,8 +39,9 @@ export function clearIdentity(): void {
 }
 
 export function identityHeaders(identity: Identity): Record<string, string> {
-  const headers: Record<string, string> = { "X-Dev-User-Email": identity.email };
-  if (identity.name) headers["X-Dev-User-Name"] = identity.name;
-  if (identity.department) headers["X-Dev-Department"] = identity.department;
-  return headers;
+  return { Authorization: `Bearer ${identity.token}` };
 }
+
+// Fired when the Platform API rejects the session (expired, revoked, or
+// signed out elsewhere); IdentityProvider listens and signs the tab out.
+export const UNAUTHORIZED_EVENT = "admin-portal:unauthorized";

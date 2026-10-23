@@ -3,8 +3,9 @@ docs/02_Functional_Requirements.md / docs/07_MCP_Requirements.md) — the
 thin, policy-aware layer between Claude Code and the Company Platform API.
 
 Per Section 2's architecture: this module does no business logic of its
-own. It authenticates as the one employee identity this process is bound to
-(config.py), does no independent authorization beyond that (every real
+own. It authenticates with this machine's API key (credentials.py — fetched
+through the login/complete_login tools, which an employee approves in the
+Admin Portal), does no independent authorization beyond that (every real
 allow/deny is re-derived by the Platform API on every call), translates
 each of Section 13's tool calls into the corresponding Platform API
 call(s), and relays the result inside the structured envelope Section 8
@@ -33,6 +34,7 @@ from .platform_client import PlatformClient
 from .tools import (
     application,
     audit_log,
+    auth,
     deployment,
     discovery,
     lifecycle,
@@ -60,26 +62,57 @@ async def _run_tool(
         return result
 
 
-def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee_email: str) -> MCPServer:
+def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPServer:
     mcp = MCPServer(
         name="company-deployment-mcp",
         title="Company Deployment MCP",
         instructions=(
             "Business-capability interface to the Company Platform API. "
-            "Every tool call acts as the single authenticated employee this "
-            "server session is bound to. Call get_platform_info and "
-            "get_supported_stacks first in any deployment workflow — never "
-            "assume cached knowledge of what the platform currently supports."
+            "Every tool call acts as the employee whose API key this machine "
+            "holds. Call whoami first: if the machine is not signed in, call "
+            "login, have the employee approve the code it returns in the Admin "
+            "Portal, then complete_login — nothing else works until then. Then "
+            "call get_platform_info and get_supported_stacks before any "
+            "deployment workflow — never assume cached knowledge of what the "
+            "platform currently supports."
         ),
     )
 
     def audit(tool_name: str, params: dict[str, Any], application_id: str | None) -> AuditEvent:
+        cred = client.stored_credential()
         return AuditEvent(
             tool_name=tool_name,
-            employee_identity=employee_email,
+            employee_identity=cred.email if cred else "(not signed in)",
             input_parameters=params,
             target_application_id=application_id,
         )
+
+    # --- sign-in: fetch this machine's key before anything else ---------
+
+    @mcp.tool()
+    async def whoami() -> dict[str, Any]:
+        """Whether this machine is signed in to the Company Platform, and as whom."""
+        return await _run_tool(audit("whoami", {}, None), auth.whoami(client))
+
+    @mcp.tool()
+    async def login() -> dict[str, Any]:
+        """Start signing this machine in. Returns a short code and a URL; the
+        employee approves the code in the Admin Portal with their own
+        password. Then call complete_login. Never ask for their password."""
+        return await _run_tool(audit("login", {}, None), auth.login(client))
+
+    @mcp.tool()
+    async def complete_login(wait_seconds: float = 60) -> dict[str, Any]:
+        """Wait (up to wait_seconds, max 300) for the employee to approve the
+        code from login, then store this machine's API key. The key itself is
+        never returned."""
+        params = {"wait_seconds": wait_seconds}
+        return await _run_tool(audit("complete_login", params, None), auth.complete_login(client, wait_seconds))
+
+    @mcp.tool()
+    async def logout() -> dict[str, Any]:
+        """Revoke this machine's API key on the platform and forget it."""
+        return await _run_tool(audit("logout", {}, None), auth.logout(client))
 
     # --- 13.1-13.3: discovery ------------------------------------------
 
@@ -152,13 +185,24 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
         version_reference: str | None = None,
         source_archive_base64: str | None = None,
         idempotency_key: str | None = None,
+        project_path: str | None = None,
+        test_report: str | None = None,
     ) -> dict[str, Any]:
+        """Build (when source is given) and deploy. Give the source as
+        project_path: the absolute path of the project folder on this machine,
+        containing one sub-folder per service in deployment.yaml. It is packed
+        here — dependencies, build output, .git and local secret files (.env,
+        keys) are left out. For a deployment that needs approval (production),
+        pass test_report: the test commands you ran and their results, which
+        the approving administrator reads before signing."""
         params = {
             "application_id": application_id,
             "target_environment": target_environment,
             "version_reference": version_reference,
             "source_archive_base64": source_archive_base64,
             "idempotency_key": idempotency_key,
+            "project_path": project_path,
+            "test_report": test_report,
         }
         return await _run_tool(
             audit("deploy_application", params, application_id),
@@ -170,6 +214,8 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore, employee
                 version_reference,
                 source_archive_base64,
                 idempotency_key,
+                project_path,
+                test_report,
             ),
         )
 
@@ -389,7 +435,7 @@ def main() -> None:
 
     client = PlatformClient(config)
     idempotency = IdempotencyStore(ttl_seconds=config.idempotency_ttl_seconds)
-    mcp = build_server(client, idempotency, config.employee.email)
+    mcp = build_server(client, idempotency)
     mcp.run(transport="stdio")
 
 

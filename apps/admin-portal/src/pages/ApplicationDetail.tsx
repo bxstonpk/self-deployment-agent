@@ -48,6 +48,8 @@ import type {
 } from "../api/types";
 import { useIdentity } from "../context/IdentityContext";
 import { StatusBadge } from "../components/StatusBadge";
+import { BackupsSection } from "../components/BackupsSection";
+import { AlertsBanner } from "../components/AlertsBanner";
 
 // Mirrors lifecycle_service.go's requireNothingLive: deployment statuses that
 // still count as "in progress".
@@ -459,6 +461,8 @@ export function ApplicationDetail() {
 
       {message && <div className={message.kind === "error" ? "error-banner" : "info-banner"}>{message.text}</div>}
 
+      {identity && <AlertsBanner identity={identity} applicationId={app.id} />}
+
       <section className="card">
         <h2>Overview</h2>
         <dl className="detail-grid">
@@ -811,6 +815,10 @@ export function ApplicationDetail() {
           </button>
         </form>
       </section>
+
+      {identity && /^database:\s*$/m.test(app.deployment_yaml_draft ?? "") && (
+        <BackupsSection identity={identity} applicationId={app.id} applicationName={app.name} />
+      )}
 
       <section className="card">
         <h2>Deployment history</h2>

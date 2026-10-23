@@ -30,7 +30,19 @@ type SecretInjector interface {
 type ApplicationResources struct {
 	databases DatabaseLifecycle
 	secrets   SecretInjector
+	backups   BackupPurger
 }
+
+// BackupPurger is the part of database backups (FR-064) that deleting an
+// application needs.
+type BackupPurger interface {
+	PurgeApplication(ctx context.Context, applicationID string) error
+}
+
+// SetBackups makes Deprovision delete the application's backups too
+// (FR-065: purge). Optional, so the many tests that build resources
+// without backups keep working unchanged.
+func (r *ApplicationResources) SetBackups(b BackupPurger) { r.backups = b }
 
 func NewApplicationResources(databases DatabaseLifecycle, secrets SecretInjector) *ApplicationResources {
 	return &ApplicationResources{databases: databases, secrets: secrets}
@@ -68,6 +80,11 @@ func (r *ApplicationResources) WiringFor(ctx context.Context, applicationID stri
 func (r *ApplicationResources) Deprovision(ctx context.Context, applicationID string) error {
 	if err := r.databases.Deprovision(ctx, applicationID); err != nil {
 		return err
+	}
+	if r.backups != nil {
+		if err := r.backups.PurgeApplication(ctx, applicationID); err != nil {
+			return fmt.Errorf("delete database backups: %w", err)
+		}
 	}
 	if err := r.secrets.DeleteAllForApplication(ctx, applicationID); err != nil {
 		return fmt.Errorf("delete application secrets: %w", err)

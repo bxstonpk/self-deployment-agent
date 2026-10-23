@@ -13,12 +13,16 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	// BACKUP_TIMEZONE needs the zone database, and the runtime image
+	// has none.
+	_ "time/tzdata"
 
 	dockerclient "github.com/docker/docker/client"
 
 	"platform-api/internal/buildengine"
 	"platform-api/internal/config"
 	"platform-api/internal/db"
+	"platform-api/internal/hostdisk"
 	"platform-api/internal/httpapi"
 	"platform-api/internal/imagescan"
 	"platform-api/internal/repository/postgres"
@@ -74,6 +78,7 @@ func main() {
 	runtime := runtimeengine.NewDockerRuntime(dockerCli)
 	// Module S: collect every application container's output (FR-086), and
 	// pick collection back up for containers that outlived a restart.
+	runtime.SetLogRetention(cfg.LogRetention)
 	runtime.EnableLogCollection(logRepo)
 	if resumed, err := runtime.ResumeLogCollection(ctx); err != nil {
 		log.Printf("logs: could not resume collection: %v", err)
@@ -100,7 +105,17 @@ func main() {
 		log.Printf("secret store: moved %d legacy plaintext database password(s) into the encrypted store", moved)
 	}
 	resources := service.NewApplicationResources(databaseService, secretService)
+	backupService := service.NewBackupService(postgres.NewBackupRepo(pool), databaseRepo, applicationRepo, ownerRepo,
+		secretService, runtime, secretBox, nil, auditService, cfg.BackupDir, service.BackupSchedule{
+			Location: cfg.BackupLocation, Hour: cfg.BackupHour, FullWeekday: cfg.BackupFullWeekday,
+		})
+	resources.SetBackups(backupService)
 	notificationService := service.NewNotificationService(notificationRepo, ownerRepo)
+	backupService.SetNotifier(notificationService)
+	admins := service.NewEmailAdminDirectory(userRepo, cfg.AdminEmails)
+	alertRepo := postgres.NewAlertRepo(pool)
+	alertService := service.NewAlertService(alertRepo, applicationRepo, ownerRepo, notificationService, admins,
+		cfg.Alerts, func() (float64, error) { return hostdisk.UsedPercent(cfg.BackupDir) })
 	applicationService := service.NewApplicationService(
 		applicationRepo, ownerRepo, departmentRepo, userRepo, transferRepo, notificationService, cfg.OwnershipTransferWindow, auditService,
 	)
@@ -122,7 +137,45 @@ func main() {
 	trafficRecorder := service.NewTrafficRecorder()
 	metricsService := service.NewMetricsService(applicationRepo, ownerRepo, metricRepo, runtime, trafficRecorder,
 		deploymentRepo, serviceStateRepo, scaleEventRepo, cfg.MetricsSampleInterval)
-	authenticator := httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
+	// DEC-001/DEC-003 (revised 2026-10-23): real authentication unless the
+	// dev-header mode was asked for explicitly — config.Load already
+	// refused that outside PLATFORM_ENV=dev.
+	var authenticator httpapi.Authenticator
+	var authHandler *httpapi.AuthHandler
+	if cfg.AuthMode == "dev-header" {
+		log.Printf("auth: DEV-HEADER mode — identities are self-declared and unverified (local testing only)")
+		authenticator = httpapi.NewDevHeaderAuthenticator(userRepo, departmentRepo)
+	} else {
+		policy := service.DefaultAuthPolicy()
+		policy.EnrollmentCode = cfg.EnrollmentCode
+		policy.AllowedEmailDomains = cfg.AllowedEmailDomains
+		policy.SessionTTL = cfg.SessionTTL
+		policy.APIKeyTTL = cfg.APIKeyTTL
+		policy.APIKeyMaxTTL = cfg.APIKeyMaxTTL
+		authService := service.NewAuthService(postgres.NewAuthRepo(pool), userRepo, departmentRepo, auditService, policy)
+		authenticator = httpapi.NewTokenAuthenticator(authService)
+		authHandler = httpapi.NewAuthHandler(authService, cfg.PortalURL)
+		log.Printf("auth: token mode — sessions %s, API keys %s (max %s), devices approved at %s/device",
+			cfg.SessionTTL, cfg.APIKeyTTL, cfg.APIKeyMaxTTL, cfg.PortalURL)
+	}
+
+	// DEC-017: who may approve, and which environments need it.
+	deployService.SetApprovalEnvironments(cfg.ApprovalEnvironments)
+	deployHandler := httpapi.NewDeployHandler(deployService, applicationRepo, cfg.PublicBaseURL)
+	var approvalHandler *httpapi.ApprovalHandler
+	if len(cfg.ApproverKeys) > 0 {
+		approvalService := service.NewApprovalService(postgres.NewDeploymentApprovalRepo(pool), service.ApprovalLookups{
+			Deployments: deploymentRepo, Builds: buildRepo, Apps: applicationRepo, Users: userRepo,
+		}, deployService, notificationService, cfg.ApproverKeys)
+		deployService.RequireSignedApprovals(approvalService.NotifyApprovers)
+		approvalHandler = httpapi.NewApprovalHandler(approvalService, deployHandler)
+		for _, k := range cfg.ApproverKeys {
+			log.Printf("approvals: %v deployments need a decision signed by an approver key; %s holds %s",
+				cfg.ApprovalEnvironments, k.Email, k.Fingerprint)
+		}
+	} else {
+		log.Printf("approvals: no PLATFORM_APPROVER_KEYS — an application's own owner approves its %v deployments", cfg.ApprovalEnvironments)
+	}
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,
@@ -131,7 +184,7 @@ func main() {
 		Validation:         httpapi.NewValidationHandler(validationService),
 		Stacks:             httpapi.NewStackHandler(stackRepo),
 		Builds:             httpapi.NewBuildHandler(buildService),
-		Deploys:            httpapi.NewDeployHandler(deployService, applicationRepo, cfg.PublicBaseURL),
+		Deploys:            deployHandler,
 		ScaleEvents:        httpapi.NewScaleEventsHandler(deployService, scaleService),
 		Proxy:              httpapi.NewProxyHandler(scaleService, trafficRecorder),
 		Lifecycle:          httpapi.NewLifecycleHandler(lifecycleService, applicationRepo, cfg.PublicBaseURL),
@@ -141,6 +194,11 @@ func main() {
 		Secrets:            httpapi.NewSecretHandler(secretService, rotationService),
 		Logs:               httpapi.NewLogHandler(logService),
 		Metrics:            httpapi.NewMetricsHandler(metricsService),
+		Backups:            httpapi.NewBackupHandler(backupService),
+		Alerts:             httpapi.NewAlertHandler(alertService),
+		Approvals:          approvalHandler,
+		Auth:               authHandler,
+		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})
@@ -148,6 +206,15 @@ func main() {
 	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)
 	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
 	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)
+	if cfg.BackupEnabled {
+		go runBackupScheduler(ctx, backupService, cfg.BackupSweep)
+	} else {
+		log.Printf("backups: scheduled database backups are switched off (BACKUP_ENABLED=false)")
+	}
+	retention := service.NewRetentionService(logRepo, cfg.LogRetention)
+	retention.SetAlertHistory(alertRepo)
+	go runRetentionSweeper(ctx, retention, time.Hour)
+	go runAlertEvaluator(ctx, alertService, cfg.AlertEvalInterval, admins.Emails())
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -199,6 +266,82 @@ func runScaleSweeper(ctx context.Context, scaleService *service.ScaleService, in
 // runMetricsSampler implements FR-090's collection loop: one reading of
 // every running application container, and whatever traffic the proxy has
 // counted since the last sweep. Runs until ctx is cancelled.
+// runAlertEvaluator judges DEC-028's alert rules every interval (FR-092).
+func runAlertEvaluator(ctx context.Context, alerts *service.AlertService, interval time.Duration, admins []string) {
+	t := alerts.Thresholds()
+	log.Printf("alerts: every %s — errors %.0f%%/%.0f%%, latency %.0f/%.0f ms, CPU %.0f/%.0f%%, memory %.0f/%.0f%%, disk %.0f/%.0f%%, reminders every %s; platform alerts to %v",
+		interval, 100*t.ErrorRateWarning, 100*t.ErrorRateCritical, t.LatencyWarningMs, t.LatencyCriticalMs,
+		t.CPUWarning, t.CPUCritical, t.MemoryWarning, t.MemoryCritical, t.DiskWarning, t.DiskCritical, t.ReminderInterval, admins)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := alerts.Evaluate(ctx); err != nil {
+				log.Printf("alerts: %v", err)
+			} else if n > 0 {
+				log.Printf("alerts: sent %d notification(s)", n)
+			}
+		}
+	}
+}
+
+// runBackupScheduler takes the database backups that are due (DEC-025),
+// checking every interval. Each database is backed up once a day, so the
+// interval only bounds how long after the scheduled hour a backup starts.
+func runBackupScheduler(ctx context.Context, backups *service.BackupService, interval time.Duration) {
+	s := backups.Schedule()
+	log.Printf("backups: full every %s, differential other days, from %02d:00 %s; checked every %s",
+		s.FullWeekday, s.Hour, s.Location, interval)
+	run := func() {
+		if _, err := backups.RunScheduled(ctx); err != nil {
+			log.Printf("backups: %v", err)
+		}
+	}
+	run()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
+// runRetentionSweeper purges application logs past their retention
+// (DEC-027) once at startup and then every interval. Hourly is plenty for
+// a period measured in days.
+func runRetentionSweeper(ctx context.Context, retention *service.RetentionService, interval time.Duration) {
+	if retention.Retention() <= 0 {
+		log.Printf("log retention: keeping application logs forever (LOG_RETENTION_DAYS=0)")
+		return
+	}
+	log.Printf("log retention: deleting application logs older than %s, checked every %s", retention.Retention(), interval)
+	sweep := func() {
+		if n, err := retention.Sweep(ctx); err != nil {
+			log.Printf("log retention: %v", err)
+		} else if n > 0 {
+			log.Printf("log retention: deleted %d log line(s)", n)
+		}
+	}
+	sweep()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
+}
+
 func runMetricsSampler(ctx context.Context, metricsService *service.MetricsService, interval time.Duration) {
 	log.Printf("metrics sampler running every %s", interval)
 	ticker := time.NewTicker(interval)
