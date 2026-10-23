@@ -59,8 +59,12 @@ func engineFor(name string) (databaseEngine, bool) {
 // begin accepting connections. Both official images run their
 // initialisation against a temporary server and restart before they do:
 // a few seconds for Postgres on a warm host, noticeably longer for MySQL,
-// whose first start also initialises its data dictionary.
-const databaseReadyTimeout = 120 * time.Second
+// whose first start also initialises its data dictionary. On the first
+// real LAN host (a small VM with a slow disk) MySQL 8.4 took 97s, 62s of
+// it initialising its data files, and missed the former 120s whenever
+// other databases were busy too — failing deploys of perfectly good
+// applications. A database that never comes up still fails, later.
+const databaseReadyTimeout = 5 * time.Minute
 
 type ProvisionedDatabaseRepository interface {
 	Create(ctx context.Context, d domain.ProvisionedDatabase) (domain.ProvisionedDatabase, error)
