@@ -83,7 +83,11 @@ services:
       # Module O's secret-store key (FR-066) — see .env.example for how to
       # generate one. Required: the platform refuses to start rather than
       # store secrets it can't encrypt.
-      PLATFORM_SECRET_KEY: ${PLATFORM_SECRET_KEY:?set PLATFORM_SECRET_KEY in .env — see .env.example}
+      # Either inline from .env, or — on a host that seals it with its TPM
+      # (DEC-006, deploy/host/README.md) — as a file the host unseals at
+      # boot, added by deploy/host/docker-compose.tpm.yml. platform-api
+      # refuses to start with neither, or both.
+      PLATFORM_SECRET_KEY: ${PLATFORM_SECRET_KEY:-}
       # Authentication (DEC-001/DEC-003 revised 2026-10-23) — see
       # .env.example. In the default token mode the platform refuses to
       # start without an enrollment code.

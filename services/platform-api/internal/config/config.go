@@ -130,9 +130,9 @@ func Load() (Config, error) {
 	if databaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required (no default — see .env.example at the repo root)")
 	}
-	secretKey := os.Getenv("PLATFORM_SECRET_KEY")
-	if secretKey == "" {
-		return Config{}, fmt.Errorf("PLATFORM_SECRET_KEY is required (no default — generate one with `openssl rand -base64 32`; see .env.example at the repo root)")
+	secretKey, err := loadSecretKey()
+	if err != nil {
+		return Config{}, err
 	}
 	idleTimeout, err := getEnvSeconds("SCALE_TO_ZERO_IDLE_SECONDS", 300)
 	if err != nil {
@@ -261,6 +261,32 @@ func Load() (Config, error) {
 		OwnershipTransferWindow:      transferWindow,
 		SecretKey:                    secretKey,
 	}, nil
+}
+
+// loadSecretKey reads Module O's key from PLATFORM_SECRET_KEY_FILE — the
+// file the host's TPM unseals it into at boot (DEC-006, decided
+// 2026-10-23; deploy/host/) — or, without one, from PLATFORM_SECRET_KEY.
+// Both at once is refused: there must be no doubt which key encrypts.
+func loadSecretKey() (string, error) {
+	inline := os.Getenv("PLATFORM_SECRET_KEY")
+	path := os.Getenv("PLATFORM_SECRET_KEY_FILE")
+	switch {
+	case inline != "" && path != "":
+		return "", fmt.Errorf("set PLATFORM_SECRET_KEY or PLATFORM_SECRET_KEY_FILE, not both")
+	case path != "":
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("PLATFORM_SECRET_KEY_FILE: %w (is the TPM-sealed key unsealed? see deploy/host/README.md)", err)
+		}
+		key := strings.TrimSpace(string(raw))
+		if key == "" {
+			return "", fmt.Errorf("PLATFORM_SECRET_KEY_FILE %s is empty", path)
+		}
+		return key, nil
+	case inline != "":
+		return inline, nil
+	}
+	return "", fmt.Errorf("PLATFORM_SECRET_KEY_FILE (TPM-sealed, see deploy/host/README.md) or PLATFORM_SECRET_KEY is required — no default")
 }
 
 // loadAlertThresholds starts from DEC-028's set B and applies any
