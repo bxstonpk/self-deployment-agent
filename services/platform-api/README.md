@@ -2044,6 +2044,45 @@ tripped its own circuit breaker, and automatically rolled back — with the
 application still reachable at its stable URL throughout, serving the
 prior version again once the rollback landed.
 
+### After the host restarts
+
+Found by the first reboot of a real LAN host (192.168.10.25,
+2026-10-23):
+- **The platform stayed down.** None of the compose services had a restart
+  policy. They now have `restart: unless-stopped`.
+- **Applications came back without their database.** Once the platform was
+  started by hand, the health sweeper replaced every application's API and
+  frontend. Nothing restarted their MySQL containers, though. Each
+  application answered as healthy with its database disconnected, and its
+  backup failed. Database containers are now created with
+  `unless-stopped`. A database is only ever stopped by being removed, so
+  this never revives one on purpose. Application containers still get no
+  restart policy: restarted, they'd come up on a host port the platform
+  doesn't route to. The sweeper replaces them instead, as before.
+- **A request could make remediation fail an application that was
+  running.** Remediation clears the container before starting its
+  replacement. A request arriving in that moment sees the service as
+  scaled to zero and cold-starts it under the same container name.
+  Remediation's own start then failed on the name conflict. It took that
+  to mean the service was down, triggered FR-099's rollback (the
+  deployment was minutes old) and left the application `failed`, while
+  the cold-started instance was serving. Now, when its start fails,
+  remediation waits up to 20s for another instance to be recorded, and
+  keeps it if one is. `TestHealthSweep_ColdStartedWhileBeingReplaced_KeepsThatInstance`
+  reproduces the race. The live re-run below didn't hit it: the timing
+  has to line up.
+
+`scripts/verify_host_restart.py` deploys React + Go + MySQL, writes an
+item, and restarts the Docker daemon (`sudo systemctl restart docker`),
+which stops every container the way a reboot does. It refuses to run if
+`live-restore` is enabled. Run on that host after the fix, it checked:
+- platform-api answered again 18s after the restart, with postgres,
+  platform-api and the gateway all up;
+- the database container was running without anyone starting it;
+- the application answered with its database connected 63s after the
+  restart;
+- the item written before the restart was still there.
+
 ## What's deliberately NOT here yet
 
 Each will land as its own feature branch/PR, per the Application Lifecycle:

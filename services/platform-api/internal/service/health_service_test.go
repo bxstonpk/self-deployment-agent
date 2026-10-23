@@ -22,9 +22,12 @@ type fakeHealthRuntime struct {
 	mu        sync.Mutex
 	failPorts map[int]bool
 	startErr  error
-	nextPort  int
-	started   []domain.ContainerSpec
-	stopped   []string
+	// onFailedStart runs when StartContainer returns startErr — standing in
+	// for whatever else started the service at that moment.
+	onFailedStart func()
+	nextPort      int
+	started       []domain.ContainerSpec
+	stopped       []string
 }
 
 func newFakeHealthRuntime() *fakeHealthRuntime {
@@ -50,6 +53,9 @@ func (f *fakeHealthRuntime) StartContainer(ctx context.Context, spec domain.Cont
 	defer f.mu.Unlock()
 	f.started = append(f.started, spec)
 	if f.startErr != nil {
+		if f.onFailedStart != nil {
+			f.onFailedStart()
+		}
 		return domain.RunningContainer{}, f.startErr
 	}
 	f.nextPort++
@@ -479,5 +485,65 @@ func TestHealthSweep_RollbackTriggerErrors_DoesNotAlsoEscalate(t *testing.T) {
 		if n.Category == domain.NotificationHealthRemediation {
 			t.Errorf("HealthMonitorService itself must not notify when delegating to TriggerAutomaticRollback, which owns its own notifications — got %+v", n)
 		}
+	}
+}
+
+// Found after a real host restart, with traffic arriving: remediation clears
+// the unhealthy container, a request in that moment cold-starts the service
+// under the same container name, and remediation's own start fails with a
+// name conflict. The service is running — remediation must keep that
+// instance, not roll back or report the service down.
+func TestHealthSweep_ColdStartedWhileBeingReplaced_KeepsThatInstance(t *testing.T) {
+	recentlyActivated := time.Now() // inside FR-099's window: a wrong failure would trigger a rollback
+	svc, states, runtime, notify, rollback := newHealthMonitorServiceWithActivation(10*time.Minute, &recentlyActivated)
+	seedActiveState(states, "container-1", 9001)
+	runtime.fail(9001)
+	runtime.startErr = errors.New(`create container: Conflict. The container name "/platform-run-dep-1-api" is already in use`)
+	runtime.onFailedStart = func() {
+		_ = states.SetContainer(context.Background(), "dep-1", "api", "cold-started", 31000)
+	}
+
+	svc.Sweep(context.Background())
+	_, remediated, err := svc.Sweep(context.Background())
+	if err != nil || remediated != 1 {
+		t.Fatalf("an instance cold-started in its place counts as remediated, got remediated=%d err=%v", remediated, err)
+	}
+	if calls := rollback.all(); len(calls) != 0 {
+		t.Errorf("must not roll back a service that is running, got %+v", calls)
+	}
+	for _, n := range notify.all() {
+		if strings.Contains(n.Title, "Automatic remediation failed") {
+			t.Errorf("must not tell the owner the service is down: %q", n.Title)
+		}
+	}
+	st, _ := states.Get(context.Background(), "dep-1", "api")
+	if st.ContainerID == nil || *st.ContainerID != "cold-started" {
+		t.Errorf("expected the cold-started instance to stay recorded, got %v", st.ContainerID)
+	}
+}
+
+func TestHealthSweep_StartFailsWithNothingElseStarting_StillEscalates(t *testing.T) {
+	longEstablished := time.Now().Add(-1 * time.Hour)
+	svc, states, runtime, notify, rollback := newHealthMonitorServiceWithActivation(5*time.Minute, &longEstablished)
+	svc.SetConcurrentStartWait(50 * time.Millisecond)
+	seedActiveState(states, "container-1", 9001)
+	runtime.fail(9001)
+	runtime.startErr = errors.New("no such image")
+
+	svc.Sweep(context.Background())
+	if _, remediated, _ := svc.Sweep(context.Background()); remediated != 0 {
+		t.Fatalf("a replacement that never started must not count as remediated, got %d", remediated)
+	}
+	if calls := rollback.all(); len(calls) != 0 {
+		t.Errorf("outside the activation window there is no rollback, got %+v", calls)
+	}
+	escalated := false
+	for _, n := range notify.all() {
+		if strings.Contains(n.Title, "Automatic remediation failed") {
+			escalated = true
+		}
+	}
+	if !escalated {
+		t.Error("expected the owner to be told the service is down when nothing started in its place")
 	}
 }

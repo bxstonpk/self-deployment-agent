@@ -146,6 +146,7 @@ afterwards.
 | `services/platform-api/scripts/verify_backups.py` | Scheduled full, differential, exact restore, weekly retention, opt-out, deletion, on MySQL and Postgres |
 | `services/platform-api/scripts/verify_alerts.py` | The alert rhythm on real traffic and real CPU load; platform alerts to administrators |
 | `services/platform-api/scripts/verify_signed_approval.py` | Production waits for a signature from a real key; forged or replayed signatures are refused; approve and reject both work |
+| `services/platform-api/scripts/verify_host_restart.py` | After the Docker daemon restarts (as on a reboot), the platform and a deployed application come back by themselves, with the application's database and its data intact. Run on the platform host; it needs passwordless sudo. |
 | `services/mcp-server/scripts/e2e_verify.py` | All 25 MCP tools over real stdio, including sign-in, deploy from a folder, rebuild and rollback |
 | `deploy/host/verify-tpm.sh` | Seal and unseal against a software TPM 2.0: bound to the TPM, escrow recovery, PCR binding |
 | `verify_module_n/o/r/s/t.py`, `verify_stable_url.py`, `verify_fr099_rollback.py` | Databases, secrets, health remediation, logs, metrics, stable URLs, automatic rollback. These older scripts use the self-declared identity, so they need `PLATFORM_AUTH_MODE=dev-header`. |

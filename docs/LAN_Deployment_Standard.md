@@ -94,8 +94,15 @@ curl http://platform-host:8080/api/healthz     # {"status":"ok"}
 ```
 
 **Firewall.** Open only the gateway port to the LAN. Postgres is bound to
-loopback. The Platform API's own port (`PLATFORM_API_HOST_PORT`) only
-needs to be reachable from the host itself.
+loopback. The Platform API's own port only needs to be reachable from the
+host itself. Bind it to loopback with `PLATFORM_API_HOST_PORT=127.0.0.1:8090`.
+A host firewall such as ufw won't stop it: Docker-published ports bypass it.
+
+**Reboots.** The platform's services, and every application's database,
+start again by themselves when the host reboots. Applications' own
+containers are replaced by the health sweeper within about a minute.
+`services/platform-api/scripts/verify_host_restart.py` checks this on the
+host.
 
 **Base images.** Builds use the images already on the host; nothing pulls
 newer ones automatically. Refresh them on a schedule (FR-022):
