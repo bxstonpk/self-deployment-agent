@@ -47,7 +47,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-011 | Compliance & Data | Data residency / hosting location constraints | IT Administrator + Management / Auditor | Before Solution Architecture sign-off | Open |
 | DEC-012 | Compliance & Data | Data classification policy for platform-hosted apps | Security Administrator + Management / Auditor | Before Production Go-Live | Open |
 | DEC-013 | Compliance & Data | Whether public-internet ("external") visibility is permitted in v1 | Security Administrator + Platform Administrator | Before Solution Architecture sign-off | Open |
-| DEC-014 | Financial / Quota | Resource quota tiers and numeric limits (small/medium/large) | Platform Administrator + IT Administrator | Before Technical Design | Open |
+| DEC-014 | Financial / Quota | Resource quota tiers and numeric limits (small/medium/large) | Platform Administrator + IT Administrator | Before Technical Design | **Decided (2026-10-23)** |
 | DEC-015 | Financial / Quota | Budget/cost ceiling for control-plane infra and tooling/licensing | Management / Auditor | Before Solution Architecture sign-off | Open |
 | DEC-016 | Financial / Quota | Department/cost-center chargeback or showback model | Management / Auditor | Before Production Go-Live | Open |
 | DEC-017 | Process & Governance | Production deployment approval workflow and tooling | Platform Administrator + Security Administrator | Before Technical Design | Open |
@@ -60,6 +60,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-024 | Operational | Availability/SLA targets — control plane vs. hosted apps | Platform Administrator + Management / Auditor | Before Production Go-Live | Open |
 | DEC-025 | Operational | RPO/RTO targets and backup retention period for DR | IT Administrator + Application Owner | Before Production Go-Live | Open |
 | DEC-026 | Operational | Platform support model / on-call ownership | IT Administrator + Platform Administrator | Before Production Go-Live | Open |
+| DEC-027 | Operational | Application log retention period | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
 
 ---
 
@@ -258,7 +259,8 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Options Considered | (a) Adopt provisional numbers benchmarked from typical internal-tool workloads; (b) mirror an existing internal infrastructure standard, if one exists; (c) start conservative and revise after MVP usage data. |
 | Recommendation | (c) — publish provisional numbers for MVP, explicitly labeled as subject to revision after the pilot generates real usage data. |
 | Decision Owner | Platform Administrator + IT Administrator |
-| Status | Open |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **No resource quotas.** The platform owner decided on 2026-10-23 that applications are not limited by quota. Module M (Resource Manager) is therefore not built, and `validate_application`'s `resource_quota` check reports `passed` with this decision as its reason, rather than `skipped`. `resources.tier` remains an accepted `deployment.yaml` field with no enforcement behind it. What keeps an application from exhausting the single host is human review, not a limit. |
 | Target Phase | Before Technical Design |
 
 #### DEC-015 — Budget/Cost Ceiling for Control-Plane Infrastructure and Tooling
@@ -419,6 +421,18 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Recommendation | (a) for MVP given team size and cost constraints, with (b) revisited once the platform hosts production-tier applications. |
 | Decision Owner | IT Administrator + Platform Administrator |
 | Status | Open |
+| Target Phase | Before Production Go-Live |
+
+#### DEC-027 — Application Log Retention
+
+| Field | Detail |
+|---|---|
+| Topic | How long application logs (Module S) are kept before purge |
+| Question | FR-088 requires logs to be retained for a period and then purged, and leaves the period TBD. What is it? |
+| Why It Matters | Without a period nothing is purged and the platform database grows without bound; too short loses evidence for troubleshooting. |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-10-23)** |
+| Resolution | **90 days.** platform-api deletes application log lines older than 90 days, hourly (`LOG_RETENTION_DAYS=90`; 0 would keep them forever). This covers what applications print (Module S) only. The audit log is immutable by design (FR-106) and its retention remains DEC-010. Metric retention (NFR-032) has not been decided. |
 | Target Phase | Before Production Go-Live |
 
 ---

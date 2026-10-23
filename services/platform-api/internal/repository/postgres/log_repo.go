@@ -21,6 +21,26 @@ func NewLogRepo(pool *pgxpool.Pool) *LogRepo {
 	return &LogRepo{pool: pool}
 }
 
+// DeleteOlderThan purges lines logged before cutoff (FR-088, with the
+// 90-day retention decided in DEC-027), in batches so one sweep never
+// holds a long lock on a large table. Returns how many were removed.
+func (r *LogRepo) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	var total int64
+	for {
+		tag, err := r.pool.Exec(ctx, `
+			DELETE FROM application_logs
+			WHERE id IN (SELECT id FROM application_logs WHERE logged_at < $1 LIMIT 10000)
+		`, cutoff)
+		if err != nil {
+			return total, fmt.Errorf("purge application logs: %w", err)
+		}
+		total += tag.RowsAffected()
+		if tag.RowsAffected() < 10000 {
+			return total, nil
+		}
+	}
+}
+
 // Append stores a batch of collected lines in one statement. The collector
 // keeps batches small (see logFlushLines), well inside Postgres's
 // parameter limit.

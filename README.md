@@ -278,7 +278,8 @@ no IT/Platform/Security Administrator roles, and none are planned. Domain manage
 address on the LAN, not a per-application DNS name. **What's still
 genuinely unfinished, not decided against**: Network management (Module Q,
 beyond the per-application Docker network isolation Module N already
-provides) and Resource quotas (Module M). See "Known gaps" below and each
+provides). Resource quotas (Module M) are decided against (`DEC-014`:
+none). See "Known gaps" below and each
 component's own README for the honest, itemized list — nothing here claims
 these exist when they don't. Note in particular that Module O above ships
 with a real limitation of its own, listed there — a module being
@@ -428,10 +429,10 @@ decisions above:
   policy the requirement itself marks TBD. See
   `services/platform-api/README.md`'s "How Database Management works" for
   the full scope.
-- **Observability stops short of alerting and retention.** Logging
-  (Module S) and Monitoring (Module T) both collect and serve, but
-  `FR-088`'s and `NFR-032`'s retention periods are TBD, so nothing is
-  purged; `FR-092`'s alert thresholds are specified nowhere, so no alert
+- **Observability stops short of alerting and metric retention.** Logging
+  (Module S) and Monitoring (Module T) both collect and serve. Application
+  logs are kept 90 days (`DEC-027`) and then purged, but `NFR-032`'s
+  metric retention is still undecided, so metrics aren't purged; `FR-092`'s alert thresholds are specified nowhere, so no alert
   is raised on numbers nobody agreed to; `FR-093`'s platform-wide
   dashboard needs administrator roles that don't exist; log levels aren't
   parsed; latency has no percentiles; and nothing streams — reading logs
@@ -444,8 +445,6 @@ decisions above:
   is in-app only, no email/Slack/webhook delivery, and Module AB covers
   `FR-127`/`FR-128` but not `FR-129`, which reports against quotas that
   Module M would have to define first.)
-- **No resource quota enforcement** (Module M) — `validate_application`
-  always reports this check as `skipped`, never a fake pass.
 - **The Admin Portal is intentionally scoped to MOD-19 (Application
   Catalog), not the full MOD-18 (Administration Portal)** the original
   tech-stack decision named — MOD-18 needs the RBAC that, per `DEC-002`,

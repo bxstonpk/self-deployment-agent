@@ -74,6 +74,7 @@ func main() {
 	runtime := runtimeengine.NewDockerRuntime(dockerCli)
 	// Module S: collect every application container's output (FR-086), and
 	// pick collection back up for containers that outlived a restart.
+	runtime.SetLogRetention(cfg.LogRetention)
 	runtime.EnableLogCollection(logRepo)
 	if resumed, err := runtime.ResumeLogCollection(ctx); err != nil {
 		log.Printf("logs: could not resume collection: %v", err)
@@ -170,6 +171,7 @@ func main() {
 	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)
 	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
 	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)
+	go runRetentionSweeper(ctx, service.NewRetentionService(logRepo, cfg.LogRetention), time.Hour)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -221,6 +223,35 @@ func runScaleSweeper(ctx context.Context, scaleService *service.ScaleService, in
 // runMetricsSampler implements FR-090's collection loop: one reading of
 // every running application container, and whatever traffic the proxy has
 // counted since the last sweep. Runs until ctx is cancelled.
+// runRetentionSweeper purges application logs past their retention
+// (DEC-027) once at startup and then every interval. Hourly is plenty for
+// a period measured in days.
+func runRetentionSweeper(ctx context.Context, retention *service.RetentionService, interval time.Duration) {
+	if retention.Retention() <= 0 {
+		log.Printf("log retention: keeping application logs forever (LOG_RETENTION_DAYS=0)")
+		return
+	}
+	log.Printf("log retention: deleting application logs older than %s, checked every %s", retention.Retention(), interval)
+	sweep := func() {
+		if n, err := retention.Sweep(ctx); err != nil {
+			log.Printf("log retention: %v", err)
+		} else if n > 0 {
+			log.Printf("log retention: deleted %d log line(s)", n)
+		}
+	}
+	sweep()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
+}
+
 func runMetricsSampler(ctx context.Context, metricsService *service.MetricsService, interval time.Duration) {
 	log.Printf("metrics sampler running every %s", interval)
 	ticker := time.NewTicker(interval)
