@@ -10,10 +10,10 @@ import (
 
 func TestServiceURL_IsThePlatformsOwnAddress(t *testing.T) {
 	got := serviceURL("http://localhost:8090", "overtime", "api")
-	if want := "http://localhost:8090/run/overtime/api"; got != want {
+	if want := "http://localhost:8090/run/overtime/api/"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	if got := serviceURL("http://localhost:8090/", "overtime", "api"); got != "http://localhost:8090/run/overtime/api" {
+	if got := serviceURL("http://localhost:8090/", "overtime", "api"); got != "http://localhost:8090/run/overtime/api/" {
 		t.Fatalf("a trailing slash on the base produced %q", got)
 	}
 }
@@ -33,7 +33,7 @@ func TestServiceURL_EmptyWhenAnythingIsMissing(t *testing.T) {
 }
 
 func TestServiceURL_EscapesEachSegment(t *testing.T) {
-	if got := serviceURL("http://localhost:8090", "over time", "api/v2"); got != "http://localhost:8090/run/over%20time/api%2Fv2" {
+	if got := serviceURL("http://localhost:8090", "over time", "api/v2"); got != "http://localhost:8090/run/over%20time/api%2Fv2/" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -48,7 +48,7 @@ func TestWithPublicURLs_ReplacesOnlyTheURL(t *testing.T) {
 
 	out := withPublicURLs(containers, "http://localhost:8090", "overtime")
 
-	if out["api"].URL != "http://localhost:8090/run/overtime/api" || out["frontend"].URL != "http://localhost:8090/run/overtime/frontend" {
+	if out["api"].URL != "http://localhost:8090/run/overtime/api/" || out["frontend"].URL != "http://localhost:8090/run/overtime/frontend/" {
 		t.Fatalf("unexpected URLs: %+v", out)
 	}
 	if out["api"].HostPort != 32770 || out["api"].ContainerID != "c-api" {

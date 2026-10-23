@@ -202,6 +202,30 @@ README for exactly what was tested and how):
   circuit breaker, and was automatically rolled back to the prior version,
   which resumed serving at the application's stable URL with no request
   from the verification script.
+- The LAN development standard — a React frontend, one API in Python,
+  JavaScript (`nodejs`), TypeScript or Go, and a MySQL database. MySQL
+  and TypeScript joined the supported-stack catalog. MySQL is provisioned
+  like Postgres: a dedicated container on the application's private
+  network, a platform-generated password in the secret store, and
+  rotation. Starter templates for every part live in
+  `company-deployment-skill/templates/`. Verified by building and
+  deploying all four combinations from those templates (see
+  `services/platform-api/scripts/verify_lan_stack.py`, 67 checks). Each
+  API reached its own MySQL, and data written through the platform's
+  address came back. A real browser rendered the React app and added an
+  item through it. The database was unreachable from off its network,
+  and after a password rotation the old password was refused while the
+  API reconnected with its data intact. Doing that for real found four
+  platform bugs, all fixed:
+  - every Node-based image failed the image scan on a CRITICAL in npm's
+    own bundled `tar`, so runtime images no longer carry npm and static
+    frontends run on nginx;
+  - database provisioning never pulled its image, so only Postgres had
+    ever worked;
+  - frontends with relative asset paths rendered blank at their bare
+    `/run/{app}/frontend` address;
+  - nothing told an application which port to listen on, so it now gets
+    `PORT`.
 
 **What doesn't exist, by decision, not because it's unfinished**: real
 authentication and RBAC. This platform is internal-only, self-hosted on a

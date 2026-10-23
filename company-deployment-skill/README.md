@@ -30,10 +30,18 @@ company-deployment-skill/
     frontend-api.deployment.yaml
     frontend-api-db.deployment.yaml
     frontend-api-db-cache.deployment.yaml
+  templates/                            # the company LAN standard, ready to copy
+    README.md                           # how to assemble and run a project
+    deployment.yaml                     # React + API + MySQL
+    frontend-react/                     # Vite + React, relative asset paths
+    api-python/ api-nodejs/ api-typescript/ api-go/
+    docker-compose.dev.yml              # a local MySQL for development only
 ```
 
 Matches the structure `08_Company_Deployment_Skill.md` Section 3 specifies,
-with one deliberate addition (this README) documenting the package's own
+with two deliberate additions: `templates/`, the working starter code for
+the company's standard stack (deployed for real by
+`services/platform-api/scripts/verify_lan_stack.py`), and this README documenting the package's own
 story — design decisions, real gaps found while writing it, and how it was
 verified — kept separate from `SKILL.md` itself so that file stays pure
 instructional content.

@@ -1,0 +1,21 @@
+# The company LAN development standard: a React frontend, one API in
+# python | nodejs | typescript | go, and a dedicated MySQL database.
+# Replace every <...> before saving. Field reference: ../schemas/deployment.schema.json
+app:
+  name: <application-name>   # lowercase letters, digits and hyphens; becomes /run/<application-name>/...
+  owner: <department>
+services:
+  frontend:
+    runtime: react           # serves build/ ; reached at /run/<application-name>/frontend/
+  api:
+    runtime: <python | nodejs | typescript | go>
+    port: 8080               # the platform routes here and sets PORT=8080 in the container
+database:
+  type: mysql                # a private MySQL 8.4; connection details arrive as DATABASE_* variables
+scaling:
+  min: 0
+  max: 1
+resources:
+  tier: small
+domain:
+  visibility: internal

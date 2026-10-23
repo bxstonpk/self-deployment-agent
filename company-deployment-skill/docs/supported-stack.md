@@ -13,27 +13,36 @@ with anything below, the live result is correct and this file is stale.
 
 | Runtime name (exact, case-sensitive) | Notes |
 |---|---|
-| `react` | Create React App convention assumed by the Build Engine (`npm run build`, output in `build/`) |
-| `nextjs` | Served via `next start`; standalone-output optimization not implemented yet (larger runtime image than ideal) |
-| `vue` | Vite convention assumed (`npm run build`, output in `dist/`) |
+| `react` | `npm run build` must produce `build/` (Create React App's default; with Vite set `build.outDir: 'build'`). The app is served under `/run/{app}/{service}/`, so assets must use relative paths (Vite `base: './'`) — see `templates/frontend-react/` |
+| `nextjs` | Served via its `start` script (`next start`, run without npm); standalone-output optimization not implemented yet (larger runtime image than ideal) |
+| `vue` | Vite convention assumed (`npm run build`, output in `dist/`), served by nginx; use relative asset paths like `react` |
 
 ## Backend runtimes
 
 | Runtime name (exact, case-sensitive) | Notes |
 |---|---|
 | `go` | **Not** `golang` — the catalog and Build Engine both use `go`. Requires `go.mod` at the service root. |
-| `nodejs` | Requires `package.json` with a `start` script |
+| `nodejs` | JavaScript. Requires `package.json` with a `start` script. The script runs without npm (runtime images carry no package manager), so it must not call `npm` itself |
+| `typescript` | Requires `package.json` with a `build` script (e.g. `tsc`) and a `start` script that runs the compiled output (e.g. `node dist/server.js`); devDependencies are pruned after the build, and `start` runs without npm like `nodejs` |
 | `python` | Requires `app.py`; `requirements.txt` optional |
 
 Backend-kind services **must** declare `port` in `deployment.yaml` — the
 platform rejects a backend service definition with no port at validation
-time. Frontend-kind services never need one.
+time. Frontend-kind services never need one. Every service is started with
+`PORT` set to the port the platform routes to.
 
 ## Database
 
 | Type | Notes |
 |---|---|
-| `postgres` | The only supported `database.type` value currently |
+| `mysql` | MySQL 8.4. The company LAN standard (see `templates/`) |
+| `postgres` | PostgreSQL 16 |
+
+Either one gets the application its own container on its own private
+network, a platform-generated password, and these environment variables:
+`DATABASE_URL` (`mysql://…` or `postgres://…`), `DATABASE_ENGINE`,
+`DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`,
+`DATABASE_PASSWORD`.
 
 ## Cache
 

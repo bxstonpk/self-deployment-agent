@@ -1,0 +1,16 @@
+# Local development only — a MySQL that matches what the platform
+# provisions, so the API runs the same way on your machine as it will when
+# deployed. Not used by the platform. Start it with:
+#   docker compose -f docker-compose.dev.yml up -d
+# then run the API with DATABASE_PASSWORD=devpassword (the other DATABASE_*
+# variables default to these values in every template).
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: appdb
+      MYSQL_USER: appuser
+      MYSQL_PASSWORD: devpassword
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    ports:
+      - "127.0.0.1:3306:3306"

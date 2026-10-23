@@ -81,6 +81,7 @@ type fakeDatabaseRuntime struct {
 	readyWaits int
 
 	passwordsSet   []string // every password SetDatabasePassword was asked to set, in order
+	rotationSpecs  []domain.DatabaseSpec
 	setPasswordErr error
 }
 
@@ -130,6 +131,7 @@ func (f *fakeDatabaseRuntime) SetDatabasePassword(ctx context.Context, container
 		return f.setPasswordErr
 	}
 	f.passwordsSet = append(f.passwordsSet, spec.Password)
+	f.rotationSpecs = append(f.rotationSpecs, spec)
 	return nil
 }
 
@@ -341,5 +343,79 @@ func TestEnsureProvisioned_RuntimeFailureRecordsNothing(t *testing.T) {
 	runtime.startErr = nil
 	if _, err := svc.EnsureProvisioned(context.Background(), testApp(), "postgres"); err != nil {
 		t.Fatalf("retry after a runtime failure should succeed, got %v", err)
+	}
+}
+
+// MySQL is provisioned exactly like Postgres — its own isolated container
+// and network, a generated password in the secret store — but on its own
+// image and port, and the application is told which engine it got.
+func TestEnsureProvisioned_MySQL(t *testing.T) {
+	svc, _, runtime, secrets := newDatabaseServiceWithSecrets()
+
+	db, err := svc.EnsureProvisioned(context.Background(), testApp(), "mysql")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runtime.dbSpecs) != 1 {
+		t.Fatalf("expected one database container, got %d", len(runtime.dbSpecs))
+	}
+	spec := runtime.dbSpecs[0]
+	if spec.Engine != "mysql" || !strings.HasPrefix(spec.ImageRef, "mysql:") {
+		t.Fatalf("expected a MySQL container, got engine %q image %q", spec.Engine, spec.ImageRef)
+	}
+	if db.Engine != "mysql" || db.Port != 3306 {
+		t.Fatalf("expected the record to say mysql on 3306, got %q on %d", db.Engine, db.Port)
+	}
+	if db.NetworkID == "" || spec.NetworkID != db.NetworkID {
+		t.Fatalf("the database was not put on the application's own network: %+v", spec)
+	}
+
+	wiring, err := svc.WiringFor(context.Background(), "app-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	password := secrets.password("app-1")
+	want := map[string]string{
+		"DATABASE_URL":      "mysql://appuser:" + password + "@" + db.Host + ":3306/appdb",
+		"DATABASE_ENGINE":   "mysql",
+		"DATABASE_PORT":     "3306",
+		"DATABASE_PASSWORD": password,
+	}
+	got := map[string]string{}
+	for _, kv := range wiring.Env {
+		k, v, _ := strings.Cut(kv, "=")
+		got[k] = v
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// MySQL's account changes its own password, so rotation has to hand the
+// runtime the current one too — and, when it puts the database back after
+// a failed store, the roles swap.
+func TestRotatePassword_MySQLCarriesTheCurrentPassword(t *testing.T) {
+	svc, _, runtime, secrets := newDatabaseServiceWithSecrets()
+	ctx := context.Background()
+	if _, err := svc.EnsureProvisioned(ctx, testApp(), "mysql"); err != nil {
+		t.Fatal(err)
+	}
+	old := secrets.password("app-1")
+	secrets.putErr = errors.New("secret store unavailable")
+
+	if err := svc.RotatePassword(ctx, "app-1"); err == nil {
+		t.Fatal("expected the store failure to surface")
+	}
+	if len(runtime.rotationSpecs) != 2 {
+		t.Fatalf("expected a rotation and a revert, got %d calls", len(runtime.rotationSpecs))
+	}
+	forward, back := runtime.rotationSpecs[0], runtime.rotationSpecs[1]
+	if forward.Engine != "mysql" || forward.CurrentPassword != old || forward.Password == old {
+		t.Fatalf("the rotation did not sign in with the current password: %+v", forward)
+	}
+	if back.Password != old || back.CurrentPassword != forward.Password {
+		t.Fatalf("the revert did not sign in with the new password to restore the old one: %+v", back)
 	}
 }

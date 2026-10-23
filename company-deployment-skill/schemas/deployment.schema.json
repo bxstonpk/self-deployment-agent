@@ -53,8 +53,8 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["postgres"],
-          "description": "Only 'postgres' is supported as of this package's last update — confirm against the live catalog."
+          "enum": ["mysql", "postgres"],
+          "description": "'mysql' (the company LAN standard) or 'postgres' as of this package's last update — confirm against the live catalog."
         }
       }
     },
