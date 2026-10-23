@@ -123,7 +123,7 @@ def main() -> int:
         raise SystemExit(f"deploy did not reach running: {deployment.get('failure_reason')}")
 
     print("--- what the platform reports ---")
-    expected = f"{BASE_URL}/run/{name}/api"
+    expected = f"{BASE_URL}/run/{name}/api/"
     reported = deployment["containers"]["api"]["url"]
     first_port = deployment["containers"]["api"]["host_port"]
     _check(reported == expected, f"the deploy response reports the platform's own address ({reported})")

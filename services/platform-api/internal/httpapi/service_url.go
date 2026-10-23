@@ -36,7 +36,12 @@ func serviceURL(base, appName, serviceName string) string {
 	if base == "" || appName == "" || serviceName == "" {
 		return ""
 	}
-	return strings.TrimRight(base, "/") + "/run/" + url.PathEscape(appName) + "/" + url.PathEscape(serviceName)
+	// The trailing slash is the address the proxy actually serves: the
+	// bare form only redirects to it (see needsTrailingSlash), so handing
+	// that out would cost every client a round trip — and a client that
+	// doesn't follow redirects got the redirect page instead of the
+	// application, which is how the MCP end-to-end run found it.
+	return strings.TrimRight(base, "/") + "/run/" + url.PathEscape(appName) + "/" + url.PathEscape(serviceName) + "/"
 }
 
 // withPublicURLs returns the containers with each URL replaced by the
