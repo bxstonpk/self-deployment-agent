@@ -305,6 +305,15 @@ Call `get_deployment_status(deployment_id)`. Confirm `data.phase` is
 `data.current_lifecycle_state` is `running` with a non-null `data.url` —
 don't declare success on the deploy call alone.
 
+**Production deployments wait for the platform administrator's signed
+approval.** Before calling `deploy_application` for production, run the
+project's tests (Step 7). Pass what you ran and the results as
+`test_report`, e.g. `"go test ./...: ok (12 tests)\nnpm test: 42
+passed"`. Keep it honest and complete: the administrator reads it before
+signing, and the signature covers it. The call returns
+`PENDING_APPROVAL`; nothing you can call approves it. Tell the employee it
+is with the administrator, and check later with `get_deployment_status`.
+
 If `get_application_status` returns a non-empty `data.active_alerts`, the
 platform's own measurements say something is wrong right now (error rate,
 latency, CPU or memory). Tell the employee in the alert's own words, and

@@ -66,6 +66,7 @@ async def deploy_application(
     source_archive_base64: str | None = None,
     idempotency_key: str | None = None,
     project_path: str | None = None,
+    test_report: str | None = None,
 ) -> dict[str, Any]:
     # version_reference is accepted for shape-compliance with Section 13.6
     # but not enforced: this Platform API always deploys the application's
@@ -128,7 +129,7 @@ async def deploy_application(
             raise ToolError(ErrorCode.INTERNAL_ERROR, f"build failed (platform-side): {detail}")
 
     try:
-        deployment = await client.deploy_application(application_id, target_environment)
+        deployment = await client.deploy_application(application_id, target_environment, test_report)
     except ToolError as exc:
         if exc.platform_code == "no_successful_build":
             raise ToolError(ErrorCode.VALIDATION_ERROR, _NO_BUILD_MESSAGE) from exc
@@ -167,6 +168,11 @@ async def deploy_application(
             )
 
     if status == "pending_approval":
+        data["approval_note"] = (
+            "This deployment waits for a platform administrator's signed approval. They review the "
+            "images, the scan results and the test_report you attached, and sign with their own key; "
+            "nothing you can call approves it. Check back with get_deployment_status."
+        )
         result = pending_approval(data)
     else:
         result = success(data)

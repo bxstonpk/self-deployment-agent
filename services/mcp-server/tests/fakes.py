@@ -130,8 +130,9 @@ class FakePlatformClient:
         self._record("get_supported_stacks")
         return self.stacks
 
-    async def deploy_application(self, application_id: str, environment: str) -> dict[str, Any]:
+    async def deploy_application(self, application_id: str, environment: str, test_report: str | None = None) -> dict[str, Any]:
         self._record("deploy_application", application_id, environment)
+        self.last_test_report = test_report
         app = self.applications[application_id]
         dep_id = f"dep-{uuid.uuid4().hex[:8]}"
         status = "pending_approval" if environment == "production" else "running"

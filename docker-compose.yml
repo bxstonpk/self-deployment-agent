@@ -55,6 +55,10 @@ services:
       # Platform administrators: they receive platform-level alerts (and
       # approve production deployments). Comma-separated account emails.
       PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:-}
+      # Signed approvals (DEC-017): the administrators' public keys, and
+      # which environments' deployments need a signed approval.
+      PLATFORM_APPROVER_KEYS: ${PLATFORM_APPROVER_KEYS:-}
+      APPROVAL_REQUIRED_ENVIRONMENTS: ${APPROVAL_REQUIRED_ENVIRONMENTS:-production}
       # Alerts (FR-092, DEC-028). Empty means the decided default; see
       # .env.example.
       ALERT_ERROR_RATE_WARNING_PERCENT: ${ALERT_ERROR_RATE_WARNING_PERCENT:-}

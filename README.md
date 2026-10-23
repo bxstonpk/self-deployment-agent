@@ -247,6 +247,17 @@ README for exactly what was tested and how):
 
   Running that end to end found an installer bug: Windows PowerShell 5.1
   made any stderr output from a native command fatal. It is fixed.
+- Operations decisions (2026-10-23), each verified against the live stack
+  by its own script:
+  - **no quotas** (`DEC-014`);
+  - **logs kept 90 days** (`DEC-027`);
+  - **database backups:** a full every Sunday, differentials Monday to
+    Saturday, and the previous week deleted once a new full succeeds
+    (`DEC-025`, `verify_backups.py`);
+  - **alerts:** announced on start, escalation and clear, with hourly
+    reminders (`DEC-028`, `verify_alerts.py`);
+  - **signed production approval:** the administrator signs with a private
+    key only they hold (`DEC-017`, `verify_signed_approval.py`).
 - Authentication — every Claude Code machine fetches a key before it can
   deploy (`DEC-001`/`DEC-003`, revised 2026-10-23). Employees register
   with a password and IT's enrollment code, and sign in to the Admin

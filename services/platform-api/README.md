@@ -211,15 +211,14 @@ successful build, and runs:
    and counts are all persisted and returned, not just a boolean.
 2. **Production Approval Gate** (FR-042) — `dev` skips straight to step 3.
    `production` pauses with `status: "pending_approval"` and creates a
-   `deployment_approvals` row; `POST /deployments/{id}/approve` with
-   `{"decision": "approve"|"reject", "reason": "..."}` resumes or rejects it.
-   **By decision, not a gap awaiting one:** this does not require the
-   approver to be a different person than the requester. Module A/B's
-   RBAC/Platform Administrator role modeling would be needed to guarantee a
-   genuinely independent approver, and per `DEC-001`/`DEC-002` (Decided
-   2026-09-11) this platform will not have one — requiring a *different*
-   owner would make single-owner applications undeployable to production,
-   a worse outcome for this LAN-only, ownership-only permission model.
+   `deployment_approvals` row (with any `test_report` the request
+   carried). With **`PLATFORM_APPROVER_KEYS`** set, the normal case per
+   `DEC-017`, only a decision **signed with a platform administrator's
+   private key** moves it on; see **How signed approvals work** below.
+   Without keys, `POST /deployments/{id}/approve` with
+   `{"decision": "approve"|"reject", "reason": "..."}` from an owner
+   resumes or rejects it, as it did before `DEC-017`.
+   `APPROVAL_REQUIRED_ENVIRONMENTS` (default `production`) can add `dev`.
 3. **Deploy** — `internal/runtimeengine` (real Docker Engine API — the
    platform's actual, permanent runtime per `DEC-004`'s 2026-09-11
    revision, a single existing on-prem Docker host rather than a future
@@ -1805,6 +1804,74 @@ confirms that the answer then contains no samples at all — not zeros —
 and says why, that no audit entry is written for a metrics read, and that
 deleting the application leaves no container behind.
 
+## How signed approvals work (DEC-017)
+
+The platform owner decided that deployments needing approval (production)
+are approved by the platform administrator, who holds the private key. The
+platform only ever has the public key:
+
+```
+# on the administrator's machine, once
+company-deploy approver keygen         # passphrase-encrypted Ed25519 key; prints the line below
+# on the platform host's .env, then restart platform-api
+PLATFORM_APPROVER_KEYS=admin@sti-th.com=ed25519:<base64>
+# whenever a deployment waits
+company-deploy approvals               # what's waiting
+company-deploy approve <deployment>    # shows images, scan results and the test report; signs
+company-deploy approve <deployment> --reject --reason "run the integration tests"
+```
+
+- **What is signed.** The text is built from the platform's own records:
+  the deployment, the application, the environment, the build, every image
+  reference, the SHA-256 of the requester's test report, the decision, the
+  reason, and the signing time (`domain.ApprovalSubject`). The platform
+  rebuilds it to verify, so a signature for one deployment, for a rebuilt
+  one, or with another test report does not verify. A signature dated more
+  than 10 minutes from now is refused.
+- **Who may sign.** Only a signed-in account whose email matches a
+  configured key, and only with that key. The API key or session that
+  sends the decision is not enough by itself, and an owner's
+  `POST /deployments/{id}/approve` gets `403 signed_approval_required`.
+- **The test report.** The requester (Claude, via
+  `deploy_application(test_report=…)`, or `POST …/deploy
+  {"test_report": …}`) says which tests ran and how they went. The
+  approver reads it before signing, and its hash is part of what's signed.
+- **Records.** The approval row keeps the signer's fingerprint, the signing
+  time and the signature. The audit entry reads `approved (signed with key
+  SHA256:…)`. Approvers are notified in-app with the command to run.
+
+### Known gaps
+
+- **No Portal UI for approving**, by design: a browser would need the
+  private key. Approval happens in the CLI on the administrator's machine.
+- **Losing the key file** means nothing can be approved until a new public
+  key is configured. Keep an offline copy.
+- **Rollback** doesn't pass the approval gate (unchanged; see **How
+  Rollback works**).
+
+### Verifying it
+
+```bash
+services/mcp-server/.venv/Scripts/python services/platform-api/scripts/verify_signed_approval.py
+```
+
+It runs with a real key made by `company-deploy approver keygen` and real
+production deployments. platform-api is restarted with that public key,
+and without it at the end. Results:
+
+- **Pausing and access:** a production deploy with a test report paused,
+  and the approver was notified with the command. The owner's old-style
+  approve got 403, the owner couldn't see the queue, and
+  `company-deploy approvals` listed it for the approver.
+- **Refusals:** a decision signed with another key was refused, and a
+  wrong passphrase signed nothing (the deployment stayed waiting).
+- **Approval:** `company-deploy approve` showed the test report, signed,
+  and the build went live. The audit log named the key, and the record
+  kept the signer, time, signature and report. Deciding again was refused
+  (409).
+- **Rejection and dev:** `--reject` rejected the next deployment, and a
+  dev deployment still went straight through.
+
 ## How Alerts work (FR-092, DEC-028)
 
 Every 60 seconds (`ALERT_EVAL_INTERVAL_SECONDS`) platform-api judges each
@@ -1991,11 +2058,10 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
 - Resource quota enforcement (FR-032) — not a gap, a decision: `DEC-014`
   (2026-10-23) is no quotas, so Module M is not built.
 - Full RBAC / Role / Permission tables (Module A/B) — not a gap, a
-  decision: `DEC-002` (Decided 2026-09-11) is that there is no role beyond
-  application ownership. This is also why the production approval gate
-  doesn't require an approver distinct from the requester — it isn't
-  going to, by design, not pending Module A/B — see **How Deploy works**
-  above.
+  decision: `DEC-002` is that there is no role beyond application
+  ownership, with one addition from `DEC-017`. A platform administrator
+  holding an approver key approves deployments, and receives platform
+  alerts (`PLATFORM_ADMIN_EMAILS`).
 - Stack version governance (FR-022, deprecated/blocked versions) — the
   catalog only tracks active/deprecated/blocked per whole runtime name, not
   per version range yet.

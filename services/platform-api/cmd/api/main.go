@@ -159,6 +159,24 @@ func main() {
 			cfg.SessionTTL, cfg.APIKeyTTL, cfg.APIKeyMaxTTL, cfg.PortalURL)
 	}
 
+	// DEC-017: who may approve, and which environments need it.
+	deployService.SetApprovalEnvironments(cfg.ApprovalEnvironments)
+	deployHandler := httpapi.NewDeployHandler(deployService, applicationRepo, cfg.PublicBaseURL)
+	var approvalHandler *httpapi.ApprovalHandler
+	if len(cfg.ApproverKeys) > 0 {
+		approvalService := service.NewApprovalService(postgres.NewDeploymentApprovalRepo(pool), service.ApprovalLookups{
+			Deployments: deploymentRepo, Builds: buildRepo, Apps: applicationRepo, Users: userRepo,
+		}, deployService, notificationService, cfg.ApproverKeys)
+		deployService.RequireSignedApprovals(approvalService.NotifyApprovers)
+		approvalHandler = httpapi.NewApprovalHandler(approvalService, deployHandler)
+		for _, k := range cfg.ApproverKeys {
+			log.Printf("approvals: %v deployments need a decision signed by an approver key; %s holds %s",
+				cfg.ApprovalEnvironments, k.Email, k.Fingerprint)
+		}
+	} else {
+		log.Printf("approvals: no PLATFORM_APPROVER_KEYS — an application's own owner approves its %v deployments", cfg.ApprovalEnvironments)
+	}
+
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,
 		Applications:       httpapi.NewApplicationHandler(applicationService),
@@ -166,7 +184,7 @@ func main() {
 		Validation:         httpapi.NewValidationHandler(validationService),
 		Stacks:             httpapi.NewStackHandler(stackRepo),
 		Builds:             httpapi.NewBuildHandler(buildService),
-		Deploys:            httpapi.NewDeployHandler(deployService, applicationRepo, cfg.PublicBaseURL),
+		Deploys:            deployHandler,
 		ScaleEvents:        httpapi.NewScaleEventsHandler(deployService, scaleService),
 		Proxy:              httpapi.NewProxyHandler(scaleService, trafficRecorder),
 		Lifecycle:          httpapi.NewLifecycleHandler(lifecycleService, applicationRepo, cfg.PublicBaseURL),
@@ -178,6 +196,7 @@ func main() {
 		Metrics:            httpapi.NewMetricsHandler(metricsService),
 		Backups:            httpapi.NewBackupHandler(backupService),
 		Alerts:             httpapi.NewAlertHandler(alertService),
+		Approvals:          approvalHandler,
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,
