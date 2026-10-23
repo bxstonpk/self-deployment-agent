@@ -2,11 +2,11 @@
 # python | nodejs | typescript | go, and a dedicated MySQL database.
 # Replace every <...> before saving. Field reference: ../schemas/deployment.schema.json
 app:
-  name: <application-name>   # lowercase letters, digits and hyphens; becomes /run/<application-name>/...
+  name: <application-name>   # lowercase letters, digits and hyphens; served at /<application-name>/ (not a Portal page name)
   owner: <department>
 services:
   frontend:
-    runtime: react           # serves build/ ; reached at /run/<application-name>/frontend/
+    runtime: react           # serves build/ ; the application's own address, /<application-name>/
   api:
     runtime: <python | nodejs | typescript | go>
     port: 8080               # the platform routes here and sets PORT=8080 in the container
