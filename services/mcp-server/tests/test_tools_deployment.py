@@ -42,7 +42,7 @@ async def test_deploy_application_no_successful_build_and_no_source_gives_action
     client.deploy_application = fail_deploy  # type: ignore[method-assign]
     with pytest.raises(ToolError) as exc_info:
         await deployment.deploy_application(client, idem, "app-1", "dev")
-    assert "source_archive_base64" in exc_info.value.message
+    assert "project_path" in exc_info.value.message
 
 
 async def test_deploy_application_with_source_triggers_build_then_deploys():
@@ -229,3 +229,22 @@ async def test_restart_application_returns_completed_status():
     result = await deployment.restart_application(client, idem, app["id"])
     assert result["status"] == "success"
     assert result["data"]["status"] == "COMPLETED"
+
+
+async def test_status_reports_every_service_url_with_the_frontend_first():
+    client = FakePlatformClient()
+    idem = IdempotencyStore(ttl_seconds=60)
+    app = await _registered_app(client)
+    deployed = await deployment.deploy_application(client, idem, app["id"], "dev")
+    dep = client.deployments[deployed["data"]["deployment_id"]]
+    dep["containers"] = {
+        "api": {"url": "http://gw/run/overtime/api/"},
+        "frontend": {"url": "http://gw/run/overtime/frontend/"},
+    }
+
+    status = await deployment.get_application_status(client, app["id"])
+    assert status["data"]["urls"] == {"api": "http://gw/run/overtime/api/", "frontend": "http://gw/run/overtime/frontend/"}
+    assert status["data"]["url"] == "http://gw/run/overtime/frontend/"
+
+    by_id = await deployment.get_deployment_status(client, dep["id"])
+    assert by_id["data"]["result"]["urls"]["frontend"] == "http://gw/run/overtime/frontend/"

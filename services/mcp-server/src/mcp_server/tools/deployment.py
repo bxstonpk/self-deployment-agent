@@ -8,17 +8,53 @@ import base64
 import binascii
 from typing import Any
 
+import yaml
+
 from ..envelope import ErrorCode, ToolError, pending_approval, success
+from ..source_packer import PackError, pack_project
 from ..idempotency import IdempotencyConflict, IdempotencyStore
 from ..platform_client import PlatformClient
 
 _NO_BUILD_MESSAGE = (
-    "no successful build exists for this application, and no source_archive_base64 "
-    "was given to build one. Pass the application's source as a base64-encoded "
-    "tar.gz (top-level directory per service name, matching deployment.yaml's "
-    "services keys) in source_archive_base64, or trigger a build via the Platform "
-    "API/console directly first."
+    "no successful build exists for this application, and no source was given to "
+    "build one. Pass project_path — the absolute path of the project folder on this "
+    "machine, with one sub-folder per service named in deployment.yaml — and this "
+    "tool packs and builds it."
 )
+
+
+async def _service_names(client: PlatformClient, application_id: str) -> list[str]:
+    """The services the application's saved deployment.yaml declares — the
+    folders the build expects, and the only ones packed."""
+    app = await client.get_application(application_id)
+    draft = app.get("deployment_yaml_draft") or ""
+    try:
+        parsed = yaml.safe_load(draft) or {}
+    except yaml.YAMLError as exc:
+        raise ToolError(ErrorCode.VALIDATION_ERROR, f"the saved deployment.yaml doesn't parse: {exc}") from exc
+    services = parsed.get("services") if isinstance(parsed, dict) else None
+    if not isinstance(services, dict) or not services:
+        raise ToolError(
+            ErrorCode.VALIDATION_ERROR,
+            "the application has no saved deployment.yaml with services; run validate_application first",
+        )
+    return [str(name) for name in services]
+
+
+def _service_urls(deployment: dict[str, Any]) -> dict[str, str]:
+    """Every service's own address, by service name. A single `url` used to
+    be all an agent got — the first service's — which left it unable to
+    tell the employee where the frontend was without guessing (found by a
+    real Claude Code session deploying the LAN templates)."""
+    containers = deployment.get("containers") or {}
+    return {name: c["url"] for name, c in sorted(containers.items()) if isinstance(c, dict) and c.get("url")}
+
+
+def _primary_url(urls: dict[str, str]) -> str | None:
+    """The one address to give a person first: the frontend, if any."""
+    if "frontend" in urls:
+        return urls["frontend"]
+    return next(iter(urls.values()), None)
 
 
 async def deploy_application(
@@ -29,6 +65,7 @@ async def deploy_application(
     version_reference: str | None = None,
     source_archive_base64: str | None = None,
     idempotency_key: str | None = None,
+    project_path: str | None = None,
 ) -> dict[str, Any]:
     # version_reference is accepted for shape-compliance with Section 13.6
     # but not enforced: this Platform API always deploys the application's
@@ -47,7 +84,14 @@ async def deploy_application(
     # endpoint first — which now accepts Validated (first build) OR
     # Running/Failed (a rebuild) as of the fix alongside this one — then
     # proceeds to deploy only if the build succeeded.
-    fingerprint = (application_id, target_environment, version_reference, source_archive_base64)
+    #
+    # project_path is the normal way to give the source: the folder on this
+    # machine, packed here by source_packer (see its module doc for what is
+    # never included). source_archive_base64 remains for a caller that has
+    # no filesystem access to the project.
+    if project_path and source_archive_base64:
+        raise ToolError(ErrorCode.VALIDATION_ERROR, "pass project_path or source_archive_base64, not both")
+    fingerprint = (application_id, target_environment, version_reference, source_archive_base64, project_path)
     if idempotency_key:
         try:
             cached = idempotency.get_cached(idempotency_key, fingerprint)
@@ -56,13 +100,22 @@ async def deploy_application(
         if cached is not None:
             return cached
 
-    if source_archive_base64:
+    source_bytes: bytes | None = None
+    packed: dict[str, Any] | None = None
+    if project_path:
+        try:
+            source_bytes, summary = pack_project(project_path, await _service_names(client, application_id))
+        except PackError as exc:
+            raise ToolError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
+        packed = summary.as_dict()
+    elif source_archive_base64:
         try:
             source_bytes = base64.b64decode(source_archive_base64, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ToolError(
                 ErrorCode.VALIDATION_ERROR, f"source_archive_base64 is not valid base64: {exc}"
             ) from exc
+    if source_bytes is not None:
         build = await client.trigger_build(application_id, source_bytes)
         if build.get("status") == "failed":
             category = build.get("error_category")
@@ -101,6 +154,17 @@ async def deploy_application(
             "comment for why 'immediate async ack' isn't real here yet"
         ),
     }
+    if status == "running":
+        data["urls"] = _service_urls(deployment)
+    if packed is not None:
+        data["source"] = packed
+        if packed["skipped_secret_files"]:
+            data["source_note"] = (
+                "These files were NOT uploaded because they look like local secrets: "
+                + ", ".join(packed["skipped_secret_files"])
+                + ". If the application needs those values, the employee sets them as secrets "
+                "in the Admin Portal (Secrets section); never copy them into source."
+            )
 
     if status == "pending_approval":
         result = pending_approval(data)
@@ -138,14 +202,12 @@ async def _secret_references(
 async def get_application_status(client: PlatformClient, application_id: str) -> dict[str, Any]:
     app = await client.get_application(application_id)
     latest_deployment_id = None
-    url = None
+    urls: dict[str, str] = {}
     try:
         latest = await client.latest_deployment(application_id)
         latest_deployment_id = latest.get("id")
         if latest.get("status") == "running":
-            containers = latest.get("containers") or {}
-            urls = [c.get("url") for c in containers.values() if c.get("url")]
-            url = urls[0] if urls else None
+            urls = _service_urls(latest)
     except ToolError as exc:
         if exc.code != ErrorCode.NOT_FOUND:
             raise
@@ -158,7 +220,8 @@ async def get_application_status(client: PlatformClient, application_id: str) ->
             "name": app.get("name"),
             "current_lifecycle_state": app.get("lifecycle_status"),
             "latest_deployment_id": latest_deployment_id,
-            "url": url,
+            "url": _primary_url(urls),
+            "urls": urls,
             "secrets": secrets,
             "secrets_note": secrets_note,
         }
@@ -183,9 +246,9 @@ async def get_deployment_status(client: PlatformClient, deployment_id: str) -> d
 
     result_summary: dict[str, Any] = {}
     if phase == "COMPLETED" and deployment.get("status") == "running":
-        containers = deployment.get("containers") or {}
-        urls = [c.get("url") for c in containers.values() if c.get("url")]
-        result_summary["url"] = urls[0] if urls else None
+        urls = _service_urls(deployment)
+        result_summary["url"] = _primary_url(urls)
+        result_summary["urls"] = urls
     if phase == "FAILED":
         result_summary["reason"] = deployment.get("failure_reason") or deployment.get("rejection_reason")
 

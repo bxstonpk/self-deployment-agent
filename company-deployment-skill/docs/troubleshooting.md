@@ -48,10 +48,18 @@ rather than treating every `VALIDATION_ERROR` as generic:
 - `"services.<name> declares unsupported runtime \"X\""` — re-check
   `get_supported_stacks`; the exact runtime name matters (`go`, not
   `golang`).
-- `"no successful build exists for this application, and no
-  source_archive_base64 was given to build one..."` — pass
-  `source_archive_base64` on the `deploy_application` call (see
-  `SKILL.md`, Step 8) rather than assuming a build already happened.
+- `"no successful build exists for this application, and no source was
+  given to build one..."` — pass `project_path` on the
+  `deploy_application` call (see `SKILL.md`, Step 8) rather than assuming
+  a build already happened.
+- `"each service in deployment.yaml needs a folder of the same name in the
+  project; missing: ..."` — the project's folders must be named like
+  `deployment.yaml`'s services (`frontend/`, `api/`). Rename the folder or
+  the service, re-validate, and deploy again.
+- `"the packed source is N MiB, over the platform's 50 MiB limit"` —
+  something large that shouldn't ship is in a service folder (data,
+  media, generated files). Find it with the employee; don't delete files
+  on your own.
 - `"deletion is irreversible and requires explicit confirmation
   (\"confirm\": true)"` / a `delete_application` confirmation mismatch —
   ask the employee to state the application's exact name before calling

@@ -64,6 +64,19 @@ def _check(cond: bool, msg: str) -> None:
     print(f"OK: {msg}")
 
 
+def _project_folder(main_go_body: str) -> str:
+    """A project folder the way it sits on an employee's machine — including
+    a local .env that must never reach the platform."""
+    root = Path(tempfile.mkdtemp(prefix="mcp-e2e-project-"))
+    api_dir = root / "api"
+    api_dir.mkdir()
+    (api_dir / "main.go").write_text(main_go_body)
+    (api_dir / "go.mod").write_text("module mcptest\n\ngo 1.25\n")
+    (api_dir / ".env").write_text("STRIPE_KEY=sk-should-never-ship\n")
+    (root / "deployment.yaml").write_text("# saved on the platform already\n")
+    return str(root)
+
+
 def _source_archive_base64(main_go_body: str) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         api_dir = Path(tmp) / "api"
@@ -422,20 +435,21 @@ async def main() -> None:
             _check(bad_type["status"] == "error" and bad_type["error"]["code"] == "VALIDATION_ERROR",
                    "an unsupported metric type is refused rather than silently ignored")
 
-            print("--- deploying v2: REBUILD of an already-`running` application via the SAME MCP call shape ---")
-            print("--- (this used to be entirely impossible - Build required Validated - now fixed at the source) ---")
+            print("--- deploying v2: REBUILD of an already-`running` application, from a project FOLDER (project_path) ---")
             deployed_v2 = _print_result(
-                "deploy_application (v2, dev, with source, app already running)",
+                "deploy_application (v2, dev, project_path, app already running)",
                 await session.call_tool(
                     "deploy_application",
                     {
                         "application_id": app_id,
                         "target_environment": "dev",
-                        "source_archive_base64": _source_archive_base64(_V2_SOURCE),
+                        "project_path": _project_folder(_V2_SOURCE),
                     },
                 ),
             )
             _check(deployed_v2["status"] == "success" and deployed_v2["data"]["status"] == "running", "v2 rebuilt and deployed via MCP while app was already running")
+            _check(deployed_v2["data"]["source"]["files"] == 2 and deployed_v2["data"]["source"]["skipped_secret_files"] == ["api/.env"],
+                   "the server packed the folder itself and left the local .env out, saying so")
 
             status_v2 = _print_result(
                 "get_application_status (v2 live)",

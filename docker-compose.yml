@@ -19,7 +19,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — see .env.example}
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env — see .env.example}
     ports:
-      - "${POSTGRES_HOST_PORT:-5436}:5432" # 5432-5435 are already used by other local projects on this machine
+      # Loopback only: the platform's own database must not be reachable
+      # from the LAN, which every other published port here is.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5436}:5432" # 5432-5435 are already used by other local projects on this machine
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -88,6 +90,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # The platform's one address on the LAN: the Admin Portal at /, the
+  # Platform API at /api/, applications at /run/, and the installer for
+  # Claude Code machines at /downloads/. See docs/LAN_Deployment_Standard.md.
+  gateway:
+    build:
+      context: .
+      dockerfile: deploy/gateway/Dockerfile
+    ports:
+      - "${GATEWAY_HOST_PORT:-8080}:80"
+    depends_on:
+      - platform-api
 
 volumes:
   pgdata:
