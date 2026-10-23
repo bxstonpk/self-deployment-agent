@@ -29,7 +29,7 @@ something this server works around by dropping one):
 | `get_deployment_requirements` | 13.3 | `GET /applications/{id}` (optional), `GET /supported-stacks` | `deployment_yaml` shape is hand-encoded, not served as data anywhere — see **Known gaps** |
 | `create_application` | 13.4 | `GET /departments`, `POST /applications`, `PUT .../deployment-yaml` | Resolves a department **name** to the UUID `POST /applications` needs |
 | `validate_application` | 13.5 | `PUT .../deployment-yaml` (optional), `POST .../validate` | A failed validation is `status: success` with `passed: false` findings — not a transport error |
-| `deploy_application` | 13.6 | `POST .../build` (if `source_archive_base64` given), `POST .../deploy` | Builds first when given source — see **How deploy_application closes the build gap** |
+| `deploy_application` | 13.6 | `POST .../build` (if `project_path` or `source_archive_base64` given), `POST .../deploy` | Builds first when given source — see **How deploy_application closes the build gap** |
 | `get_application_status` | 13.7 | `GET /applications/{id}`, `GET .../deployments/latest`, `GET .../secrets` | Includes the application's **secret names**, never values — 13.7's "secret references"; see **Why no MCP tool accepts a secret value** |
 | `get_deployment_status` | 13.8 | `GET /deployments/{id}` | New Platform API endpoint added in this PR — see below |
 | `get_application_logs` | 13.9 | `GET .../logs` | What the application's containers printed, newest first, with the secrets the platform injected already redacted (Module S). `time_range` (`15m`, `1h`, `7d`…) becomes `since`; `next_cursor` pages back. `level` is always `null` — levels aren't parsed — and a `severity` filter is reported in `note` as not applied rather than silently ignored. `NOT_FOUND` for an application the caller doesn't own |
@@ -237,6 +237,23 @@ comes back as `VALIDATION_ERROR` with the actual build output, a
 `platform`-category one as `INTERNAL_ERROR` — mirroring FR-038's
 source-vs-platform distinction rather than collapsing both into one
 generic failure.
+
+**`project_path` is now the normal way to pass source**
+(`source_packer.py`). Base64 meant the agent generating a multi-megabyte
+string through its own context on every deploy. The server runs on the
+same machine as Claude Code, so it packs the folder itself, in five steps:
+1. reads the service names from the application's saved
+   `deployment.yaml`;
+2. packs only those sub-folders;
+3. skips dependencies, build output, `.git` and symlinks;
+4. **leaves out local secret files** (`.env`, `.env.*` except
+   `.env.example`, keys, certificates) and names them in
+   `data.source_note`, so the employee can set them as secrets instead;
+5. strips local ownership from the archive and enforces the platform's
+   50 MiB limit before uploading.
+
+`source_archive_base64` remains for a caller with no access to the
+folder.
 
 This is a different situation from `query_audit_log`/`list_notifications`/
 `mark_notification_read` above, worth distinguishing rather than reading

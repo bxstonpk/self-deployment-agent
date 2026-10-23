@@ -32,6 +32,7 @@ This is **not** an implementation. No source code, no Kubernetes manifests, no D
 | 15 | [15_Traceability_Matrix.md](15_Traceability_Matrix.md) | The Requirements Traceability Matrix: Business Objective → FR → NFR → System Module → Test Type → Acceptance Criteria, plus a gap analysis |
 | 16 | [16_Risk_Register.md](16_Risk_Register.md) | 30 business/project/operational risks (RISK-001–RISK-030), ranked, with mitigation and ownership |
 | 17 | [17_Decision_Log.md](17_Decision_Log.md) | 26 tracked decisions (DEC-001–DEC-026); 19 still open as of 2026-09-11, the rest Decided or Deferred — see the log's Decision Index for current status |
+| — | [LAN_Deployment_Standard.md](LAN_Deployment_Standard.md) | Not part of the original baseline: how the platform as built is set up on the company LAN, the application standard (React + Python/JS/TS/Go + MySQL), and how each employee's Claude Code machine is installed and signed in |
 
 ## Suggested reading order
 

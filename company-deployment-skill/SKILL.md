@@ -250,19 +250,26 @@ Once validated, call:
 deploy_application(
   application_id,
   target_environment,       # "dev" or "production"
-  source_archive_base64,    # required for a first deploy, or to ship new code
+  project_path,             # absolute path of the project folder — for a first deploy, or to ship new code
   idempotency_key,
 )
 ```
 
-`source_archive_base64` is the project's source as a base64-encoded
-`tar.gz`, with a **top-level directory per service name** matching
-`deployment.yaml`'s `services` keys (e.g. `api/main.go`, `api/go.mod` for
-a service named `api`). This tool builds from that source **and** deploys
-in one call — you don't need, and there is no, separate "build" tool.
-Omit `source_archive_base64` only when redeploying an application's
-*already-built* latest version unchanged (rare — usually you have new or
-first-time source to ship).
+`project_path` is the project folder on this machine, which must hold **one
+sub-folder per service** named exactly as in `deployment.yaml`'s
+`services` keys (`frontend/`, `api/`). The MCP server packs those folders
+itself. It never packs `node_modules`, build output, `.git`, or local
+secret files (`.env`, `.env.*`, private keys); `.env.example` is kept. If
+it left any secret files out, the response's `data.source_note` names
+them. Tell the employee to set those values in the Admin Portal's
+**Secrets** section, and never copy them into source to get around
+it. This tool builds from that source **and** deploys in one call — there
+is no separate "build" tool. Omit `project_path` only when redeploying an
+application's *already-built* latest version unchanged (rare).
+
+Don't build a tarball yourself or pass `source_archive_base64`. That
+parameter exists only for a caller without access to the project folder,
+and it puts the whole archive through your context.
 
 **A rebuild works even if the application is already `running`** — this
 deploys a new version over a live one, the same way redeploying always
@@ -293,11 +300,13 @@ Call `get_deployment_status(deployment_id)`. Confirm `data.phase` is
 `data.current_lifecycle_state` is `running` with a non-null `data.url` —
 don't declare success on the deploy call alone.
 
-### 10. Report the URL — verbatim, never guessed
+### 10. Report the URLs — verbatim, never guessed
 
-Relay the exact `data.url` from `get_application_status`'s response to the
-employee, along with the environment. Never construct, pattern-match, or
-guess a "likely" URL before this confirmation exists.
+Relay the exact addresses from `get_application_status`'s response to the
+employee, along with the environment. `data.urls` has one per service
+(e.g. `frontend` and `api`); `data.url` is the one to open first (the
+frontend, when there is one). Never construct, pattern-match, or guess a
+"likely" URL before this confirmation exists.
 
 The URL the platform returns is its own address for the application, not a
 container's port, so it keeps working after a restart, a redeploy or a

@@ -226,6 +226,27 @@ README for exactly what was tested and how):
     `/run/{app}/frontend` address;
   - nothing told an application which port to listen on, so it now gets
     `PORT`.
+- The LAN onboarding standard (`docs/LAN_Deployment_Standard.md`):
+  - **Gateway:** one port serves the Admin Portal, the API, deployed
+    applications and the downloads.
+  - **Installer:** a one-line installer per machine (PowerShell for
+    Windows, `sh` for macOS/Linux). It installs the MCP server and the
+    skill (with the templates), registers them with Claude Code, and
+    signs the machine in.
+  - **Deploy from a folder:** `deploy_application(project_path=...)` packs
+    the project folder on the machine itself, never shipping `.env` files
+    or keys, so no tarball passes through the agent.
+
+  Verified:
+  - the Windows installer ran for real in a throwaway profile, and Claude
+    Code reported the server connected;
+  - the Linux installer ran in a clean container;
+  - a headless Claude Code session deployed the React + Go + MySQL
+    templates to dev using only the installed MCP server and skill, and
+    the result answered through the gateway.
+
+  Running that end to end found an installer bug: Windows PowerShell 5.1
+  made any stderr output from a native command fatal. It is fixed.
 - Authentication — every Claude Code machine fetches a key before it can
   deploy (`DEC-001`/`DEC-003`, revised 2026-10-23). Employees register
   with a password and IT's enrollment code, and sign in to the Admin
@@ -291,7 +312,17 @@ apps/admin-portal/        React + TypeScript. A human-operated web UI,
                            calling the Platform API directly (not through
                            the MCP server) — the same capabilities Claude
                            Code has, reachable without an AI agent.
+
+deploy/gateway/           nginx. The platform's one address on the LAN:
+                           the Portal at /, the API at /api/, applications
+                           at /run/, and the per-machine installers
+                           (install.ps1 / install.sh) at /downloads/.
 ```
+
+**Setting the platform up on the LAN, and each employee's machine:** see
+[`docs/LAN_Deployment_Standard.md`](docs/LAN_Deployment_Standard.md). It
+covers the host's `.env`, the one-line installer per machine, how Claude
+deploys, the security model, and what is verified.
 
 Each directory above has its own README with real implementation detail,
 an honest gap list specific to that component, and exactly what was
@@ -328,6 +359,7 @@ Requires Docker, Go 1.25+, Python 3.11+, and Node 20+.
    pip install -e ".[dev]"
    cp .env.example .env   # then source it into your shell
    company-deploy login --url http://localhost:8090   # approve the code in the Admin Portal
+   # (on another machine, use the installer instead: docs/LAN_Deployment_Standard.md)
    python -m mcp_server.server
    ```
    See [`services/mcp-server/README.md`](services/mcp-server/README.md).
