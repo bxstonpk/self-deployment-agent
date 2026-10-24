@@ -362,6 +362,8 @@ func writeApplicationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "invalid_lifecycle_transition", err.Error())
 	case errors.Is(err, domain.ErrNoDeploymentYAML):
 		writeError(w, http.StatusBadRequest, "no_deployment_yaml", err.Error())
+	case errors.Is(err, domain.ErrDatabaseChangeLosesData):
+		writeError(w, http.StatusConflict, "database_change_loses_data", err.Error())
 	case errors.Is(err, domain.ErrInvalidYAML):
 		writeError(w, http.StatusBadRequest, "invalid_yaml", err.Error())
 	case errors.Is(err, domain.ErrNotPrimaryOwner):

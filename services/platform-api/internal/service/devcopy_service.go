@@ -190,10 +190,8 @@ func (s *DevCopyService) Deploy(ctx context.Context, caller domain.User, applica
 	needsValidation := true
 	switch {
 	case err == nil:
-		// The copy follows the application's deployment.yaml as it is now.
-		// Like any application's, it can be changed only before the copy
-		// first deploys; after that, an unchanged one goes straight to the
-		// build (the copy's data stays), and a changed one needs a reset.
+		// The copy follows the application's deployment.yaml as it is now;
+		// its database and data stay either way.
 		draft, err := devCopyYAML(parent.DeploymentYAMLDraft, c.Name)
 		if err != nil {
 			return DevCopyResult{}, err
@@ -202,16 +200,15 @@ func (s *DevCopyService) Deploy(ctx context.Context, caller domain.User, applica
 		if err != nil {
 			return DevCopyResult{}, err
 		}
-		switch {
-		case copyApp.LifecycleStatus == domain.StatusDraft || copyApp.LifecycleStatus == domain.StatusValidated:
+		undeployed := copyApp.LifecycleStatus == domain.StatusDraft || copyApp.LifecycleStatus == domain.StatusValidated
+		if copyApp.DeploymentYAMLDraft != draft {
+			// A deployed copy's is revised in place (checked as it's saved),
+			// keeping its database and data: a service added, say.
 			if _, err := s.steps.SaveYAML(ctx, c.ApplicationID, caller.ID, draft); err != nil {
 				return DevCopyResult{Copy: c}, err
 			}
-		case copyApp.DeploymentYAMLDraft == draft:
-			needsValidation = false
-		default:
-			return DevCopyResult{Copy: c}, domain.ErrDevCopyYAMLChanged
 		}
+		needsValidation = undeployed
 	case errors.Is(err, domain.ErrNotFound):
 		if c, err = s.create(ctx, caller, parent); err != nil {
 			return DevCopyResult{}, err

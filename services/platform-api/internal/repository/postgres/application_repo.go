@@ -95,6 +95,21 @@ func (r *ApplicationRepo) UpdateMetadata(ctx context.Context, id, description st
 // Validated application back to Draft — only Draft/Validated applications
 // are editable this way (guarded by the WHERE clause; see
 // domain.ErrInvalidLifecycleTransition).
+// ReviseDeploymentYAML replaces a deployed application's deployment.yaml,
+// leaving its lifecycle status (and so its database and data) as they are.
+func (r *ApplicationRepo) ReviseDeploymentYAML(ctx context.Context, id, yamlContent string) (domain.Application, error) {
+	app, err := r.scanOne(ctx, `
+		UPDATE applications SET deployment_yaml_draft = $2, updated_at = now()
+		WHERE id = $1 AND lifecycle_status IN ('build', 'running', 'failed', 'suspended', 'rolled_back')
+		RETURNING `+applicationColumns, id, yamlContent)
+	if errors.Is(err, domain.ErrNotFound) {
+		if exists, existsErr := r.exists(ctx, id); existsErr == nil && exists {
+			return domain.Application{}, domain.ErrInvalidLifecycleTransition
+		}
+	}
+	return app, err
+}
+
 func (r *ApplicationRepo) UpdateDeploymentYAML(ctx context.Context, id, yamlContent string) (domain.Application, error) {
 	app, err := r.scanOne(ctx, `
 		UPDATE applications

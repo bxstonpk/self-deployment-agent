@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +61,16 @@ func (f *fakeLifecycleRepo) UpdateDeploymentYAML(ctx context.Context, id, yamlCo
 	a.DeploymentYAMLDraft = yamlContent
 	a.LifecycleStatus = domain.StatusDraft
 	a.ValidatedAt = nil
+	f.apps[id] = a
+	return a, nil
+}
+
+func (f *fakeLifecycleRepo) ReviseDeploymentYAML(ctx context.Context, id, yamlContent string) (domain.Application, error) {
+	a, ok := f.apps[id]
+	if !ok {
+		return domain.Application{}, domain.ErrNotFound
+	}
+	a.DeploymentYAMLDraft = yamlContent
 	f.apps[id] = a
 	return a, nil
 }
@@ -264,12 +276,56 @@ func TestValidate_NonOwner_Rejected(t *testing.T) {
 
 func TestValidate_NotInDraft_Rejected(t *testing.T) {
 	app := draftApp("app-1", "overtime", validYAML)
-	app.LifecycleStatus = domain.StatusRunning
+	app.LifecycleStatus = domain.StatusArchived
 	svc, _ := newValidationService(app, "owner-1")
 
 	_, _, err := svc.Validate(context.Background(), "app-1", "owner-1")
 	if err != domain.ErrInvalidLifecycleTransition {
 		t.Errorf("expected ErrInvalidLifecycleTransition, got %v", err)
+	}
+}
+
+// A deployed application is re-checked as it stands, and stays as it is.
+func TestValidate_DeployedApplication_ChecksWithoutChangingItsStatus(t *testing.T) {
+	app := draftApp("app-1", "overtime", validYAML)
+	app.LifecycleStatus = domain.StatusRunning
+	svc, apps := newValidationService(app, "owner-1")
+	report, _, err := svc.Validate(context.Background(), "app-1", "owner-1")
+	if err != nil || !report.Valid || apps.apps["app-1"].LifecycleStatus != domain.StatusRunning {
+		t.Fatalf("%v %v %s", report.Valid, err, apps.apps["app-1"].LifecycleStatus)
+	}
+}
+
+// A deployed application's deployment.yaml is revised in place — a service
+// added — keeping its status (and so its database and data). A change that
+// doesn't pass the checks, or that would change or remove the database, is
+// refused and nothing is saved.
+func TestSaveDeploymentYAML_DeployedApplication_RevisedInPlaceKeepingTheDatabase(t *testing.T) {
+	app := draftApp("app-1", "overtime", validYAML)
+	app.LifecycleStatus = domain.StatusRunning
+	svc, apps := newValidationService(app, "owner-1")
+	ctx := context.Background()
+
+	added := strings.Replace(validYAML, "database:", "  worker:\n    runtime: go\n    port: 8081\ndatabase:", 1)
+	got, err := svc.SaveDeploymentYAML(ctx, "app-1", "owner-1", added)
+	if err != nil || got.LifecycleStatus != domain.StatusRunning || !strings.Contains(apps.apps["app-1"].DeploymentYAMLDraft, "worker") {
+		t.Fatalf("revised in place: %v %s", err, got.LifecycleStatus)
+	}
+
+	for name, bad := range map[string]string{
+		"another database type": strings.Replace(added, "type: postgres", "type: mysql", 1),
+		"the database removed":  strings.Replace(added, "database:\n  type: postgres\n", "", 1),
+	} {
+		if _, err := svc.SaveDeploymentYAML(ctx, "app-1", "owner-1", bad); !errors.Is(err, domain.ErrDatabaseChangeLosesData) {
+			t.Errorf("%s: want ErrDatabaseChangeLosesData, got %v", name, err)
+		}
+	}
+	unsupported := strings.Replace(added, "runtime: go\n    port: 8081", "runtime: cobol\n    port: 8081", 1)
+	if _, err := svc.SaveDeploymentYAML(ctx, "app-1", "owner-1", unsupported); !errors.Is(err, domain.ErrInvalidYAML) {
+		t.Fatalf("checked like a new one: %v", err)
+	}
+	if !strings.Contains(apps.apps["app-1"].DeploymentYAMLDraft, "runtime: go\n    port: 8081") {
+		t.Fatal("nothing refused was saved")
 	}
 }
 

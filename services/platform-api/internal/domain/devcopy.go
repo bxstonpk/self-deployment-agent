@@ -32,6 +32,8 @@ const (
 	AuditActionDevTestData   AuditAction = "application.dev_test_data"
 	AuditActionCopyDevData   AuditAction = "application.copy_dev_data"
 
+	AuditActionReviseDeploymentYAML AuditAction = "application.revise_deployment_yaml"
+
 	// MaxDevCopyParentName leaves room for "-dev" and a number in a
 	// 63-character application name.
 	MaxDevCopyParentName = 56
@@ -47,7 +49,9 @@ var (
 	ErrDevDataNotFirst       = errors.New("production has already run and has its own data: dev data is copied only by the first production deployment, so real data is never replaced")
 	ErrDevDataNoDatabase     = errors.New("there is no dev copy with a database to copy data from")
 	ErrInvalidTestDataNote   = errors.New("say what test data was added (a short note)")
-	ErrDevCopyYAMLChanged    = errors.New("the application's deployment.yaml changed since the dev copy first deployed, and a deployed copy can't take a new one: resetting the dev copy (reset_dev) picks it up, but removes the copy's data, so ask the employee first")
+	// ErrDatabaseChangeLosesData: a deployed application's database type
+	// can't change, nor the database go: its data is in it.
+	ErrDatabaseChangeLosesData = errors.New("a deployed application's database can't be changed to another type or removed, because its data is in it")
 )
 
 // DevDataRequest is a production deployment's request to take its data

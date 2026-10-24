@@ -18,7 +18,9 @@ that restarts platform-api. Checks:
     Claude's test data) and builds nothing until answered
   - dev_data="copy": the approver sees and signs it; once live, production
     has the dev copy's data; the dev copy keeps its own
+  - a service added to a dev copy that holds data: revised in place, data kept
   - a later production deployment can't copy again (MCP and API)
+  - running production: its deployment.yaml revised in place; its database type can't change
   - reset_dev removes the copy and its database; the next is "-dev2", empty
   - archiving the application removes its dev copy
 """
@@ -28,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -179,6 +182,24 @@ async def main() -> None:
                        and _titles(items) == sorted([REAL_ITEM, TEST_ITEM]),
                        "the next dev deployment: the same copy and address, its data still there")
 
+                # A service added to a dev copy that holds data: its
+                # deployment.yaml is revised in place, nothing reset.
+                shutil.copytree(project / "api", project / "worker")
+                _, parent = call(BASE, "GET", f"/applications/{app_id}", token=owner)
+                with_worker = parent["deployment_yaml_draft"].replace(
+                    "database:", "  worker:\n    runtime: go\n    port: 8080\ndatabase:", 1)
+                v = await _tool(s, "validate_application", {"application_id": app_id, "deployment_yaml": with_worker})
+                _check(v["data"]["validation_result"]["passed"] is True, "the application's deployment.yaml gains a worker service")
+                added = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "dev",
+                                                             "project_path": str(project), "run_tests": False})
+                _, items = _http("GET", f"{GATEWAY}/{name}-dev/api/items")
+                status, worker = _http("GET", f"{GATEWAY}/{name}-dev/worker/")
+                _check(added["status"] == "success" and added["data"].get("created") is False
+                       and added["data"].get("status") == "running"
+                       and _titles(items) == sorted([REAL_ITEM, TEST_ITEM]) and status == 200
+                       and (worker or {}).get("database") == "connected",
+                       f"the dev copy took the new service in place: worker answers ({status}), the data is still there")
+
                 asked = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "production",
                                                              "project_path": str(project), "run_tests": False})
                 msg = (asked.get("error") or {}).get("message", "")
@@ -220,6 +241,20 @@ async def main() -> None:
                 status, body = call(BASE, "POST", f"/applications/{app_id}/deploy", {
                     "environment": "production", "copy_dev_data": True, "review_document": "# x"}, token=owner)
                 _check(status == 409 and body["error"]["code"] == "dev_data_not_copyable", f"…nor through the API ({status})")
+
+                # Running production's deployment.yaml: revised in place, but
+                # never its database.
+                _, parent = call(BASE, "GET", f"/applications/{app_id}", token=owner)
+                status, body = call(BASE, "PUT", f"/applications/{app_id}/deployment-yaml", {
+                    "deployment_yaml": parent["deployment_yaml_draft"].replace("type: mysql", "type: postgres")}, token=owner)
+                _check(status == 409 and body["error"]["code"] == "database_change_loses_data",
+                       f"changing a deployed application's database type is refused ({status})")
+                scaled = parent["deployment_yaml_draft"].replace("max: 1", "max: 2")
+                v = await _tool(s, "validate_application", {"application_id": app_id, "deployment_yaml": scaled})
+                _, after = call(BASE, "GET", f"/applications/{app_id}", token=owner)
+                _check(v["data"]["validation_result"]["passed"] is True and after["lifecycle_status"] == "running"
+                       and "max: 2" in after["deployment_yaml_draft"],
+                       "a running production's deployment.yaml is revised in place, still running")
 
                 reset = await _tool(s, "reset_dev", {"application_id": app_id})
                 _check(reset["status"] == "success" and not _db_containers(f"{name}-dev"),
