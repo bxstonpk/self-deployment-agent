@@ -14,6 +14,7 @@ import { Notifications } from "./pages/Notifications";
 import { Reports } from "./pages/Reports";
 import { Dashboard } from "./pages/Dashboard";
 import { Departments } from "./pages/Departments";
+import { Standards } from "./pages/Standards";
 import { Approvals } from "./pages/Approvals";
 // Loaded when opened: it carries the markdown renderer and the signing code,
 // which nobody else needs.
@@ -149,6 +150,12 @@ function Layout({ children }: { children: React.ReactNode }) {
               <span>Dashboard</span>
             </NavLink>
           )}
+          {isAdmin && (
+            <NavLink to="/standards" className="nav-link">
+              <NavIcon d={ICONS.standards} />
+              <span>Standards</span>
+            </NavLink>
+          )}
           <NavLink to="/applications" className="nav-link">
             <NavIcon d={ICONS.applications} />
             <span>Applications</span>
@@ -206,6 +213,7 @@ function BrandMark() {
 
 const ICONS = {
   dashboard: "M3 12h4l3-8 4 16 3-8h4",
+  standards: "M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9",
   approvals: "M9 12l2 2 4-4M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z",
   departments: "M3 21h18M5 21V7l7-4 7 4v14M9 9h1M14 9h1M9 13h1M14 13h1M9 17h6",
   applications: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
@@ -252,6 +260,14 @@ function App() {
           element={
             <RequireIdentity>
               <Departments />
+            </RequireIdentity>
+          }
+        />
+        <Route
+          path="/standards"
+          element={
+            <RequireIdentity>
+              <Standards />
             </RequireIdentity>
           }
         />

@@ -1,6 +1,6 @@
 ---
 name: company-deployment
-description: Use when an employee asks to deploy, redeploy, roll back, restart, suspend, resume, archive, or delete an application on the company platform. Governs how Claude Code inspects a project, generates deployment.yaml, and drives the Company Deployment MCP server — never infrastructure directly.
+description: Use when an employee asks to start, create or build a new application for the company, or to deploy, redeploy, roll back, restart, suspend, resume, archive, or delete an application on the company platform. Governs how Claude Code inspects a project, generates deployment.yaml, and drives the Company Deployment MCP server — never infrastructure directly.
 ---
 
 # Company Deployment Skill
@@ -50,6 +50,8 @@ for that.
 Every platform interaction goes through these, and nothing else:
 `whoami`, `login`, `complete_login`, `logout`,
 `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`,
+`get_standards`, `start_project`, `scaffold_project`, `check_project`,
+`request_exception`, `list_exceptions`,
 `create_application`, `validate_application`, `deploy_application`,
 `get_application_status`, `get_deployment_status`, `get_application_logs`,
 `get_application_metrics`, `rollback_application`, `restart_application`,
@@ -62,10 +64,11 @@ Every platform interaction goes through these, and nothing else:
 platform's docs describe this set as "12 tools" in several places while
 listing 13 numbered entries in the tool catalog itself; that's a numbering
 inconsistency in the platform's own specification, not something to
-resolve by pretending one tool doesn't exist. The remaining eight are
-newer additions exposing modules that didn't exist when the platform's
-tool catalog document was written — Audit Log, Notification, Reporting,
-and ownership management; they follow the same envelope and
+resolve by pretending one tool doesn't exist. The rest are newer
+additions exposing modules that didn't exist when the platform's tool
+catalog document was written — sign-in, Audit Log, Notification,
+Reporting, ownership management and development governance (the six
+governance tools: see "Starting a new application"); they follow the same envelope and
 error-handling contract as every other tool here. Don't be surprised by
 the count; go by what `list_tools()` / `get_platform_info` actually
 report.)
@@ -104,6 +107,50 @@ request_id, server_time}`. Always read `status` and, on failure,
 `INTERNAL_ERROR`. See `docs/troubleshooting.md` for what each one means in
 practice and what to do about it.
 
+## Starting a new application — the company standard
+
+The company's development standard applies from the first line of a new
+application, not only at deployment. When an employee wants to build a
+new application (not deploy one that already exists), do this before
+writing any code:
+
+1. **`get_standards`.** The stacks the company allows, its rules, and
+   the libraries it doesn't allow. Follow them; don't choose a stack or
+   a library outside them on your own.
+2. **Ask the employee, then `start_project`.** It needs: `name`;
+   `purpose` (what the application is for); `users` (who uses it, about
+   how many); `handles_personal_data` and, if so, `data_description`
+   (which personal data: names, employee IDs, phone numbers...);
+   `api_runtime` (`python`, `nodejs`, `typescript` or `go`: ask which
+   the team prefers); and `department` as in Step 5. **Ask; never guess
+   a purpose or whether it handles personal data.** `start_project`
+   registers the application with the standard `deployment.yaml` and
+   records this profile. Nobody approves a start, but a build refuses an
+   application that has no profile.
+3. **`scaffold_project(application_id, project_path)`** into a new, empty
+   folder: `frontend/`, `api/`, `deployment.yaml`, `REVIEW.md` to fill
+   in, and `STANDARD.md` with the conventions. Build the application from
+   these; replace the example `/items` endpoints with its own.
+4. **While writing it, `check_project(application_id, project_path)`.**
+   It runs the platform's own dependency check (the same one the build
+   runs) and checks the profile, `REVIEW.md` and pending exceptions. Fix
+   every `error` before deploying.
+5. **Something outside the standard?** A library it doesn't allow, a
+   stack it doesn't list, anything else: tell the employee, and only if
+   they still want it, `request_exception(application_id, kind, subject,
+   reason)` (`kind` `dependency` with `subject` `npm:<package>`,
+   `go:<module>` or `pypi:<package>`; or `stack`; or `other`). The
+   platform administrator decides. **Don't use it until
+   `list_exceptions` shows it `approved`**: a library that isn't allowed
+   fails the build until then.
+6. **Done: deploy** with the procedure below, from Step 6 (validate):
+   the application is already registered.
+
+An application registered before this standard (or with
+`create_application` alone) has no profile: `deploy_application`'s build
+answers `profile_required`. Ask the employee for the profile and call
+`start_project` with that `application_id`; it records just the profile.
+
 ## The deployment procedure
 
 Follow this order for any deployment request. Don't skip ahead (don't call
@@ -127,8 +174,9 @@ frontend+api+database+cache. Multiple services in one app (e.g.
 `frontend`, `api`) become separate entries under `services:`. Pick the
 matching starting template from `examples/`.
 
-**Starting a new application from scratch?** Use the company standard in
-`templates/` rather than inventing a layout: a React frontend
+**Starting a new application from scratch?** Go through "Starting a new
+application" above: `start_project`, then `scaffold_project`, which copies
+the company standard in `templates/` for you. The standard: a React frontend
 (`templates/frontend-react/` → the project's `frontend/`), one API in
 `python`, `nodejs`, `typescript` or `go` (`templates/api-<runtime>/` →
 `api/`), a MySQL database, and `templates/deployment.yaml`. Each template
@@ -205,7 +253,10 @@ platform's security precheck — don't attempt it even if asked.
 
 ### 5. Register (if needed)
 
-If the application isn't registered yet, call `create_application(name,
+A **new** application starts with `start_project` (see "Starting a new
+application" above), which registers it with its profile. Use
+`create_application` only to register without one; its build will then
+ask for the profile. If the application isn't registered yet, call `create_application(name,
 description, department, deployment_yaml, idempotency_key)`. `department`
 is the **name** of the department the application belongs to, not an
 internal ID. Any department is accepted:
@@ -247,6 +298,11 @@ compliance, not application correctness — that's still your and the
 employee's responsibility. If tests fail or none exist, say so clearly and
 ask the employee how to proceed rather than deploying untested code
 silently, or silently skipping this step.
+
+Then run `check_project(application_id, project_path)`. It runs the
+platform's dependency check on the source without building; fix every
+finding of severity `error` before deploying (a library the company
+doesn't allow fails the build: remove it, or `request_exception`).
 
 ### 7b. Write REVIEW.md, for the approver
 

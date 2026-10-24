@@ -30,6 +30,7 @@ type RouterConfig struct {
 	Backups       *BackupHandler
 	Alerts        *AlertHandler
 	Approvals     *ApprovalHandler
+	Governance    *GovernanceHandler
 	// Auth serves /auth/*. Nil under the dev-header mode, which has no
 	// accounts to sign in to.
 	Auth *AuthHandler
@@ -130,6 +131,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		if cfg.Alerts != nil {
 			r.Get("/{id}/alerts", cfg.Alerts.ForApplication)
 		}
+		if cfg.Governance != nil {
+			r.Put("/{id}/profile", cfg.Governance.PutProfile)
+			r.Get("/{id}/profile", cfg.Governance.GetProfile)
+			r.Post("/{id}/exceptions", cfg.Governance.RequestException)
+			r.Get("/{id}/exceptions", cfg.Governance.ListExceptions)
+			r.Post("/{id}/standards-check", cfg.Governance.CheckSource)
+		}
 		if cfg.Backups != nil {
 			r.Get("/{id}/backups", cfg.Backups.List)
 			r.Post("/{id}/backups", cfg.Backups.BackupNow)
@@ -148,6 +156,18 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			useDevGuard(r, cfg)
 			r.Use(RequireAuth(cfg.Authenticator))
 			r.Get("/", cfg.Policy.Get)
+		})
+	}
+
+	if cfg.Governance != nil {
+		r.Route("/standards", func(r chi.Router) {
+			useDevGuard(r, cfg)
+			r.Use(RequireAuth(cfg.Authenticator))
+			r.Get("/", cfg.Governance.Standards)
+			r.Post("/dependency-rules", cfg.Governance.AddDependencyRule)
+			r.Delete("/dependency-rules/{ruleId}", cfg.Governance.RemoveDependencyRule)
+			r.Get("/exceptions", cfg.Governance.ExceptionQueue)
+			r.Post("/exceptions/{exceptionId}/decision", cfg.Governance.DecideException)
 		})
 	}
 

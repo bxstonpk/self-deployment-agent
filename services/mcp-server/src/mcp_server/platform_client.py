@@ -41,6 +41,7 @@ _WRONG_STATE_CODES = {
     "no_successful_build",
     "not_pending_approval",
     "invalid_rollback_target",
+    "profile_required",
 }
 
 # Codes that genuinely are Section 8's narrower CONFLICT definition.
@@ -165,6 +166,32 @@ class PlatformClient:
             if exc.code == ErrorCode.NOT_FOUND:
                 return None
             raise
+
+    # --- Development governance ------------------------------------------
+
+    async def get_standards(self) -> dict[str, Any]:
+        return await self._request("GET", "/standards")
+
+    async def put_profile(self, application_id: str, profile: dict[str, Any]) -> dict[str, Any]:
+        return (await self._request("PUT", f"/applications/{application_id}/profile", json=profile)).get("profile", {})
+
+    async def get_profile(self, application_id: str) -> dict[str, Any] | None:
+        return (await self._request("GET", f"/applications/{application_id}/profile")).get("profile")
+
+    async def request_exception(self, application_id: str, kind: str, subject: str, reason: str) -> dict[str, Any]:
+        return await self._request(
+            "POST", f"/applications/{application_id}/exceptions", json={"kind": kind, "subject": subject, "reason": reason}
+        )
+
+    async def list_exceptions(self, application_id: str) -> list[dict[str, Any]]:
+        return (await self._request("GET", f"/applications/{application_id}/exceptions")).get("exceptions", [])
+
+    async def check_standards(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        """The build's dependency check, run on the source without building."""
+        return await self._request(
+            "POST", f"/applications/{application_id}/standards-check",
+            extra_headers={"Content-Type": "application/gzip"}, content=source_archive,
+        )
 
     # --- Departments -----------------------------------------------------
 

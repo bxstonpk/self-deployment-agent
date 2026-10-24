@@ -109,6 +109,7 @@ def main():
         _, app = call(BASE_URL, "POST", "/applications", {"name": name, "description": "approvals", "owning_department_id": dept,
                                                           "deployment_yaml_draft": yaml}, token=owner_key)
         app_id = app["id"]
+        call(BASE_URL, "PUT", f"/applications/{app_id}/profile", {"purpose": "signed approval verification", "handles_personal_data": False}, token=owner_key)
         call(BASE_URL, "POST", f"/applications/{app_id}/validate", token=owner_key)
         src = b'package main\nimport ("fmt";"net/http")\nfunc main(){http.HandleFunc("/",func(w http.ResponseWriter,r *http.Request){fmt.Fprintln(w,"approved build")});http.ListenAndServe(":8080",nil)}\n'
         buf = io.BytesIO()

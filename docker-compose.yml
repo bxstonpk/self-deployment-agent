@@ -63,6 +63,9 @@ services:
       # which environments' deployments need a signed approval.
       PLATFORM_APPROVER_KEYS: ${PLATFORM_APPROVER_KEYS:-}
       APPROVAL_REQUIRED_ENVIRONMENTS: ${APPROVAL_REQUIRED_ENVIRONMENTS:-production}
+      # Development governance: a build needs the application's profile
+      # (start_project). false turns that off.
+      GOVERNANCE_REQUIRE_PROFILE: ${GOVERNANCE_REQUIRE_PROFILE:-true}
       # Alerts (FR-092, DEC-028). Empty means the decided default; see
       # .env.example.
       ALERT_ERROR_RATE_WARNING_PERCENT: ${ALERT_ERROR_RATE_WARNING_PERCENT:-}

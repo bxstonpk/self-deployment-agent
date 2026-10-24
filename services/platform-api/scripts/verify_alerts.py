@@ -156,6 +156,7 @@ def main():
         _, app = call(BASE_URL, "POST", "/applications", {"name": name, "description": "alerts", "owning_department_id": dept,
                                                           "deployment_yaml_draft": yaml}, token=key)
         app_id = app["id"]
+        call(BASE_URL, "PUT", f"/applications/{app_id}/profile", {"purpose": "alerts verification", "handles_personal_data": False}, token=key)
         call(BASE_URL, "POST", f"/applications/{app_id}/validate", token=key)
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:

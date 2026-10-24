@@ -615,3 +615,70 @@ export function decideApproval(
 ): Promise<{ deployment: { status: string }; signer_fingerprint: string }> {
   return request(identity, "POST", `/approvals/${encodeURIComponent(deploymentId)}/decision`, { json: body });
 }
+
+// --- Development governance: the company standard and its exceptions ---
+
+export interface DependencyRule {
+  id: string;
+  ecosystem: "npm" | "go" | "pypi";
+  package: string;
+  reason: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface Standards {
+  rules: string[];
+  stacks: { kind: string; name: string; status: string }[];
+  dependency_rules: DependencyRule[];
+  profile_required_to_build: boolean;
+  exception_kinds: string[];
+}
+
+export interface StandardException {
+  id: string;
+  application_id: string;
+  application_name: string;
+  kind: "dependency" | "stack" | "other";
+  subject: string;
+  reason: string;
+  status: "pending" | "approved" | "rejected";
+  requested_by: string;
+  requested_at: string;
+  decided_by: string;
+  decision_reason: string;
+  decided_at: string | null;
+}
+
+export function getStandards(identity: Identity): Promise<Standards> {
+  return request(identity, "GET", "/standards");
+}
+
+export function addDependencyRule(
+  identity: Identity,
+  rule: { ecosystem: string; package: string; reason: string },
+): Promise<{ dependency_rule: DependencyRule }> {
+  return request(identity, "POST", "/standards/dependency-rules", { json: rule });
+}
+
+export function removeDependencyRule(identity: Identity, id: string): Promise<{ removed: boolean }> {
+  return request(identity, "DELETE", `/standards/dependency-rules/${encodeURIComponent(id)}`);
+}
+
+export function listStandardExceptions(
+  identity: Identity,
+  status: "pending" | "approved" | "rejected" = "pending",
+): Promise<{ exceptions: StandardException[] }> {
+  return request(identity, "GET", `/standards/exceptions?status=${status}`);
+}
+
+export function decideStandardException(
+  identity: Identity,
+  id: string,
+  decision: "approve" | "reject",
+  reason: string,
+): Promise<{ exception: StandardException }> {
+  return request(identity, "POST", `/standards/exceptions/${encodeURIComponent(id)}/decision`, {
+    json: { decision, reason },
+  });
+}

@@ -54,6 +54,21 @@ section number for them:
 | `grant_application_access` | `POST /applications/{id}/owners` | `access_level` is `co_owner` or `contributor`; anything else (including `primary`) is rejected before the platform is called |
 | `revoke_application_access` | `DELETE /applications/{id}/owners/{userId}` | |
 
+And six **development governance** tools (DEC-029): the company standard
+from the moment an application is started. Every rule is the Platform
+API's; these let a project meet it while it's being written rather than
+at the build. See `platform-api/README.md`'s "How development governance
+works".
+
+| Tool | Platform API call(s) | Notes |
+|---|---|---|
+| `get_standards` | `GET /standards` | The allowed stacks (active ones only), the rules, the libraries the company doesn't allow |
+| `start_project` | `GET /standards`, `GET /departments`, `POST /applications`, `PUT .../deployment-yaml`, `PUT .../profile` | Registers with the standard `deployment.yaml` and records the profile. Refuses a stack the standard doesn't allow before registering anything. With `application_id`, records only the profile of an existing application. If the profile fails after registering, the error names the `application_id` to retry with |
+| `scaffold_project` | `GET /applications/{id}` | Local only: copies the templates for the saved stack from `COMPANY_DEPLOY_TEMPLATES` or `~/.claude/skills/company-deployment/templates` (where the installer puts them), writes `deployment.yaml`, `REVIEW.md` and `STANDARD.md`. Only into a new or empty folder |
+| `check_project` | `POST .../standards-check`, `GET /policy`, `GET .../exceptions` | Packs the project like `deploy_application` and runs the build's dependency check without building; also the profile, `REVIEW.md` (missing, or still the template) and pending exceptions. `passed` is false only on an `error` finding |
+| `request_exception` | `POST .../exceptions` | `dependency` (`<ecosystem>:<package>`), `stack` or `other`; an administrator decides |
+| `list_exceptions` | `GET .../exceptions` | |
+
 #### `get_application_inventory` closes a gap older than Module AB
 
 Section 13's entire catalog is single-application: `get_application_status`
@@ -464,6 +479,10 @@ specifically tests the HTTP-error-to-`ErrorCode` mapping logic using
 
 ### Real end-to-end verification
 
+`scripts/verify_governance.py` covers the governance tools the same way,
+through real stdio against a real stack; what it checks and the results
+are in `platform-api/README.md`'s "How development governance works".
+
 `scripts/e2e_verify.py` is **not** part of the pytest suite — it spawns
 the actual server as a subprocess (exactly how Claude Code would) and
 drives it through a full workflow via a real `mcp` protocol client
@@ -484,18 +503,21 @@ This is what was actually run to verify this server for real, not just
 unit-tested against fakes. What it covers, in order, all through the real
 MCP stdio protocol (not calling Python functions directly):
 
-1. Confirms all 25 tools (13 from Section 13, the eight later-module
-   tools for Modules W/X/AB/E, and the four sign-in tools) are discovered
-   via protocol-level `list_tools()`. Then signs in for real: a fresh
+1. Confirms all 31 tools (13 from Section 13, the eight later-module
+   tools for Modules W/X/AB/E, the four sign-in tools and the six
+   governance tools) are discovered via protocol-level `list_tools()`. Then signs in for real: a fresh
    machine is refused every platform tool, `login` returns a code, the
    employee approves it with their own session, `complete_login` stores
    the key, and the key appears nowhere in anything the agent saw.
 2. `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`
    — real reads against the real catalog.
-3. `create_application` with an unknown department — confirmed rejected
-   with `VALIDATION_ERROR` before any Platform API mutation.
-4. `create_application` (real), `validate_application` (real, `passed:
-   true`) for a real Go "hello world" service.
+3. (Removed 2026-10-24: it checked that an unknown department was
+   refused, which stopped being true when departments became open-ended;
+   an unknown one is created now, covered by the unit tests.)
+4. `create_application` (real), then `get_standards` and `start_project`
+   with the new `application_id` (a build needs a profile), then
+   `validate_application` (real, `passed: true`) for a real Go "hello
+   world" service.
 5. `deploy_application` with `source_archive_base64` set to a real Go
    "hello world" service — builds **and** deploys v1 in one MCP call,
    confirmed `running`, confirmed `get_application_status` reports a live

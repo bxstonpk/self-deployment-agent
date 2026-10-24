@@ -107,6 +107,8 @@ func writeBuildError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "no_source_archive", err.Error())
 	case errors.Is(err, domain.ErrBuildAlreadyInFlight):
 		writeError(w, http.StatusConflict, "build_in_flight", err.Error())
+	case errors.Is(err, domain.ErrProfileRequired):
+		writeError(w, http.StatusConflict, "profile_required", err.Error())
 	case errors.Is(err, domain.ErrNoBaseImageForRuntime):
 		writeError(w, http.StatusUnprocessableEntity, "no_base_image", err.Error())
 	default:

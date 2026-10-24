@@ -64,6 +64,27 @@ class FakePlatformClient:
                         "latency_ms_max": 40.0, "cpu_percent_latest": 12.5, "memory_bytes_latest": 52428800},
         }
         self.last_metric_params: dict[str, Any] | None = None
+        # Development governance.
+        self.standards: dict[str, Any] = {
+            "rules": ["Start every application with start_project."],
+            "stacks": [
+                {"kind": "frontend", "name": "react", "status": "active"},
+                {"kind": "backend", "name": "go", "status": "active"},
+                {"kind": "backend", "name": "python", "status": "active"},
+                {"kind": "backend", "name": "php", "status": "blocked"},
+                {"kind": "database", "name": "mysql", "status": "active"},
+            ],
+            "dependency_rules": [{"id": "r1", "ecosystem": "npm", "package": "left-pad", "reason": "unmaintained"}],
+            "profile_required_to_build": True,
+            "exception_kinds": ["dependency", "stack", "other"],
+        }
+        self.profiles: dict[str, dict[str, Any]] = {}
+        self.exceptions: list[dict[str, Any]] = []
+        self.next_standards_check: dict[str, Any] = {
+            "passed": True, "has_profile": True, "profile_required": True, "dependencies_found": 3,
+            "violations": [], "allowed_by_exception": [],
+        }
+        self.profile_error: ToolError | None = None
 
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -89,6 +110,37 @@ class FakePlatformClient:
         d = {"id": f"dept-{len(self.departments) + 1}", "name": name, "cost_center_code": "", "status": "active"}
         self.departments.append(d)
         return d
+
+    async def get_standards(self) -> dict[str, Any]:
+        self._record("get_standards")
+        return self.standards
+
+    async def put_profile(self, application_id: str, profile: dict[str, Any]) -> dict[str, Any]:
+        self._record("put_profile", application_id, profile)
+        if self.profile_error:
+            raise self.profile_error
+        if application_id not in self.applications:
+            raise ToolError(ErrorCode.NOT_FOUND, "not found")
+        self.profiles[application_id] = {"application_id": application_id, **profile}
+        return self.profiles[application_id]
+
+    async def get_profile(self, application_id: str) -> dict[str, Any] | None:
+        return self.profiles.get(application_id)
+
+    async def request_exception(self, application_id: str, kind: str, subject: str, reason: str) -> dict[str, Any]:
+        self._record("request_exception", application_id, kind, subject, reason)
+        e = {"id": f"exc-{len(self.exceptions) + 1}", "application_id": application_id, "kind": kind,
+             "subject": subject, "reason": reason, "status": "pending"}
+        self.exceptions.append(e)
+        return {"exception": e, "created": True}
+
+    async def list_exceptions(self, application_id: str) -> list[dict[str, Any]]:
+        self._record("list_exceptions", application_id)
+        return [e for e in self.exceptions if e["application_id"] == application_id]
+
+    async def check_standards(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        self._record("check_standards", application_id, source_archive)
+        return self.next_standards_check
 
     async def whoami(self) -> dict[str, Any]:
         self._record("whoami")

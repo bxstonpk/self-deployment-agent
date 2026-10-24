@@ -62,6 +62,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-026 | Operational | Platform support model / on-call ownership | IT Administrator + Platform Administrator | Before Production Go-Live | Open |
 | DEC-027 | Operational | Application log retention period | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
 | DEC-028 | Operational | Alert thresholds and notification rhythm | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
+| DEC-029 | Process & Governance | Development governance from the start of an application | Platform owner | Before Production Go-Live | **Decided (2026-10-24)** |
 
 ---
 
@@ -371,6 +372,20 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Decision Owner | Platform Administrator + Management / Auditor |
 | Status | Open |
 | Target Phase | Before UAT |
+
+#### DEC-029 — Development Governance from the Start of an Application
+
+| Field | Detail |
+|---|---|
+| Topic | Applying the company standard while an application is built, not only when it is deployed |
+| Question | An employee building an application with Claude Code should use the company standard and only what is permitted, then hand the result to deployment. How is that enforced, and does starting an application need approval? |
+| Options Considered | Starting: (a) register only; (b) the administrator approves every new application before work starts. Where: (a) a separate governance MCP server; (b) the same `company-deployment` MCP server. Scope: governance tools and the skill; running tests on the platform; a preview environment. |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-10-24)** |
+| Resolution | **Chosen by the owner:** starting an application is registering it, with no approval; the tools live in the same MCP server (first a separate one was chosen, then changed to the same one); all three parts are to be built. **Built so far, part 1 (implementation choices, not separately decided):** an application is registered with a profile (purpose, users, whether it handles personal data and which, stack), and a build refuses an application without one (`GOVERNANCE_REQUIRE_PROFILE`, on by default). Libraries the company doesn't allow are kept as dependency rules, checked in each service's `package.json`, `go.mod` and `requirements.txt` at build time. An exception (dependency, stack or other) is requested by an owner and decided by a platform administrator (`PLATFORM_ADMIN_EMAILS`); an approved dependency exception lets that library through the build, while stack and other exceptions are a recorded decision the platform doesn't enforce by itself. **Not built yet:** running tests on the platform, and a preview environment. No dependency rules are set by default: which libraries to forbid is the administrators' to decide. |
+| Target Phase | Before Production Go-Live |
+
+---
 
 ## 9. Operational
 

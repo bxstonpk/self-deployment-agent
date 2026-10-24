@@ -37,6 +37,7 @@ from .tools import (
     auth,
     deployment,
     discovery,
+    governance,
     lifecycle,
     notifications,
     observability,
@@ -74,7 +75,11 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "Portal, then complete_login — nothing else works until then. Then "
             "call get_platform_info and get_supported_stacks before any "
             "deployment workflow — never assume cached knowledge of what the "
-            "platform currently supports."
+            "platform currently supports. A NEW application starts with the "
+            "company standard: get_standards, then start_project (registers it "
+            "with its profile), then scaffold_project (the company templates); "
+            "check_project while writing it; request_exception before using "
+            "anything the standard doesn't allow."
         ),
     )
 
@@ -140,6 +145,98 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         return await _run_tool(
             audit("get_deployment_requirements", params, application_id),
             discovery.get_deployment_requirements(client, application_id, proposed_shape),
+        )
+
+    # --- development governance: the company standard from the start ----
+
+    @mcp.tool()
+    async def get_standards() -> dict[str, Any]:
+        """The company development standard: the stacks it allows, its rules,
+        and the libraries it doesn't allow. Read it before starting an
+        application, and follow it."""
+        return await _run_tool(audit("get_standards", {}, None), governance.get_standards(client))
+
+    @mcp.tool()
+    async def start_project(
+        name: str,
+        purpose: str,
+        handles_personal_data: bool,
+        users: str = "",
+        data_description: str = "",
+        api_runtime: str = "",
+        frontend: str = "react",
+        database: str = "mysql",
+        department: str = "",
+        application_id: str = "",
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Start a new application the company way: registers it, with the
+        standard deployment.yaml, and records its profile — what it is for
+        (purpose), who uses it (users), whether it handles personal data and
+        which (data_description), and its stack (api_runtime: python, nodejs,
+        typescript or go). Ask the employee for these; don't guess. Nobody
+        approves a start, but a build refuses an application without a
+        profile. For an application registered earlier, pass its
+        application_id to record just the profile."""
+        params = {
+            "name": name, "purpose": purpose, "handles_personal_data": handles_personal_data, "users": users,
+            "data_description": data_description, "api_runtime": api_runtime, "frontend": frontend,
+            "database": database, "department": department, "application_id": application_id,
+            "idempotency_key": idempotency_key,
+        }
+        return await _run_tool(
+            audit("start_project", params, application_id or None),
+            governance.start_project(
+                client, idempotency, name, purpose, handles_personal_data, users, data_description,
+                api_runtime, frontend, database, department, application_id, idempotency_key,
+            ),
+        )
+
+    @mcp.tool()
+    async def scaffold_project(application_id: str, project_path: str) -> dict[str, Any]:
+        """Create the project folder from the company templates for this
+        application's stack: frontend/, api/, deployment.yaml, REVIEW.md to
+        fill in, STANDARD.md with the conventions. project_path is an
+        absolute path to a new or empty folder; nothing is overwritten."""
+        params = {"application_id": application_id, "project_path": project_path}
+        return await _run_tool(
+            audit("scaffold_project", params, application_id),
+            governance.scaffold_project(client, application_id, project_path),
+        )
+
+    @mcp.tool()
+    async def check_project(application_id: str, project_path: str) -> dict[str, Any]:
+        """Check the project against the company standard without building:
+        the platform's dependency check (the same one the build runs), the
+        profile, REVIEW.md, and exceptions still waiting for a decision. Run
+        it while writing the application and before deploy_application."""
+        params = {"application_id": application_id, "project_path": project_path}
+        return await _run_tool(
+            audit("check_project", params, application_id),
+            governance.check_project(client, application_id, project_path),
+        )
+
+    @mcp.tool()
+    async def request_exception(application_id: str, kind: str, subject: str, reason: str) -> dict[str, Any]:
+        """Ask the platform administrator to allow something outside the
+        company standard, before using it. kind: dependency (subject is
+        <ecosystem>:<package>, ecosystem npm, go or pypi), stack (e.g. a
+        runtime the standard doesn't list) or other. reason: why the
+        standard way doesn't work for this application. Don't use it until
+        it's approved."""
+        params = {"application_id": application_id, "kind": kind, "subject": subject, "reason": reason}
+        return await _run_tool(
+            audit("request_exception", params, application_id),
+            governance.request_exception(client, application_id, kind, subject, reason),
+        )
+
+    @mcp.tool()
+    async def list_exceptions(application_id: str) -> dict[str, Any]:
+        """The application's exception requests and the administrator's decisions."""
+        params = {"application_id": application_id}
+        return await _run_tool(
+            audit("list_exceptions", params, application_id),
+            governance.list_exceptions(client, application_id),
         )
 
     # --- 13.4-13.5: application registration/validation -----------------
