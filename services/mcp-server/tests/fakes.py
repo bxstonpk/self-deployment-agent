@@ -16,6 +16,9 @@ class FakePlatformClient:
         self.departments: list[dict[str, Any]] = [
             {"id": "dept-eng", "name": "Engineering", "cost_center_code": "ENG-01", "status": "active"},
         ]
+        self.policy: dict[str, Any] | None = {
+            "approval_required_environments": ["production"], "signed_approval": False, "approvers": [],
+        }
         self.own_department_id = "dept-eng"  # the signed-in employee's, for whoami
         self.applications: dict[str, dict[str, Any]] = {}
         self.deployments: dict[str, dict[str, Any]] = {}
@@ -139,6 +142,10 @@ class FakePlatformClient:
             "application": dict(app),
             "report": {"valid": True, "checks": [{"name": "schema", "status": "passed"}]},
         }
+
+    async def get_policy(self) -> dict[str, Any] | None:
+        self._record("get_policy")
+        return self.policy
 
     async def get_supported_stacks(self) -> list[dict[str, Any]]:
         self._record("get_supported_stacks")

@@ -12,6 +12,7 @@ type RouterConfig struct {
 	Authenticator Authenticator
 	Applications  *ApplicationHandler
 	Admin         *AdminHandler
+	Policy        *PolicyHandler
 	Departments   *DepartmentHandler
 	Validation    *ValidationHandler
 	Stacks        *StackHandler
@@ -141,6 +142,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Use(RequireAuth(cfg.Authenticator))
 		r.Get("/", cfg.Stacks.List)
 	})
+
+	if cfg.Policy != nil {
+		r.Route("/policy", func(r chi.Router) {
+			useDevGuard(r, cfg)
+			r.Use(RequireAuth(cfg.Authenticator))
+			r.Get("/", cfg.Policy.Get)
+		})
+	}
 
 	r.Route("/departments", func(r chi.Router) {
 		useDevGuard(r, cfg)

@@ -187,6 +187,7 @@ func main() {
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,
 		Admin:              httpapi.NewAdminHandler(adminService, cfg.PublicBaseURL),
+		Policy:             httpapi.NewPolicyHandler(cfg.ApprovalEnvironments, cfg.ApproverKeys),
 		Applications:       httpapi.NewApplicationHandler(applicationService),
 		Departments:        httpapi.NewDepartmentHandler(departmentRepo),
 		Validation:         httpapi.NewValidationHandler(validationService),

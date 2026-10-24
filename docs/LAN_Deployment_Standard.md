@@ -127,7 +127,9 @@ first start, follow `deploy/host/README.md`:
 4. Always start with `-f docker-compose.yml -f
    deploy/host/docker-compose.tpm.yml`.
 
-**Approving production deployments.** Production deployments wait for
+**Approving deployments.** To require approval for `dev` as well, set
+`APPROVAL_REQUIRED_ENVIRONMENTS=dev,production`; the company host does.
+Claude learns the rule from `get_platform_info`. Production deployments wait for
 the administrator's decision, signed with a private key that never leaves
 their machine (`DEC-017`).
 1. Once, on the administrator's machine, after the installer: run
