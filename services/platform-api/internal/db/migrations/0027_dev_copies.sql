@@ -1,3 +1,12 @@
+-- Previews (0026) are replaced by dev copies: the platform owner decided on
+-- 2026-10-24 that an employee changing an application should keep the data
+-- they entered, rather than lose it with a 24-hour preview. 0026 stays as it
+-- was applied; this removes what it added.
+DROP TABLE IF EXISTS application_previews;
+UPDATE deployments SET environment = 'dev' WHERE environment = 'preview';
+ALTER TABLE deployments DROP CONSTRAINT IF EXISTS deployments_environment_check;
+ALTER TABLE deployments ADD CONSTRAINT deployments_environment_check CHECK (environment IN ('dev', 'production'));
+
 -- Dev copies (DEC-029 part 3, the platform owner, 2026-10-24): each
 -- application can have one long-lived development copy, "<name>-dev", its
 -- own application with its own database and address. Deploying to it never
