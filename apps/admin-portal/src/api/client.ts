@@ -682,3 +682,30 @@ export function decideStandardException(
     json: { decision, reason },
   });
 }
+
+// --- Previews: a short-lived copy of an application (DEC-029 part 3) ---
+
+export interface Preview {
+  application_id: string;
+  name: string;
+  previews: string;
+  previews_id: string;
+  url: string;
+  created_at: string;
+  expires_at: string;
+}
+
+// The application's live preview, or null when it has none.
+export async function getPreview(identity: Identity, applicationId: string): Promise<Preview | null> {
+  try {
+    return (await request<{ preview: Preview }>(identity, "GET", `/applications/${encodeURIComponent(applicationId)}/preview`))
+      .preview;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export function stopPreview(identity: Identity, applicationId: string): Promise<{ stopped: string }> {
+  return request(identity, "DELETE", `/applications/${encodeURIComponent(applicationId)}/preview`);
+}

@@ -49,6 +49,7 @@ import type {
 import { useIdentity } from "../context/IdentityContext";
 import { StatusBadge } from "../components/StatusBadge";
 import { BackupsSection } from "../components/BackupsSection";
+import { PreviewCard } from "../components/PreviewCard";
 import { AlertsBanner } from "../components/AlertsBanner";
 
 // Mirrors lifecycle_service.go's requireNothingLive: deployment statuses that
@@ -591,6 +592,8 @@ export function ApplicationDetail() {
           </p>
         )}
       </section>
+
+      {id && <PreviewCard applicationId={id} />}
 
       <section className="card">
         <h2>Lifecycle actions</h2>

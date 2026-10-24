@@ -72,6 +72,8 @@ services:
       TEST_RUN_CPUS: ${TEST_RUN_CPUS:-2}
       TEST_RUN_TIMEOUT_SECONDS: ${TEST_RUN_TIMEOUT_SECONDS:-600}
       TEST_RUN_CONCURRENT: ${TEST_RUN_CONCURRENT:-1}
+      # How long a preview lives before it is removed.
+      PREVIEW_TTL_HOURS: ${PREVIEW_TTL_HOURS:-24}
       # Alerts (FR-092, DEC-028). Empty means the decided default; see
       # .env.example.
       ALERT_ERROR_RATE_WARNING_PERCENT: ${ALERT_ERROR_RATE_WARNING_PERCENT:-}

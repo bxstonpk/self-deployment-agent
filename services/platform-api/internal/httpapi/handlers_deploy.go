@@ -286,6 +286,8 @@ func (h *DeployHandler) DecideApproval(w http.ResponseWriter, r *http.Request) {
 
 func writeDeployError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, domain.ErrPreviewOnlyEnvironment):
+		writeError(w, http.StatusBadRequest, "invalid_environment", err.Error())
 	case errors.Is(err, domain.ErrReviewDocumentRequired):
 		writeError(w, http.StatusBadRequest, "review_document_required", err.Error())
 	// FR-067's exception flow surfaced, not swallowed: the application was
