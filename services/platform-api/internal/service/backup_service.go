@@ -81,6 +81,7 @@ type BackupService struct {
 	dir       string
 	schedule  BackupSchedule
 	now       func() time.Time
+	wake      func(ctx context.Context, applicationID string) error
 }
 
 func NewBackupService(backups BackupRepository, databases BackupDatabases, apps ApplicationLifecycleRepository,
@@ -101,6 +102,17 @@ func (s *BackupService) Schedule() BackupSchedule { return s.schedule }
 // SetNotifier tells owners about failed backups; set after construction
 // because the notification service is built later in main.
 func (s *BackupService) SetNotifier(n BackupNotifier) { s.notifier = n }
+
+// SetWaker wakes a sleeping database before anything reads or writes it
+// (DatabaseService.Wake).
+func (s *BackupService) SetWaker(wake func(ctx context.Context, applicationID string) error) { s.wake = wake }
+
+func (s *BackupService) wakeDB(ctx context.Context, applicationID string) error {
+	if s.wake == nil {
+		return nil
+	}
+	return s.wake(ctx, applicationID)
+}
 
 // BackupPolicyFor reads database.backup from the application's
 // deployment.yaml — the one the platform deploys from. Unset means weekly.
@@ -271,6 +283,11 @@ func (s *BackupService) take(ctx context.Context, db domain.ProvisionedDatabase,
 
 	spec, err := s.spec(ctx, db)
 	if err != nil {
+		return fail(err)
+	}
+	// A database asleep with its application wakes for its backup, and
+	// sleeps again once the idle timeout passes.
+	if err := s.wakeDB(ctx, db.ApplicationID); err != nil {
 		return fail(err)
 	}
 	dump, err := s.runtime.DumpDatabase(ctx, db.ContainerID, spec)
@@ -518,6 +535,12 @@ func (s *BackupService) CopyDatabase(ctx context.Context, fromApplicationID, toA
 	}
 	if from.Engine != to.Engine {
 		return fmt.Errorf("the dev copy's database is %s and production's is %s", from.Engine, to.Engine)
+	}
+	if err := s.wakeDB(ctx, fromApplicationID); err != nil {
+		return err
+	}
+	if err := s.wakeDB(ctx, toApplicationID); err != nil {
+		return err
 	}
 	fromSpec, err := s.spec(ctx, from)
 	if err != nil {

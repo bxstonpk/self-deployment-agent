@@ -2265,6 +2265,97 @@ with a throwaway approver key and `APPROVAL_REQUIRED_ENVIRONMENTS=dev,production
   application accepted. Deployed applications now revise their
   deployment.yaml in place (above).
 
+## How databases save memory, and failed applications are removed
+
+The platform owner asked for this on 2026-10-24. On the 3.3 GB LAN host,
+two MySQL databases held 350–460 MB each, idle or not. One of them
+belonged to an application that had failed hours before and never ran.
+
+- **Sized for a small application.** A MySQL database gets
+  `/etc/mysql/conf.d/platform.cnf`: `performance_schema` off, a 64 MB
+  InnoDB buffer pool, 40 connections, small caches
+  (`internal/runtimeengine/dbsleep.go`).
+  - A new database gets the file before its first start.
+  - An existing one gets it when platform-api starts (`TuneAll`), and a
+    running one is restarted once for it. Its data is in its volume and
+    stays.
+  - Measured with `mysql:8.4`: an idle server used 430 MB with the
+    defaults and 138 MB with this. An existing local database went from
+    438 MB to 123 MB, its data intact.
+- **Asleep with its application.**
+  - **When it sleeps.** Once none of an application's services that can
+    use the database has run for the scale-to-zero idle timeout
+    (`SCALE_TO_ZERO_IDLE_SECONDS`), its database is **stopped, never
+    removed**. The data lives in the container's volume, which only
+    deleting the application removes.
+  - **Static frontends don't count.** React and Vue are files served by
+    nginx and never scale to zero (FR-051). Counting them kept every
+    database awake; the first local run found this.
+  - **Waking.** Every container start wakes the database first, through
+    `WiringFor`: a cold start, a deployment, resume, restart, a health
+    replacement. So do backups, a restore, a password rotation and a dev
+    data copy. A database that won't wake fails the start rather than
+    starting the application without it.
+- **Failed applications that never ran are removed.** A sweeper (every
+  30 s) finds applications in Failed whose deployments never went live.
+  Such an application's first build or deployment failed, so it holds no
+  data. The sweeper:
+  - tells its owners why, and to deploy again under the same name;
+  - deletes the application (containers, database, secrets), acting as
+    its primary owner;
+  - frees the name.
+
+  An application that has run is never removed this way; its containers
+  and database simply stop and sleep, and its data stays. Neither is an
+  application with a dev copy, whose data is the employee's. A dev copy
+  that never ran is removed the same way, and the next dev deployment
+  makes it again at the same address.
+- **Deleting frees the name.** Every deleted application now keeps its
+  name as `former_name` and takes `deleted-<id hex>` (migration 0028), so
+  the name and its address can be used again.
+
+### Known gaps
+
+- **A cold start that has to wake the database is slower.** Locally it
+  took about 21 s: Docker Desktop took about 10 s to start the container
+  and MySQL about 4 s to accept connections. Waking only the API takes a
+  few seconds. The LAN host isn't measured yet.
+- **A Next.js frontend counts as using the database.** It is a Node
+  server, not files. So does any runtime the platform can't place, so a
+  database is never stopped under a live service.
+- **Listings show a deleted application's new name.** Reports and the
+  Dashboard show `deleted-…`; `former_name` has the name it had.
+
+### Verifying it
+
+```bash
+cd services/mcp-server
+.venv/Scripts/python.exe scripts/verify_db_memory.py
+```
+
+It runs through the real MCP server over stdio against the local stack.
+platform-api is restarted with a 60 s idle timeout, and with its defaults
+at the end. Results (2026-10-24):
+
+- **New database.** A new MySQL started with `performance_schema` off and
+  a 64 MB buffer pool, and used 128 MiB.
+- **Sleep and wake.** Once the API had been idle for the timeout, the
+  database was stopped (the container kept) and held no memory. Opening
+  the application woke it, and the first answer came in 9 s with the data
+  intact.
+- **A dev copy whose first build failed.** It was removed and its name
+  freed (`deleted-…`). Fixed, the next dev deployment made it again at
+  `<name>-dev`.
+- **An application whose first build failed.** It was removed within the
+  sweep, and its owner was told why and to deploy again under the same
+  name, which registered again. The MCP's error told Claude the same.
+- **An application with a dev copy whose production build failed.** It
+  was kept (Failed), not removed.
+- **Tuning an existing database, separately.** A database made by the
+  previous platform-api (no configuration, `performance_schema` on,
+  438 MB) was given the configuration when the new one started: 123 MB,
+  its item still there.
+
 ## How Alerts work (FR-092, DEC-028)
 
 Every 60 seconds (`ALERT_EVAL_INTERVAL_SECONDS`) platform-api judges each

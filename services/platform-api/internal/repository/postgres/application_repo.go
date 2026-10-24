@@ -110,6 +110,37 @@ func (r *ApplicationRepo) ReviseDeploymentYAML(ctx context.Context, id, yamlCont
 	return app, err
 }
 
+// ReleaseName frees a deleted application's name for a new application,
+// keeping it as former_name. "deleted-" and the id's hex is still a valid
+// application name, and can't be one anybody registers by accident.
+func (r *ApplicationRepo) ReleaseName(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE applications SET former_name = name, name = 'deleted-' || replace(id::text, '-', ''), updated_at = now()
+		WHERE id = $1 AND lifecycle_status = 'deleted' AND former_name IS NULL`, id)
+	if err != nil {
+		return fmt.Errorf("release the application's name: %w", err)
+	}
+	return nil
+}
+
+// ListFailed is every application in the Failed state.
+func (r *ApplicationRepo) ListFailed(ctx context.Context) ([]domain.Application, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+applicationColumns+` FROM applications WHERE lifecycle_status = 'failed'`)
+	if err != nil {
+		return nil, fmt.Errorf("list failed applications: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Application
+	for rows.Next() {
+		a, err := scanApplicationRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func (r *ApplicationRepo) UpdateDeploymentYAML(ctx context.Context, id, yamlContent string) (domain.Application, error) {
 	app, err := r.scanOne(ctx, `
 		UPDATE applications

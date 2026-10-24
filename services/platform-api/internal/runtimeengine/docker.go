@@ -360,6 +360,13 @@ func (r *DockerRuntime) StartDatabase(ctx context.Context, spec domain.DatabaseS
 	if err != nil {
 		return "", fmt.Errorf("create database container: %w", err)
 	}
+	if spec.Engine == "mysql" {
+		// Before its first start, so the server never runs with the defaults.
+		if err := r.writeMySQLConfig(ctx, created.ID); err != nil {
+			_ = r.Stop(ctx, created.ID)
+			return "", err
+		}
+	}
 	if err := r.cli.ContainerStart(ctx, created.ID, types.ContainerStartOptions{}); err != nil {
 		return "", fmt.Errorf("start database container: %w", err)
 	}
