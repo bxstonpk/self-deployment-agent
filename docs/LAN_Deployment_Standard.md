@@ -227,10 +227,11 @@ to the dev environment as leave-tracker"*. The skill makes Claude:
    **`check_project`** runs the platform's own dependency check. A library
    or stack outside the standard needs **`request_exception`**, decided by
    an administrator in the Portal's **Standards** page;
-3. to show a change before deploying it, **`preview_application`**: a
-   short-lived copy at its own address (`/<app>-preview-xxxx/`) with its
-   own empty database, removed after 24 hours (`PREVIEW_TTL_HOURS`); the
-   application and its data aren't touched. While writing it,
+3. **deploy to dev**: it goes to the application's dev copy (`/<app>-dev/`), its own
+   application and database, without approval; its data stays between deployments, and
+   Claude records any test data it adds itself (`record_test_data`). Claude then asks:
+   production, or keep changing? The first production deployment asks whether the dev
+   data is real and should go with it (the approver signs that choice). While writing it,
    **`run_tests`**: the platform runs the tests (Go,
    Python, Node), so the machine needs no toolchain. `deploy_application`
    runs them again on what it builds, builds only if they pass, and
@@ -300,7 +301,7 @@ frontend was served. See section 8.
 | The MCP server over real stdio: sign-in, deploy, rebuild, rollback, secrets, logs, metrics, delete | `services/mcp-server/scripts/e2e_verify.py` |
 | Development governance over real stdio: start, scaffold, a blocked library, an exception decided, the real build, no profile | `services/mcp-server/scripts/verify_governance.py` |
 | Tests run by the platform over real stdio: pass, fail, busy, tested deploy, the approver's report, source mismatch | `services/mcp-server/scripts/verify_test_runs.py` |
-| Previews over real stdio: their own database and address, the original untouched, replace, stop, expiry, archive | `services/mcp-server/scripts/verify_previews.py` |
+| Dev copies over real stdio: own database and address, no approval, data kept, Claude's test data, data into the first production as signed, reset, archive | `services/mcp-server/scripts/verify_dev_copies.py` |
 | Gateway routes, installers on Windows and Linux, a real Claude Code deploy | described in sections 4–5; run by hand for PR "LAN onboarding" |
 
 ## 9. สรุปภาษาไทย (Quick start)
@@ -322,7 +323,7 @@ frontend was served. See section 8.
 3. ตัวติดตั้งจะแสดงรหัสและลิงก์ ให้เปิดลิงก์ เข้าสู่ระบบด้วยบัญชีของตัวเอง (หรือสมัครด้วย enrollment code) ตรวจว่ารหัสตรงกัน แล้วกด **Approve**
 4. เครื่องจะได้ API key ของตัวเองเก็บไว้ในเครื่อง โดยไม่แสดงให้ใครเห็น
 
-**เริ่มแอปใหม่:** บอก Claude Code ว่าอยากสร้างแอปอะไร Claude จะอ่านมาตรฐาน (`get_standards`) แล้วถามว่าแอปทำอะไร ใครใช้ เก็บข้อมูลส่วนบุคคลหรือไม่ และใช้ภาษาอะไร จากนั้นลงทะเบียนแอปพร้อมข้อมูลเหล่านี้ (`start_project`) ซึ่งไม่ต้องรออนุมัติ แล้วสร้างโปรเจกต์จาก templates (`scaffold_project`) ระหว่างเขียนโค้ดจะใช้ `check_project` ตรวจกับกฎของบริษัท และใช้ `run_tests` ให้แพลตฟอร์มรันเทสให้ (เครื่องพนักงานไม่ต้องติดตั้ง Go, Node หรือ Python) ตอน deploy แพลตฟอร์มจะรันเทสอีกครั้งกับโค้ดที่จะ build จริง ถ้าเทสไม่ผ่านจะไม่ build และผู้อนุมัติจะเห็นรายงานเทสที่แพลตฟอร์มรันเอง ถ้าอยากลองหรือส่งให้คนอื่นดูก่อน deploy ใช้ `preview_application` จะได้ลิงก์ `/<ชื่อแอป>-preview-xxxx/` เป็นสำเนาชั่วคราวที่มีฐานข้อมูลว่างของตัวเอง (แอปจริงและข้อมูลจริงไม่ถูกแตะ) ลบเองอัตโนมัติใน 24 ชั่วโมง ไม่ต้องรออนุมัติ เว้นแต่ตั้งค่าให้ต้องอนุมัติ ถ้าต้องใช้ library หรือเทคโนโลยีนอกมาตรฐาน ต้องขอ exception (`request_exception`) แล้วรอผู้ดูแลระบบอนุมัติในหน้า **Standards** ของ Portal ก่อน ถ้า build เจอ library ที่บริษัทไม่อนุญาตโดยยังไม่ได้รับอนุมัติ build จะไม่ผ่าน
+**เริ่มแอปใหม่:** บอก Claude Code ว่าอยากสร้างแอปอะไร Claude จะอ่านมาตรฐาน (`get_standards`) แล้วถามว่าแอปทำอะไร ใครใช้ เก็บข้อมูลส่วนบุคคลหรือไม่ และใช้ภาษาอะไร จากนั้นลงทะเบียนแอปพร้อมข้อมูลเหล่านี้ (`start_project`) ซึ่งไม่ต้องรออนุมัติ แล้วสร้างโปรเจกต์จาก templates (`scaffold_project`) ระหว่างเขียนโค้ดจะใช้ `check_project` ตรวจกับกฎของบริษัท และใช้ `run_tests` ให้แพลตฟอร์มรันเทสให้ (เครื่องพนักงานไม่ต้องติดตั้ง Go, Node หรือ Python) ตอน deploy แพลตฟอร์มจะรันเทสอีกครั้งกับโค้ดที่จะ build จริง ถ้าเทสไม่ผ่านจะไม่ build และผู้อนุมัติจะเห็นรายงานเทสที่แพลตฟอร์มรันเอง ระหว่างพัฒนา การ deploy ไป dev จะขึ้นที่สำเนา dev ของแอป (`/<ชื่อแอป>-dev/`) ซึ่งมีฐานข้อมูลของตัวเอง ไม่ต้องรออนุมัติ และข้อมูลที่กรอกไว้ยังอยู่ทุกครั้งที่แก้แล้ว deploy ใหม่ ข้อมูลทดสอบที่ Claude ใส่เองจะถูกบันทึกไว้ ตอนขึ้น production ครั้งแรก Claude จะถามว่าข้อมูลใน dev เป็นข้อมูลจริงไหม ถ้าจริงจะย้ายไปด้วย (ผู้อนุมัติเห็นและเซ็นเรื่องนี้ด้วย) หลังจากนั้นข้อมูล production เป็นของ production เองและจะไม่ถูกทับ ถ้าต้องใช้ library หรือเทคโนโลยีนอกมาตรฐาน ต้องขอ exception (`request_exception`) แล้วรอผู้ดูแลระบบอนุมัติในหน้า **Standards** ของ Portal ก่อน ถ้า build เจอ library ที่บริษัทไม่อนุญาตโดยยังไม่ได้รับอนุมัติ build จะไม่ผ่าน
 
 **การ deploy:** เปิดโปรเจกต์ใน Claude Code แล้วสั่ง เช่น "deploy แอปนี้ขึ้น dev ชื่อ leave-tracker"
 

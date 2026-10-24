@@ -38,8 +38,8 @@ from .tools import (
     deployment,
     discovery,
     governance,
+    devcopy,
     lifecycle,
-    preview,
     notifications,
     observability,
     ownership,
@@ -80,7 +80,10 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "company standard: get_standards, then start_project (registers it "
             "with its profile), then scaffold_project (the company templates); "
             "check_project while writing it; request_exception before using "
-            "anything the standard doesn't allow."
+            "anything the standard doesn't allow. A dev deployment goes to the "
+            "application's dev copy (its own database and address, no approval): "
+            "after one, ask the employee whether to send it to production or keep "
+            "changing it, and record_test_data whenever you put data into it yourself."
         ),
     )
 
@@ -233,23 +236,22 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         )
 
     @mcp.tool()
-    async def preview_application(application_id: str, project_path: str, run_tests: bool = True) -> dict[str, Any]:
-        """Try the project on the platform without touching the running
-        application: a short-lived copy, "<name>-preview-xxxx", with its own
-        EMPTY database and its own url, deleted when it expires (24 hours by
-        default). The tests run first (run_tests=True). Never waits for
-        approval unless the platform is set to. Starting another replaces it."""
-        params = {"application_id": application_id, "project_path": project_path, "run_tests": run_tests}
-        return await _run_tool(
-            audit("preview_application", params, application_id),
-            preview.preview_application(client, application_id, project_path, run_tests),
-        )
+    async def record_test_data(application_id: str, note: str) -> dict[str, Any]:
+        """Record test data YOU (Claude) put into the dev copy's database —
+        test rows, sample records, anything not the employee's own — every
+        time you do it. note: what and roughly how much. It is kept with the
+        dev copy, so it is never taken for real data when the data goes to
+        production."""
+        params = {"application_id": application_id, "note": note}
+        return await _run_tool(audit("record_test_data", params, application_id),
+                               devcopy.record_test_data(client, application_id, note))
 
     @mcp.tool()
-    async def stop_preview(application_id: str) -> dict[str, Any]:
-        """Remove the application's preview now (its database with it)."""
+    async def reset_dev(application_id: str) -> dict[str, Any]:
+        """Remove the application's dev copy, its code and ALL its data. Only
+        when the employee asks for it. The next dev deployment makes a new one."""
         params = {"application_id": application_id}
-        return await _run_tool(audit("stop_preview", params, application_id), preview.stop_preview(client, application_id))
+        return await _run_tool(audit("reset_dev", params, application_id), devcopy.reset_dev(client, application_id))
 
     @mcp.tool()
     async def request_exception(application_id: str, kind: str, subject: str, reason: str) -> dict[str, Any]:
@@ -322,12 +324,18 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         review_document: str | None = None,
         run_tests: bool = True,
         test_run_id: str | None = None,
+        dev_data: str | None = None,
     ) -> dict[str, Any]:
         """Test, build (when source is given) and deploy. With source, the
         platform first runs every service's tests on it (run_tests=True, the
         default) and builds only if they pass; the deployment then carries
         the platform's own test report. Pass test_run_id instead to use a
-        passed run_tests result for the same files. Give the source as
+        passed run_tests result for the same files. target_environment "dev"
+        deploys to the application's dev copy, "<name>-dev" (its own database
+        and address, never waiting for approval). "production" is the
+        application itself: its first deployment asks for dev_data, "copy"
+        (take the dev copy's data, as the employee says it's real) or "leave"
+        — ask the employee, never decide it yourself. Give the source as
         project_path: the absolute path of the project folder on this machine,
         containing one sub-folder per service in deployment.yaml. It is packed
         here — dependencies, build output, .git and local secret files (.env,
@@ -349,6 +357,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "review_document_bytes": len(review_document or ""),
             "run_tests": run_tests,
             "test_run_id": test_run_id,
+            "dev_data": dev_data,
         }
         return await _run_tool(
             audit("deploy_application", params, application_id),
@@ -361,7 +370,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
                 source_archive_base64,
                 idempotency_key,
                 project_path,
-                test_report, review_document, run_tests, test_run_id,
+                test_report, review_document, run_tests, test_run_id, dev_data,
             ),
         )
 

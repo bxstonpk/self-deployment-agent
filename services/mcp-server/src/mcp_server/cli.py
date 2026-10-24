@@ -166,6 +166,9 @@ def _show(req: dict) -> None:
     print(f"Source:       {req.get('source_bytes', 0)} bytes, SHA-256 {source}" if source else "Source:       (not kept for this build)")
     doc = req.get("review_document") or ""
     print(f"REVIEW.md:    {len(doc.splitlines())} lines" if doc.strip() else "REVIEW.md:    (none attached)")
+    if req.get("dev_data"):
+        # Signed too: production's database is filled from the dev copy.
+        print(f"DATA:         {req['dev_data']}")
     print(f"To read every file first: company-deploy review {req['deployment_id']}")
 
 

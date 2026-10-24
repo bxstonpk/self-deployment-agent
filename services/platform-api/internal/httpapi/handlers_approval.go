@@ -64,6 +64,7 @@ func toApprovalRequest(r service.ApprovalRequest) map[string]any {
 		"decision":           r.Decision,
 		"scans":              scans,
 		"test_report":        r.Subject.TestReport,
+		"dev_data":           r.Subject.DevData,
 		"test_report_sha256": domain.TestReportSHA256(r.Subject.TestReport),
 		"review_document":    r.Subject.ReviewDocument,
 		"review_sha256":      domain.TestReportSHA256(r.Subject.ReviewDocument),

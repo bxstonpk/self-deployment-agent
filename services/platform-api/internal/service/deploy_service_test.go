@@ -135,6 +135,24 @@ func (f *fakeDeploymentRepo) LatestForApplication(ctx context.Context, applicati
 	return latest, nil
 }
 
+func (f *fakeDeploymentRepo) SetDevDataSource(ctx context.Context, deploymentID, fromApplicationID, summary string) (domain.Deployment, error) {
+	d := f.byID[deploymentID]
+	d.DevDataFrom, d.DevDataSummary = &fromApplicationID, summary
+	f.byID[deploymentID] = d
+	return d, nil
+}
+
+func (f *fakeDeploymentRepo) SetDevDataCopied(ctx context.Context, deploymentID, copyError string) (domain.Deployment, error) {
+	d := f.byID[deploymentID]
+	d.DevDataCopyError = copyError
+	if copyError == "" {
+		now := time.Now()
+		d.DevDataCopiedAt = &now
+	}
+	f.byID[deploymentID] = d
+	return d, nil
+}
+
 func (f *fakeDeploymentRepo) PreviousRunning(ctx context.Context, applicationID, excludeDeploymentID string) (domain.Deployment, error) {
 	for _, d := range f.byID {
 		if d.ApplicationID == applicationID && d.Status == domain.DeploymentRunning && d.ID != excludeDeploymentID {

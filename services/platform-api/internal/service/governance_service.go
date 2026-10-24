@@ -67,11 +67,11 @@ type GovernanceService struct {
 	// requireProfile makes a build refuse an application without a
 	// profile (GOVERNANCE_REQUIRE_PROFILE, on unless turned off).
 	requireProfile bool
-	previews       PreviewParents
+	devCopies      CopyParents
 }
 
-// SetPreviews makes a preview's build use its application's exceptions.
-func (s *GovernanceService) SetPreviews(p PreviewParents) { s.previews = p }
+// SetDevCopies makes a dev copy's build use its application's exceptions.
+func (s *GovernanceService) SetDevCopies(p CopyParents) { s.devCopies = p }
 
 func NewGovernanceService(repo GovernanceRepository, apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository,
 	stacks StackLister, admins GovernanceAdmins, notifier GovernanceNotifier, audit AuditRecorder, requireProfile bool) *GovernanceService {
@@ -348,9 +348,9 @@ func (s *GovernanceService) check(ctx context.Context, applicationID string, dep
 	if err != nil {
 		return nil, nil, err
 	}
-	// A preview builds what its application would: the same exceptions.
-	if s.previews != nil {
-		if parent, err := s.previews.ParentOf(ctx, applicationID); err != nil {
+	// A dev copy builds what its application would: the same exceptions.
+	if s.devCopies != nil {
+		if parent, err := s.devCopies.ParentOf(ctx, applicationID); err != nil {
 			return nil, nil, err
 		} else if parent != "" {
 			applicationID = parent

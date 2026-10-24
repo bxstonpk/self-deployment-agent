@@ -120,9 +120,6 @@ type Config struct {
 	TestRunTimeout    time.Duration
 	TestRunConcurrent int
 
-	// PreviewTTL is how long a preview lives (PREVIEW_TTL_HOURS).
-	PreviewTTL time.Duration
-
 	// AdminEmails are the platform administrators (PLATFORM_ADMIN_EMAILS):
 	// they receive platform-level alerts.
 	AdminEmails []string
@@ -231,8 +228,8 @@ func Load() (Config, error) {
 	approvalEnvs := []domain.Environment{}
 	for _, e := range getEnvList("APPROVAL_REQUIRED_ENVIRONMENTS", "production") {
 		env := domain.Environment(e)
-		if env != domain.EnvironmentDev && env != domain.EnvironmentProduction && env != domain.EnvironmentPreview {
-			return Config{}, fmt.Errorf("APPROVAL_REQUIRED_ENVIRONMENTS: %q is not an environment (dev, production, preview)", e)
+		if env != domain.EnvironmentDev && env != domain.EnvironmentProduction {
+			return Config{}, fmt.Errorf("APPROVAL_REQUIRED_ENVIRONMENTS: %q is not an environment (dev, production)", e)
 		}
 		approvalEnvs = append(approvalEnvs, env)
 	}
@@ -260,10 +257,6 @@ func Load() (Config, error) {
 	if err != nil || testRunConcurrent < 1 {
 		return Config{}, fmt.Errorf("TEST_RUN_CONCURRENT must be at least 1")
 	}
-	previewHours, err := strconv.Atoi(getEnv("PREVIEW_TTL_HOURS", "24"))
-	if err != nil || previewHours < 1 || previewHours > 24*14 {
-		return Config{}, fmt.Errorf("PREVIEW_TTL_HOURS must be a whole number of hours, 1 to 336")
-	}
 	port := getEnv("PORT", "8080")
 	return Config{
 		AdminEmails:                  getEnvList("PLATFORM_ADMIN_EMAILS", ""),
@@ -274,7 +267,6 @@ func Load() (Config, error) {
 		TestRunCPUs:                  testRunCPUs,
 		TestRunTimeout:               testRunTimeout,
 		TestRunConcurrent:            testRunConcurrent,
-		PreviewTTL:                   time.Duration(previewHours) * time.Hour,
 		Alerts:                       alerts,
 		AlertEvalInterval:            alertEval,
 		BackupEnabled:                getEnv("BACKUP_ENABLED", "true") != "false",

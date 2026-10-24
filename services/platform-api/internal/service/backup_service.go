@@ -493,6 +493,53 @@ func (s *BackupService) Restore(ctx context.Context, applicationID, backupID, re
 	return safety, nil
 }
 
+// HasDatabase says whether an application has a live database.
+func (s *BackupService) HasDatabase(ctx context.Context, applicationID string) (bool, error) {
+	if _, err := s.databases.GetLiveForApplication(ctx, applicationID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// CopyDatabase replaces to's database contents with from's: a dev copy's
+// data, taken into production (DEC-029 part 3). What it replaces is backed
+// up first, as before a restore.
+func (s *BackupService) CopyDatabase(ctx context.Context, fromApplicationID, toApplicationID, actorID string) error {
+	from, err := s.databases.GetLiveForApplication(ctx, fromApplicationID)
+	if err != nil {
+		return fmt.Errorf("the dev copy's database: %w", err)
+	}
+	to, err := s.databases.GetLiveForApplication(ctx, toApplicationID)
+	if err != nil {
+		return fmt.Errorf("production's database: %w", err)
+	}
+	if from.Engine != to.Engine {
+		return fmt.Errorf("the dev copy's database is %s and production's is %s", from.Engine, to.Engine)
+	}
+	fromSpec, err := s.spec(ctx, from)
+	if err != nil {
+		return err
+	}
+	toSpec, err := s.spec(ctx, to)
+	if err != nil {
+		return err
+	}
+	dump, err := s.runtime.DumpDatabase(ctx, from.ContainerID, fromSpec)
+	if err != nil {
+		return fmt.Errorf("read the dev copy's data: %w", err)
+	}
+	if _, err := s.take(ctx, to, domain.BackupFull, domain.BackupPreRestore, actorID); err != nil {
+		return fmt.Errorf("back up production's database before copying into it: %w", err)
+	}
+	if err := s.runtime.RestoreDatabase(ctx, to.ContainerID, toSpec, dump); err != nil {
+		return fmt.Errorf("copy the data into production: %w", err)
+	}
+	return nil
+}
+
 // PurgeApplication deletes every backup of a deleted application, along
 // with its database (FR-065: purge).
 func (s *BackupService) PurgeApplication(ctx context.Context, applicationID string) error {

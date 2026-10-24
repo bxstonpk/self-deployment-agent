@@ -193,21 +193,25 @@ func main() {
 		dockerEngine, auditService, service.TestLimits{MemoryBytes: int64(cfg.TestRunMemoryMB) << 20, CPUs: cfg.TestRunCPUs},
 		cfg.TestRunTimeout, cfg.TestRunConcurrent)
 	deployHandler.SetTestRuns(testRunService)
-	// Previews (DEC-029 part 3): short-lived copies of an application, each
-	// its own application, made of the same steps an owner's calls go through.
+	// Dev copies (DEC-029 part 3): each application's long-lived copy to try
+	// changes on, its own application, made of the same steps an owner's
+	// calls go through.
 	governanceRepo := postgres.NewGovernanceRepo(pool)
-	previewService := service.NewPreviewService(applicationRepo, ownerRepo, postgres.NewPreviewRepo(pool), service.PreviewSteps{
-		Register:   applicationService.Register,
-		Validate:   validationService.Validate,
-		Build:      buildService.TriggerBuild,
-		Deploy:     deployService.InitiateDeploy,
-		Archive:    lifecycleService.Archive,
-		Delete:     lifecycleService.Delete,
-		GetProfile: governanceRepo.GetProfile,
-		PutProfile: governanceRepo.PutProfile,
-	}, auditService, cfg.PreviewTTL)
-	deployService.SetPreviews(previewService)
-	governanceService.SetPreviews(previewService)
+	devCopyService := service.NewDevCopyService(applicationRepo, ownerRepo, postgres.NewDevCopyRepo(pool), service.DevCopySteps{
+		Register:     applicationService.Register,
+		SaveYAML:     validationService.SaveDeploymentYAML,
+		Validate:     validationService.Validate,
+		Build:        buildService.TriggerBuild,
+		Deploy:       deployService.InitiateDeploy,
+		Archive:      lifecycleService.Archive,
+		Delete:       lifecycleService.Delete,
+		GetProfile:   governanceRepo.GetProfile,
+		PutProfile:   governanceRepo.PutProfile,
+		HasDatabase:  backupService.HasDatabase,
+		CopyDatabase: backupService.CopyDatabase,
+	}, auditService)
+	deployService.SetDevCopies(devCopyService)
+	governanceService.SetDevCopies(devCopyService)
 	log.Printf("test runs: %d at a time, each service %d MB and %.1f CPUs, at most %s a run",
 		cfg.TestRunConcurrent, cfg.TestRunMemoryMB, cfg.TestRunCPUs, cfg.TestRunTimeout)
 	var approvalHandler *httpapi.ApprovalHandler
@@ -232,10 +236,15 @@ func main() {
 	adminService := service.NewAdminOverviewService(postgres.NewAdminRepo(pool), hostSampler, admins,
 		func() (float64, error) { return hostdisk.UsedPercent(cfg.BackupDir) }, cfg.MetricsSampleInterval)
 
+	policyHandler := httpapi.NewPolicyHandler(cfg.ApprovalEnvironments, cfg.ApproverKeys)
+	policyHandler.SetDevCopies(true)
+	proxyHandler := httpapi.NewProxyHandler(scaleService, trafficRecorder)
+	proxyHandler.SetDevCopies(devCopyService)
+
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,
 		Admin:              httpapi.NewAdminHandler(adminService, cfg.PublicBaseURL),
-		Policy:             httpapi.NewPolicyHandler(cfg.ApprovalEnvironments, cfg.ApproverKeys),
+		Policy:             policyHandler,
 		Applications:       httpapi.NewApplicationHandler(applicationService),
 		Departments:        httpapi.NewDepartmentHandler(departmentRepo),
 		Validation:         httpapi.NewValidationHandler(validationService),
@@ -243,7 +252,7 @@ func main() {
 		Builds:             httpapi.NewBuildHandler(buildService),
 		Deploys:            deployHandler,
 		ScaleEvents:        httpapi.NewScaleEventsHandler(deployService, scaleService),
-		Proxy:              httpapi.NewProxyHandler(scaleService, trafficRecorder),
+		Proxy:              proxyHandler,
 		Lifecycle:          httpapi.NewLifecycleHandler(lifecycleService, applicationRepo, cfg.PublicBaseURL),
 		Audit:              httpapi.NewAuditHandler(auditService),
 		Notifications:      httpapi.NewNotificationHandler(notificationService),
@@ -256,7 +265,7 @@ func main() {
 		Approvals:          approvalHandler,
 		Governance:         httpapi.NewGovernanceHandler(governanceService),
 		TestRuns:           httpapi.NewTestRunHandler(testRunService),
-		Previews:           httpapi.NewPreviewHandler(previewService, cfg.PublicBaseURL),
+		DevCopies:          httpapi.NewDevCopyHandler(devCopyService, cfg.PublicBaseURL),
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,
@@ -267,7 +276,7 @@ func main() {
 	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
 	go runHostSampler(ctx, hostSampler, 5*time.Second)
 	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)
-	go runPreviewSweeper(ctx, previewService, time.Minute)
+	go runDevCopySweeper(ctx, devCopyService, time.Minute)
 	if cfg.BackupEnabled {
 		go runBackupScheduler(ctx, backupService, cfg.BackupSweep)
 	} else {
@@ -378,10 +387,10 @@ func runBackupScheduler(ctx context.Context, backups *service.BackupService, int
 // runRetentionSweeper purges application logs past their retention
 // (DEC-027) once at startup and then every interval. Hourly is plenty for
 // a period measured in days.
-// runPreviewSweeper tears down previews that expired, or whose application
-// was archived or deleted.
-func runPreviewSweeper(ctx context.Context, previews *service.PreviewService, interval time.Duration) {
-	log.Printf("previews: checked every %s", interval)
+// runDevCopySweeper removes the dev copies of archived and deleted
+// applications.
+func runDevCopySweeper(ctx context.Context, copies *service.DevCopyService, interval time.Duration) {
+	log.Printf("dev copies: checked every %s", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -389,10 +398,10 @@ func runPreviewSweeper(ctx context.Context, previews *service.PreviewService, in
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if n, err := previews.Sweep(ctx); err != nil {
-				log.Printf("previews: %v", err)
+			if n, err := copies.Sweep(ctx); err != nil {
+				log.Printf("dev copies: %v", err)
 			} else if n > 0 {
-				log.Printf("previews: removed %d", n)
+				log.Printf("dev copies: removed %d", n)
 			}
 		}
 	}

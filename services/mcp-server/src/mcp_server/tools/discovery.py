@@ -38,6 +38,11 @@ def _approval_rules_summary(policy: dict[str, Any] | None) -> str:
         by = "an application owner's approval"
     others = [e for e in ("dev", "production") if e not in gated]
     rest = f" {', '.join(others)} deployments activate immediately." if others else ""
+    if policy.get("dev_copies"):
+        rest += (
+            " Through deploy_application, dev deployments go to the application's dev copy (<name>-dev, its own"
+            " database and address), which never waits for approval."
+        )
     return (
         f"Deployments to {', '.join(gated)} pause as pending_approval after the image scan passes "
         f"and wait for {by}, given outside the MCP. Waiting is normal, not a failure; always attach "

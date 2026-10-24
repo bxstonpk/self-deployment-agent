@@ -175,7 +175,7 @@ async def main() -> None:
             _check(
                 len(tool_names) == 34,
                 f"all 13 Section-13 tools, the 8 later-module tools (Modules W/X/AB/E), the 4 "
-                f"sign-in tools, the 6 governance tools, run_tests and the 2 preview tools "
+                f"sign-in tools, the 6 governance tools, run_tests and the 2 dev-copy tools "
                 f"discovered via MCP protocol: {tool_names}",
             )
             portal_session = await _sign_in_through_mcp(session)
@@ -246,6 +246,13 @@ async def main() -> None:
             )
             _check(deployed["status"] == "success" and deployed["data"]["status"] == "running", "v1 built and deployed via a single MCP call")
             v1_deployment_id = deployed["data"]["deployment_id"]
+            # Dev deployments go to the application's dev copy (DEC-029 part
+            # 3), its own application: what runs, and everything below, is
+            # the copy. Deploying with the copy's id deploys the copy too.
+            original_id, original_name = app_id, APP_NAME
+            app_id, app_name = deployed["data"]["dev_copy"]["application_id"], deployed["data"]["dev_copy"]["name"]
+            _check(app_name == f"{APP_NAME}-dev" and deployed["data"]["created"] is True,
+                   f"the first dev deployment made the dev copy {app_name}")
 
             status = _print_result(
                 "get_application_status", await session.call_tool("get_application_status", {"application_id": app_id})
@@ -418,7 +425,7 @@ async def main() -> None:
             # that does the counting.
             async with httpx.AsyncClient(timeout=30) as traffic_http:
                 for _ in range(3):
-                    await traffic_http.get(f"{PLATFORM_API_BASE_URL}/run/{APP_NAME}/api/")
+                    await traffic_http.get(f"{PLATFORM_API_BASE_URL}/run/{app_name}/api/")
             metrics_result = None
             for _ in range(20):  # the platform flushes what it counted on its own sampling interval
                 metrics_result = await session.call_tool(
@@ -518,7 +525,7 @@ async def main() -> None:
             deleted = _print_result(
                 "delete_application",
                 await session.call_tool(
-                    "delete_application", {"application_id": app_id, "confirmation": APP_NAME}
+                    "delete_application", {"application_id": app_id, "confirmation": app_name}
                 ),
             )
             _check(deleted["status"] == "success" and deleted["data"]["status"] == "DELETED", "delete_application succeeded (archived then deleted)")
@@ -529,6 +536,13 @@ async def main() -> None:
             )
             _check(final_status["data"]["current_lifecycle_state"] == "deleted", "application is terminally deleted")
             _check(final_status["data"]["secrets"] == [], "its secrets were purged with it - status lists none")
+
+            # The original, which never ran: deleted too, so the run leaves nothing.
+            gone = _print_result(
+                "delete_application (the original)",
+                await session.call_tool("delete_application", {"application_id": original_id, "confirmation": original_name}),
+            )
+            _check(gone["status"] == "success", "the original application, never deployed, deleted too")
 
     print("\nALL CHECKS PASSED")
 

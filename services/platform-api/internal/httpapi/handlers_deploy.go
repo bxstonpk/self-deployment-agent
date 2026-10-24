@@ -56,6 +56,9 @@ type deployRequest struct {
 	// build being deployed; its report becomes the deployment's, with any
 	// test_report given added after it as the requester's own notes.
 	TestRunID string `json:"test_run_id"`
+	// CopyDevData: a first production deployment takes its data from the
+	// dev copy, once it is live — part of what the approver signs.
+	CopyDevData bool `json:"copy_dev_data"`
 }
 
 type deploymentResponse struct {
@@ -74,6 +77,10 @@ type deploymentResponse struct {
 	CreatedAt         string                             `json:"created_at"`
 	UpdatedAt         string                             `json:"updated_at"`
 	CompletedAt       string                             `json:"completed_at,omitempty"`
+	// Dev data a first production deployment takes from the dev copy.
+	DevData          string `json:"dev_data,omitempty"`
+	DevDataCopiedAt  string `json:"dev_data_copied_at,omitempty"`
+	DevDataCopyError string `json:"dev_data_copy_error,omitempty"`
 }
 
 func toDeploymentResponse(d domain.Deployment, publicBaseURL, appName string) deploymentResponse {
@@ -93,6 +100,10 @@ func toDeploymentResponse(d domain.Deployment, publicBaseURL, appName string) de
 	}
 	if d.CompletedAt != nil {
 		resp.CompletedAt = d.CompletedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	resp.DevData, resp.DevDataCopyError = d.DevDataSummary, d.DevDataCopyError
+	if d.DevDataCopiedAt != nil {
+		resp.DevDataCopiedAt = d.DevDataCopiedAt.Format("2006-01-02T15:04:05Z07:00")
 	}
 	return resp
 }
@@ -165,6 +176,7 @@ func (h *DeployHandler) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := domain.WithReviewDocument(domain.WithTestReport(r.Context(), req.TestReport), req.ReviewDocument)
+	ctx = domain.WithDevDataRequest(ctx, domain.DevDataRequest{Copy: req.CopyDevData})
 	deployment, err := h.svc.InitiateDeploy(ctx, id, caller.ID, environment)
 	if err != nil {
 		writeDeployError(w, err)
@@ -286,8 +298,10 @@ func (h *DeployHandler) DecideApproval(w http.ResponseWriter, r *http.Request) {
 
 func writeDeployError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, domain.ErrPreviewOnlyEnvironment):
+	case errors.Is(err, domain.ErrDevCopyEnvironment), errors.Is(err, domain.ErrDevDataNotProduction):
 		writeError(w, http.StatusBadRequest, "invalid_environment", err.Error())
+	case errors.Is(err, domain.ErrDevDataNotFirst), errors.Is(err, domain.ErrDevDataNoDatabase):
+		writeError(w, http.StatusConflict, "dev_data_not_copyable", err.Error())
 	case errors.Is(err, domain.ErrReviewDocumentRequired):
 		writeError(w, http.StatusBadRequest, "review_document_required", err.Error())
 	// FR-067's exception flow surfaced, not swallowed: the application was

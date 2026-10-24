@@ -73,6 +73,9 @@ type ApprovalSubject struct {
 	// reviewed is what goes live.
 	SourceSHA256   string
 	ReviewDocument string
+	// DevData is set when the deployment takes its data from the dev copy:
+	// which copy, and what Claude reported about test data in it.
+	DevData string
 }
 
 func TestReportSHA256(report string) string {
@@ -109,6 +112,10 @@ func (s ApprovalSubject) SigningTemplate() string {
 	}
 	fmt.Fprintf(&b, "source-sha256: %s\n", source)
 	fmt.Fprintf(&b, "review-sha256: %s\n", TestReportSHA256(s.ReviewDocument))
+	// Only when it applies, so every other approval's text is unchanged.
+	if s.DevData != "" {
+		fmt.Fprintf(&b, "dev-data: %s\n", OneLine(s.DevData))
+	}
 	b.WriteString("decision: {decision}\nreason: {reason}\nsigned-at: {signed_at}\n")
 	return b.String()
 }

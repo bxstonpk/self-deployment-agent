@@ -70,8 +70,10 @@ works".
 | `list_exceptions` | `GET .../exceptions` | |
 | `run_tests` | `GET /applications/{id}`, `POST .../test-runs` | The platform runs every service's tests on the packed project (DEC-029 part 2); see `platform-api/README.md`'s "How tests run on the platform". Waits up to 900 s, since a run takes as long as its tests |
 
-| `preview_application` | `POST .../test-runs`, `POST .../preview` | DEC-029 part 3: tests, then a short-lived copy of the application at its own address with its own empty database; see `platform-api/README.md`'s "How previews work". Waits up to 900 s |
-| `stop_preview` | `DELETE .../preview` | |
+| `record_test_data` | `POST .../dev/test-data` | DEC-029 part 3: Claude's record of test data it put in the dev copy itself; see `platform-api/README.md`'s "How dev copies work" |
+| `reset_dev` | `DELETE .../dev` | Removes the dev copy, its code and data |
+
+`deploy_application` to `dev` goes to the application's dev copy (`POST .../dev`: its own application, database and address, no approval, so no REVIEW.md needed). To `production`, if there is a dev copy and production has never run, it stops until Claude asks the employee about the dev data and passes `dev_data` (`copy` or `leave`); `copy` becomes `copy_dev_data` on the deploy request.
 
 `deploy_application` with source now runs the tests on the platform first
 (`run_tests=True` by default), on exactly the bytes it then builds, and
@@ -491,8 +493,8 @@ specifically tests the HTTP-error-to-`ErrorCode` mapping logic using
 
 ### Real end-to-end verification
 
-`scripts/verify_previews.py` covers the preview tools; results in
-`platform-api/README.md`'s "How previews work".
+`scripts/verify_dev_copies.py` covers dev copies and their data; results in
+`platform-api/README.md`'s "How dev copies work".
 
 `scripts/verify_test_runs.py` covers `run_tests` and the tested deploy the
 same way; results in `platform-api/README.md`'s "How tests run on the
@@ -524,7 +526,7 @@ MCP stdio protocol (not calling Python functions directly):
 
 1. Confirms all 34 tools (13 from Section 13, the eight later-module
    tools for Modules W/X/AB/E, the four sign-in tools, the six
-   governance tools, `run_tests` and the two preview tools) are discovered via protocol-level `list_tools()`. Then signs in for real: a fresh
+   governance tools, `run_tests`, `record_test_data` and `reset_dev`) are discovered via protocol-level `list_tools()`. Then signs in for real: a fresh
    machine is refused every platform tool, `login` returns a code, the
    employee approves it with their own session, `complete_login` stores
    the key, and the key appears nowhere in anything the agent saw.
@@ -533,7 +535,9 @@ MCP stdio protocol (not calling Python functions directly):
 3. (Removed 2026-10-24: it checked that an unknown department was
    refused, which stopped being true when departments became open-ended;
    an unknown one is created now, covered by the unit tests.)
-4. `create_application` (real), then `get_standards` and `start_project`
+4. (Since dev copies, a dev deployment goes to `<name>-dev`, and the checks
+   from there on are of that copy; the original is deleted at the end.)
+   `create_application` (real), then `get_standards` and `start_project`
    with the new `application_id` (a build needs a profile), then
    `validate_application` (real, `passed: true`) for a real Go "hello
    world" service.

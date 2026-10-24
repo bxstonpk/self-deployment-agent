@@ -155,7 +155,10 @@ async def main() -> None:
                 _check(failed["status"] == "error" and DRIVER in failed["error"]["message"]
                        and "request_exception" in failed["error"]["message"],
                        "the real build fails on it, naming the library and what to do")
-                _, build = call(BASE, "GET", f"/applications/{app_id}/builds/latest", token=owner)
+                # Dev deployments build on the application's dev copy.
+                _, devc = call(BASE, "GET", f"/applications/{app_id}/dev", token=owner)
+                copy_id = (devc.get("dev_copy") or {}).get("application_id")
+                _, build = call(BASE, "GET", f"/applications/{copy_id}/builds/latest", token=owner)
                 _check(build.get("status") == "failed" and build.get("error_category") == "source",
                        f"…as the source's problem ({build.get('status')}, {build.get('error_category')})")
 
@@ -198,8 +201,10 @@ async def main() -> None:
                                                                "project_path": str(project)})
                 _check(refused["status"] == "error" and "start_project" in refused["error"]["message"],
                        "an application with no profile can't be built, and the error says what to do")
-                status, _ = call(BASE, "GET", f"/applications/{bare_id}/builds/latest", token=owner)
-                _check(status == 404, f"…and no build was attempted ({status})")
+                _, devc = call(BASE, "GET", f"/applications/{bare_id}/dev", token=owner)
+                bare_copy = (devc.get("dev_copy") or {}).get("application_id")
+                status, _ = call(BASE, "GET", f"/applications/{bare_copy}/builds/latest", token=owner)
+                _check(bare_copy and status == 404, f"…and no build was attempted ({status})")
     finally:
         for app_id in apps:
             call(BASE, "POST", f"/applications/{app_id}/archive", {}, token=owner)

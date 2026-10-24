@@ -36,7 +36,8 @@ async def test_deploy_application_no_successful_build_and_no_source_gives_action
     client = FakePlatformClient()
     idem = IdempotencyStore(ttl_seconds=60)
 
-    async def fail_deploy(application_id, environment, test_report=None, review_document=None, test_run_id=None):
+    async def fail_deploy(application_id, environment, test_report=None, review_document=None, test_run_id=None,
+                          copy_dev_data=False):
         raise ToolError(ErrorCode.VALIDATION_ERROR, "application has no successful build to deploy", platform_code="no_successful_build")
 
     client.deploy_application = fail_deploy  # type: ignore[method-assign]
