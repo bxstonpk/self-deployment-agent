@@ -147,6 +147,11 @@ their machine (`DEC-017`).
    - the test report, the scans and the text you'll sign.
 
    `company-deploy approve <id>` then signs (or `--reject --reason`).
+
+   Or do all of it in the Admin Portal's **Approvals** page: read
+   REVIEW.md and every file there, then pick the key file and type its
+   passphrase to sign. The key is used in the browser tab only and never
+   uploaded.
    A deployment that waits for approval without a `REVIEW.md` is refused
    before anything is built.
 

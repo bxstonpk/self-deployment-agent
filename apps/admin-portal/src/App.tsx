@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Navigate, Route, Routes, Link, NavLink, useLocation } from "react-router-dom";
 import { useIdentity } from "./context/IdentityContext";
-import { getMe, listNotifications } from "./api/client";
+import { getMe, listNotifications, listPendingApprovals } from "./api/client";
 import { SignIn } from "./pages/SignIn";
 import { Register } from "./pages/Register";
 import { DeviceApproval } from "./pages/DeviceApproval";
@@ -14,6 +14,10 @@ import { Notifications } from "./pages/Notifications";
 import { Reports } from "./pages/Reports";
 import { Dashboard } from "./pages/Dashboard";
 import { Departments } from "./pages/Departments";
+import { Approvals } from "./pages/Approvals";
+// Loaded when opened: it carries the markdown renderer and the signing code,
+// which nobody else needs.
+const ApprovalDetail = lazy(() => import("./pages/ApprovalDetail").then((m) => ({ default: m.ApprovalDetail })));
 import "./App.css";
 
 // Polled rather than pushed — there's no websocket/SSE channel anywhere in
@@ -42,13 +46,19 @@ function Layout({ children }: { children: React.ReactNode }) {
   // someone else never shows the previous account's menu.
   const [adminSession, setAdminSession] = useState<string | null>(null);
   const isAdmin = identity !== null && adminSession === identity.token;
+  // Same idea for approvers (PLATFORM_APPROVER_KEYS): the Approvals menu.
+  const [approverSession, setApproverSession] = useState<string | null>(null);
+  const isApprover = identity !== null && approverSession === identity.token;
+  const [pendingApprovals, setPendingApprovals] = useState(0);
 
   useEffect(() => {
     if (!identity) return;
     let cancelled = false;
     getMe(identity)
       .then((me) => {
-        if (!cancelled) setAdminSession(me.is_admin ? identity.token : null);
+        if (cancelled) return;
+        setAdminSession(me.is_admin ? identity.token : null);
+        setApproverSession(me.is_approver ? identity.token : null);
       })
       .catch(() => {
         // No menu entry is the safe answer when we can't tell.
@@ -78,6 +88,26 @@ function Layout({ children }: { children: React.ReactNode }) {
     };
   }, [identity]);
 
+  useEffect(() => {
+    if (!identity || !isApprover) return;
+    let cancelled = false;
+    const poll = () => {
+      listPendingApprovals(identity)
+        .then((d) => {
+          if (!cancelled) setPendingApprovals(d.pending.length);
+        })
+        .catch(() => {
+          // a stale badge isn't worth an error banner
+        });
+    };
+    poll();
+    const interval = setInterval(poll, UNREAD_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [identity, isApprover]);
+
   // Signed out: the sign-in and register pages sit alone on the brand
   // background, with no navigation to offer yet.
   if (!identity) {
@@ -104,6 +134,15 @@ function Layout({ children }: { children: React.ReactNode }) {
           </Link>
         </div>
         <nav className="side-nav">
+          {isApprover && (
+            <NavLink to="/approvals" className="nav-link">
+              <NavIcon d={ICONS.approvals} />
+              <span>
+                Approvals
+                {pendingApprovals > 0 && <span className="unread-count-badge">{pendingApprovals}</span>}
+              </span>
+            </NavLink>
+          )}
           {isAdmin && (
             <NavLink to="/dashboard" className="nav-link">
               <NavIcon d={ICONS.dashboard} />
@@ -167,6 +206,7 @@ function BrandMark() {
 
 const ICONS = {
   dashboard: "M3 12h4l3-8 4 16 3-8h4",
+  approvals: "M9 12l2 2 4-4M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z",
   departments: "M3 21h18M5 21V7l7-4 7 4v14M9 9h1M14 9h1M9 13h1M14 13h1M9 17h6",
   applications: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
   notifications: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0",
@@ -189,6 +229,24 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/applications" replace />} />
         <Route path="/sign-in" element={<SignIn />} />
+        <Route
+          path="/approvals"
+          element={
+            <RequireIdentity>
+              <Approvals />
+            </RequireIdentity>
+          }
+        />
+        <Route
+          path="/approvals/:deploymentId"
+          element={
+            <RequireIdentity>
+              <Suspense fallback={<p className="hint">Loading…</p>}>
+                <ApprovalDetail />
+              </Suspense>
+            </RequireIdentity>
+          }
+        />
         <Route
           path="/departments"
           element={

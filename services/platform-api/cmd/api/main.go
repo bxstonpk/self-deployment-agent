@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 	// BACKUP_TIMEZONE needs the zone database, and the runtime image
@@ -24,13 +25,13 @@ import (
 	"platform-api/internal/db"
 	"platform-api/internal/hostdisk"
 	"platform-api/internal/hostinfo"
-	"platform-api/internal/sourcestore"
 	"platform-api/internal/httpapi"
 	"platform-api/internal/imagescan"
 	"platform-api/internal/repository/postgres"
 	"platform-api/internal/runtimeengine"
 	"platform-api/internal/secretbox"
 	"platform-api/internal/service"
+	"platform-api/internal/sourcestore"
 )
 
 func main() {
@@ -161,7 +162,14 @@ func main() {
 		policy.APIKeyMaxTTL = cfg.APIKeyMaxTTL
 		authService := service.NewAuthService(postgres.NewAuthRepo(pool), userRepo, departmentRepo, auditService, policy)
 		authenticator = httpapi.NewTokenAuthenticator(authService)
-		authHandler = httpapi.NewAuthHandler(authService, cfg.PortalURL, admins.IsAdmin)
+		authHandler = httpapi.NewAuthHandler(authService, cfg.PortalURL, admins.IsAdmin, func(email string) bool {
+			for _, k := range cfg.ApproverKeys {
+				if strings.EqualFold(k.Email, email) {
+					return true
+				}
+			}
+			return false
+		})
 		log.Printf("auth: token mode — sessions %s, API keys %s (max %s), devices approved at %s/device",
 			cfg.SessionTTL, cfg.APIKeyTTL, cfg.APIKeyMaxTTL, cfg.PortalURL)
 	}
