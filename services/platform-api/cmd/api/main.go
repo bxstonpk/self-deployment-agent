@@ -97,6 +97,9 @@ func main() {
 	log.Printf("secret store: sealing with key %s", secretBox.KeyID())
 	secretService := service.NewSecretService(applicationRepo, ownerRepo, secretRepo, secretBox, auditService)
 	databaseService := service.NewDatabaseService(databaseRepo, runtime, secretService)
+	// Databases sleep when their application does, and wake when it's needed
+	// (the platform owner, 2026-10-24).
+	databaseService.SetSleeper(runtime, applicationRepo, cfg.ScaleToZeroIdleTimeout)
 	// FR-063's at-rest half for databases provisioned before Module O
 	// existed, whose passwords were stored in plaintext. Fatal on failure:
 	// starting anyway would leave them there.
@@ -119,6 +122,7 @@ func main() {
 	resources.SetBackups(backupService)
 	notificationService := service.NewNotificationService(notificationRepo, ownerRepo)
 	backupService.SetNotifier(notificationService)
+	backupService.SetWaker(databaseService.Wake)
 	admins := service.NewEmailAdminDirectory(userRepo, cfg.AdminEmails)
 	alertRepo := postgres.NewAlertRepo(pool)
 	alertService := service.NewAlertService(alertRepo, applicationRepo, ownerRepo, notificationService, admins,
@@ -197,7 +201,8 @@ func main() {
 	// changes on, its own application, made of the same steps an owner's
 	// calls go through.
 	governanceRepo := postgres.NewGovernanceRepo(pool)
-	devCopyService := service.NewDevCopyService(applicationRepo, ownerRepo, postgres.NewDevCopyRepo(pool), service.DevCopySteps{
+	devCopyRepo := postgres.NewDevCopyRepo(pool)
+	devCopyService := service.NewDevCopyService(applicationRepo, ownerRepo, devCopyRepo, service.DevCopySteps{
 		Register:     applicationService.Register,
 		SaveYAML:     validationService.SaveDeploymentYAML,
 		Validate:     validationService.Validate,
@@ -277,6 +282,21 @@ func main() {
 	go runHostSampler(ctx, hostSampler, 5*time.Second)
 	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)
 	go runDevCopySweeper(ctx, devCopyService, time.Minute)
+	// Failed applications that never ran are removed, their names freed.
+	failedCleanup := service.NewFailedCleanupService(applicationRepo, service.FailedCleanupLookups{
+		Deployments: deploymentRepo, Builds: buildRepo, Owners: ownerRepo, DevCopy: devCopyRepo.Live, Apps: applicationRepo,
+	}, lifecycleService.Delete, notificationService, auditService)
+	go runEvery(ctx, "failed cleanup", 30*time.Second, failedCleanup.Sweep, "removed %d application(s) that never ran")
+	go runEvery(ctx, "databases", cfg.ScaleSweepInterval, func(ctx context.Context) (int, error) {
+		return databaseService.SleepIdle(ctx, time.Now())
+	}, "put %d idle database(s) to sleep")
+	go func() {
+		if n, err := databaseService.TuneAll(ctx); err != nil {
+			log.Printf("databases: %v", err)
+		} else if n > 0 {
+			log.Printf("databases: gave %d existing MySQL database(s) the platform's configuration", n)
+		}
+	}()
 	if cfg.BackupEnabled {
 		go runBackupScheduler(ctx, backupService, cfg.BackupSweep)
 	} else {
@@ -387,6 +407,25 @@ func runBackupScheduler(ctx context.Context, backups *service.BackupService, int
 // runRetentionSweeper purges application logs past their retention
 // (DEC-027) once at startup and then every interval. Hourly is plenty for
 // a period measured in days.
+// runEvery runs one sweep every interval until the platform stops,
+// logging what it did.
+func runEvery(ctx context.Context, name string, interval time.Duration, sweep func(context.Context) (int, error), did string) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := sweep(ctx); err != nil {
+				log.Printf("%s: %v", name, err)
+			} else if n > 0 {
+				log.Printf("%s: "+did, name, n)
+			}
+		}
+	}
+}
+
 // runDevCopySweeper removes the dev copies of archived and deleted
 // applications.
 func runDevCopySweeper(ctx context.Context, copies *service.DevCopyService, interval time.Duration) {

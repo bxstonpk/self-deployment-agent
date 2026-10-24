@@ -99,6 +99,8 @@ type DatabaseService struct {
 	repo    ProvisionedDatabaseRepository
 	runtime DatabaseRuntime
 	secrets DatabaseSecretStore
+	// sleep: databases stop when their application does (database_sleep.go).
+	sleep *databaseSleep
 }
 
 func NewDatabaseService(repo ProvisionedDatabaseRepository, runtime DatabaseRuntime, secrets DatabaseSecretStore) *DatabaseService {
@@ -270,6 +272,11 @@ type RuntimeWiring struct {
 // start rather than handing the application a connection string that
 // won't authenticate.
 func (s *DatabaseService) WiringFor(ctx context.Context, applicationID string) (RuntimeWiring, error) {
+	// Every start path comes here first: a database asleep with its
+	// application wakes before the application starts.
+	if err := s.Wake(ctx, applicationID); err != nil {
+		return RuntimeWiring{}, err
+	}
 	db, err := s.repo.GetLiveForApplication(ctx, applicationID)
 	if errors.Is(err, domain.ErrDatabaseNotProvisioned) {
 		return RuntimeWiring{}, nil
@@ -352,6 +359,9 @@ func (s *DatabaseService) MigrateLegacyPlaintextPasswords(ctx context.Context) (
 // that instance is restarted — which RotationService does straight
 // afterwards.
 func (s *DatabaseService) RotatePassword(ctx context.Context, applicationID string) error {
+	if err := s.Wake(ctx, applicationID); err != nil {
+		return err
+	}
 	db, err := s.repo.GetLiveForApplication(ctx, applicationID)
 	if err != nil {
 		return err

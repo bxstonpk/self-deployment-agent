@@ -286,7 +286,14 @@ frontend was served. See section 8.
   differentials Monday to Saturday, the previous week's deleted once a new
   full succeeds) are kept in the `platform-backups` volume on that same
   host. Copy the volume, and separately `PLATFORM_SECRET_KEY`, off the host.
-- Resource quotas (Module M) are not enforced.
+- Resource quotas (Module M) are not enforced. To save memory, MySQL runs
+  with a small configuration (`performance_schema` off, a 64 MB buffer
+  pool), and a database sleeps (stopped, its data kept) while its
+  application's API is scaled to zero, waking on the next request. That
+  request is slower, by the time the database takes to start.
+- An application whose first build or deployment fails, so that it never
+  ran, is removed and its name freed; its owner is told to deploy again
+  under the same name.
 - Deploys run synchronously: the call returns when the deploy finishes.
 - Machines need PyPI (or a mirror) to install the MCP server's
   dependencies. The gateway serves the MCP server itself, not its

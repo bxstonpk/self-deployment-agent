@@ -16,6 +16,14 @@ from ..source_packer import PackError, pack_project
 from ..idempotency import IdempotencyConflict, IdempotencyStore
 from ..platform_client import PlatformClient
 
+# What happens to an application whose first build or deployment fails
+# (the platform owner, 2026-10-24).
+_NEVER_RAN_NOTE = (
+    " If this application has never run successfully, the platform removes it within a minute and frees its "
+    "name: tell the employee, fix the problem, then start it again under the same name (start_project) and "
+    "deploy. Nothing of it was ever live, so no data is lost."
+)
+
 _NO_BUILD_MESSAGE = (
     "no successful build exists for this application, and no source was given to "
     "build one. Pass project_path — the absolute path of the project folder on this "
@@ -119,7 +127,11 @@ async def _deploy_dev_copy(
     if build.get("status") == "failed":
         detail = (build.get("error_detail") or "no detail").removeprefix("build failed: ")
         code = ErrorCode.VALIDATION_ERROR if build.get("error_category") == "source" else ErrorCode.INTERNAL_ERROR
-        raise ToolError(code, f"the dev copy didn't build (its running version and data are as they were): {detail}")
+        raise ToolError(code, (
+            f"the dev copy didn't build: {detail}. If the dev copy has run before, its running version and data "
+            "are as they were. If it never ran, the platform removes it within a minute; deploying to dev again "
+            "makes a new one at the same address."
+        ))
     data: dict[str, Any] = {
         "application_id": application_id,
         "environment": "dev",
@@ -278,8 +290,8 @@ async def deploy_application(
                 # FR-038: a source-category failure (compiler/dependency
                 # error) is the employee's/agent's problem to fix, not the
                 # platform's — VALIDATION_ERROR, not INTERNAL_ERROR.
-                raise ToolError(ErrorCode.VALIDATION_ERROR, f"build failed: {detail}")
-            raise ToolError(ErrorCode.INTERNAL_ERROR, f"build failed (platform-side): {detail}")
+                raise ToolError(ErrorCode.VALIDATION_ERROR, f"build failed: {detail}." + _NEVER_RAN_NOTE)
+            raise ToolError(ErrorCode.INTERNAL_ERROR, f"build failed (platform-side): {detail}." + _NEVER_RAN_NOTE)
 
     try:
         deployment = await client.deploy_application(

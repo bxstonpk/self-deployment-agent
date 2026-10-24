@@ -564,6 +564,15 @@ Whenever a call returns `VALIDATION_ERROR`, `UNSUPPORTED_STACK`, or
 
 ## Handling failures and rollback
 
+**An application that fails before it ever ran is removed.** If its first
+build or deployment fails (nothing of it was ever live, so there is no
+data), the platform removes it within a minute, frees its name, and tells
+the owners. Tell the employee plainly, fix the problem, then start it again
+under the **same name** (`start_project`, then `scaffold_project` or a
+deployment). A dev copy that never ran is replaced the same way: just
+deploy to dev again, at the same address. An application that has run is
+never removed this way: its data is kept.
+
 If a build fails, a deploy fails mid-pipeline, or a post-deploy health
 check fails:
 

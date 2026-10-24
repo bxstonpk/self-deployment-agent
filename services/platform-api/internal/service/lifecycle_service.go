@@ -455,7 +455,23 @@ func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterI
 		return domain.Application{}, fmt.Errorf("delete: failed to deprovision the application's database: %w", err)
 	}
 
-	return s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, domain.StatusDeleted, false)
+	deleted, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, domain.StatusDeleted, false)
+	if err != nil {
+		return deleted, err
+	}
+	// Its name is free for a new application (the platform owner,
+	// 2026-10-24): an owner deploying again uses the same name and address.
+	if r, ok := s.apps.(nameReleaser); ok {
+		if err := r.ReleaseName(ctx, app.ID); err != nil {
+			log.Printf("delete: %s is deleted but its name wasn't freed: %v", app.Name, err)
+		}
+	}
+	return deleted, nil
+}
+
+// nameReleaser frees a deleted application's name (ApplicationRepo).
+type nameReleaser interface {
+	ReleaseName(ctx context.Context, id string) error
 }
 
 // requireNothingLive is the guard on Delete's second route: no deployment
