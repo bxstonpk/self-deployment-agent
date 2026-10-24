@@ -223,7 +223,9 @@ to the dev environment as leave-tracker"*. The skill makes Claude:
    whether it handles personal data, and which API language; then
    **`start_project`** (registers it with that profile and the standard
    `deployment.yaml`; nobody approves a start) and **`scaffold_project`**
-   (the templates, `REVIEW.md` to fill in). While writing it,
+   (the templates, `REVIEW.md` to fill in), which also deploys it to dev
+   straight away and gives you the link: the platform is where you see
+   your application, like a PaaS, never a local file. While writing it,
    **`check_project`** runs the platform's own dependency check. A library
    or stack outside the standard needs **`request_exception`**, decided by
    an administrator in the Portal's **Standards** page;
@@ -323,7 +325,7 @@ frontend was served. See section 8.
 3. ตัวติดตั้งจะแสดงรหัสและลิงก์ ให้เปิดลิงก์ เข้าสู่ระบบด้วยบัญชีของตัวเอง (หรือสมัครด้วย enrollment code) ตรวจว่ารหัสตรงกัน แล้วกด **Approve**
 4. เครื่องจะได้ API key ของตัวเองเก็บไว้ในเครื่อง โดยไม่แสดงให้ใครเห็น
 
-**เริ่มแอปใหม่:** บอก Claude Code ว่าอยากสร้างแอปอะไร Claude จะอ่านมาตรฐาน (`get_standards`) แล้วถามว่าแอปทำอะไร ใครใช้ เก็บข้อมูลส่วนบุคคลหรือไม่ และใช้ภาษาอะไร จากนั้นลงทะเบียนแอปพร้อมข้อมูลเหล่านี้ (`start_project`) ซึ่งไม่ต้องรออนุมัติ แล้วสร้างโปรเจกต์จาก templates (`scaffold_project`) ระหว่างเขียนโค้ดจะใช้ `check_project` ตรวจกับกฎของบริษัท และใช้ `run_tests` ให้แพลตฟอร์มรันเทสให้ (เครื่องพนักงานไม่ต้องติดตั้ง Go, Node หรือ Python) ตอน deploy แพลตฟอร์มจะรันเทสอีกครั้งกับโค้ดที่จะ build จริง ถ้าเทสไม่ผ่านจะไม่ build และผู้อนุมัติจะเห็นรายงานเทสที่แพลตฟอร์มรันเอง ระหว่างพัฒนา การ deploy ไป dev จะขึ้นที่สำเนา dev ของแอป (`/<ชื่อแอป>-dev/`) ซึ่งมีฐานข้อมูลของตัวเอง ไม่ต้องรออนุมัติ และข้อมูลที่กรอกไว้ยังอยู่ทุกครั้งที่แก้แล้ว deploy ใหม่ ข้อมูลทดสอบที่ Claude ใส่เองจะถูกบันทึกไว้ ตอนขึ้น production ครั้งแรก Claude จะถามว่าข้อมูลใน dev เป็นข้อมูลจริงไหม ถ้าจริงจะย้ายไปด้วย (ผู้อนุมัติเห็นและเซ็นเรื่องนี้ด้วย) หลังจากนั้นข้อมูล production เป็นของ production เองและจะไม่ถูกทับ ถ้าต้องใช้ library หรือเทคโนโลยีนอกมาตรฐาน ต้องขอ exception (`request_exception`) แล้วรอผู้ดูแลระบบอนุมัติในหน้า **Standards** ของ Portal ก่อน ถ้า build เจอ library ที่บริษัทไม่อนุญาตโดยยังไม่ได้รับอนุมัติ build จะไม่ผ่าน
+**เริ่มแอปใหม่:** บอก Claude Code ว่าอยากสร้างแอปอะไร Claude จะอ่านมาตรฐาน (`get_standards`) แล้วถามว่าแอปทำอะไร ใครใช้ เก็บข้อมูลส่วนบุคคลหรือไม่ และใช้ภาษาอะไร จากนั้นลงทะเบียนแอปพร้อมข้อมูลเหล่านี้ (`start_project`) ซึ่งไม่ต้องรออนุมัติ แล้วสร้างโปรเจกต์จาก templates (`scaffold_project`) ซึ่งจะ deploy ขึ้น dev ให้ทันทีและส่งลิงก์มาให้เปิดดูได้เลย (เหมือนมี server ของตัวเอง ไม่ต้องเปิดไฟล์ในเครื่อง) แก้อะไรก็ deploy dev ใหม่ ได้ลิงก์เดิม ระหว่างเขียนโค้ดจะใช้ `check_project` ตรวจกับกฎของบริษัท และใช้ `run_tests` ให้แพลตฟอร์มรันเทสให้ (เครื่องพนักงานไม่ต้องติดตั้ง Go, Node หรือ Python) ตอน deploy แพลตฟอร์มจะรันเทสอีกครั้งกับโค้ดที่จะ build จริง ถ้าเทสไม่ผ่านจะไม่ build และผู้อนุมัติจะเห็นรายงานเทสที่แพลตฟอร์มรันเอง ระหว่างพัฒนา การ deploy ไป dev จะขึ้นที่สำเนา dev ของแอป (`/<ชื่อแอป>-dev/`) ซึ่งมีฐานข้อมูลของตัวเอง ไม่ต้องรออนุมัติ และข้อมูลที่กรอกไว้ยังอยู่ทุกครั้งที่แก้แล้ว deploy ใหม่ ข้อมูลทดสอบที่ Claude ใส่เองจะถูกบันทึกไว้ ตอนขึ้น production ครั้งแรก Claude จะถามว่าข้อมูลใน dev เป็นข้อมูลจริงไหม ถ้าจริงจะย้ายไปด้วย (ผู้อนุมัติเห็นและเซ็นเรื่องนี้ด้วย) หลังจากนั้นข้อมูล production เป็นของ production เองและจะไม่ถูกทับ ถ้าต้องใช้ library หรือเทคโนโลยีนอกมาตรฐาน ต้องขอ exception (`request_exception`) แล้วรอผู้ดูแลระบบอนุมัติในหน้า **Standards** ของ Portal ก่อน ถ้า build เจอ library ที่บริษัทไม่อนุญาตโดยยังไม่ได้รับอนุมัติ build จะไม่ผ่าน
 
 **การ deploy:** เปิดโปรเจกต์ใน Claude Code แล้วสั่ง เช่น "deploy แอปนี้ขึ้น dev ชื่อ leave-tracker"
 

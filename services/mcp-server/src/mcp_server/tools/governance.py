@@ -205,6 +205,7 @@ def _runtimes(deployment_yaml: str) -> tuple[str, str]:
 
 async def scaffold_project(
     client: PlatformClient, application_id: str, project_path: str, templates: Path | None = None,
+    deploy: bool = True, idempotency: IdempotencyStore | None = None,
 ) -> dict[str, Any]:
     templates = templates or templates_dir()
     if not templates.is_dir():
@@ -243,17 +244,39 @@ async def scaffold_project(
         (project / "STANDARD.md").write_text((templates / "README.md").read_text(encoding="utf-8"), encoding="utf-8")
 
     files = sorted(str(p.relative_to(project)).replace(os.sep, "/") for p in project.rglob("*") if p.is_file())
-    return success({
+    data: dict[str, Any] = {
         "application_id": application_id,
         "project_path": str(project),
         "frontend": frontend,
         "api": api,
         "files": files,
         "next": (
-            "Replace the template's example endpoints (GET/POST /items) with the application's own, keep "
-            "the conventions in STANDARD.md, and fill in REVIEW.md as you go. Run check_project before deploying."
+            "Build the application from here: replace the template's example endpoints (GET/POST /items) with "
+            "its own, keep the conventions in STANDARD.md, fill in REVIEW.md as you go. After each change, "
+            "deploy_application to dev and give the employee the url again: that is how they see it."
         ),
-    })
+    }
+    # Like a PaaS: the new application is up at once, at its dev address,
+    # for the employee to open.
+    if deploy:
+        from . import deployment  # here, to keep the modules' import order simple
+
+        try:
+            dev = await deployment.deploy_application(
+                client, idempotency or IdempotencyStore(60), application_id, "dev", project_path=str(project),
+            )
+        except ToolError as exc:
+            data["dev"] = {"deployed": False, "error": exc.message}
+            data["tell_the_employee"] = (
+                "The project is ready, but its first dev deployment failed: " + exc.message
+            )
+        else:
+            d = dev.get("data") or {}
+            data["dev"] = {"deployed": True, "url": d.get("url"), "status": d.get("status"),
+                           "dev_copy": d.get("dev_copy")}
+            data["url"] = d.get("url")
+            data["tell_the_employee"] = d.get("tell_the_employee")
+    return success(data)
 
 
 async def check_project(client: PlatformClient, application_id: str, project_path: str) -> dict[str, Any]:

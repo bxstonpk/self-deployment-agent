@@ -80,10 +80,11 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "company standard: get_standards, then start_project (registers it "
             "with its profile), then scaffold_project (the company templates); "
             "check_project while writing it; request_exception before using "
-            "anything the standard doesn't allow. A dev deployment goes to the "
-            "application's dev copy (its own database and address, no approval): "
-            "after one, ask the employee whether to send it to production or keep "
-            "changing it, and record_test_data whenever you put data into it yourself."
+            "anything the standard doesn't allow. The platform is the employee's "
+            "server: show an application by deploying it to dev (its dev copy, "
+            "own database and address, no approval) and giving them the url, "
+            "after every change; never a local file or local dev server. "
+            "record_test_data whenever you put data into it yourself."
         ),
     )
 
@@ -197,15 +198,18 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         )
 
     @mcp.tool()
-    async def scaffold_project(application_id: str, project_path: str) -> dict[str, Any]:
+    async def scaffold_project(application_id: str, project_path: str, deploy: bool = True) -> dict[str, Any]:
         """Create the project folder from the company templates for this
         application's stack: frontend/, api/, deployment.yaml, REVIEW.md to
         fill in, STANDARD.md with the conventions. project_path is an
-        absolute path to a new or empty folder; nothing is overwritten."""
-        params = {"application_id": application_id, "project_path": project_path}
+        absolute path to a new or empty folder; nothing is overwritten. Then
+        (deploy=True) it deploys it to dev at once and returns the url: give
+        it to the employee straight away, it's how they see their
+        application (never a local file or a local dev server)."""
+        params = {"application_id": application_id, "project_path": project_path, "deploy": deploy}
         return await _run_tool(
             audit("scaffold_project", params, application_id),
-            governance.scaffold_project(client, application_id, project_path),
+            governance.scaffold_project(client, application_id, project_path, deploy=deploy, idempotency=idempotency),
         )
 
     @mcp.tool()
@@ -325,14 +329,16 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         project_path: str | None = None,
         test_report: str | None = None,
         review_document: str | None = None,
-        run_tests: bool = True,
+        run_tests: bool | None = None,
         test_run_id: str | None = None,
         dev_data: str | None = None,
     ) -> dict[str, Any]:
-        """Test, build (when source is given) and deploy. With source, the
-        platform first runs every service's tests on it (run_tests=True, the
-        default) and builds only if they pass; the deployment then carries
-        the platform's own test report. Pass test_run_id instead to use a
+        """Build (when source is given) and deploy. To production, the
+        platform first runs every service's tests on the source and builds
+        only if they pass; the deployment then carries the platform's own
+        test report. To dev (the employee's running application to look at,
+        redeployed after every change), the tests run only with
+        run_tests=True. Pass test_run_id instead to use a
         passed run_tests result for the same files. target_environment "dev"
         deploys to the application's dev copy, "<name>-dev" (its own database
         and address, never waiting for approval). "production" is the

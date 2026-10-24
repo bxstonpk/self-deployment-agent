@@ -10,8 +10,9 @@ APPROVAL_REQUIRED_ENVIRONMENTS=dev,production (as on the LAN server), and
 restarted without them at the end. Don't run it alongside another script
 that restarts platform-api. Checks:
 
-  - a dev deployment goes to "<name>-dev", its own application, without
-    waiting for approval even with dev gated; its pages carry the DEV banner
+  - scaffold_project puts a new application up on dev at once and returns
+    the link: "<name>-dev", its own application, without waiting for
+    approval even with dev gated; its pages carry the DEV banner
   - its data stays across the next dev deployment (same address)
   - record_test_data keeps Claude's note with the copy
   - the first production deployment asks about the dev data (naming
@@ -149,19 +150,20 @@ async def main() -> None:
                                                            "handles_personal_data": False, "api_runtime": "go"})
                 app_id = started["data"]["application_id"]
                 project = tmp / name
-                await _tool(s, "scaffold_project", {"application_id": app_id, "project_path": str(project)})
-                await _tool(s, "validate_application", {"application_id": app_id})
-
+                # Like a PaaS: the new application is up at its dev address
+                # as soon as it's made, with a link to give the employee.
                 t0 = time.time()
-                dev = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "dev",
-                                                           "project_path": str(project)})
+                dev = await _tool(s, "scaffold_project", {"application_id": app_id, "project_path": str(project)})
                 d = dev.get("data") or {}
-                copy = d.get("dev_copy") or {}
-                _check(dev["status"] == "success" and d.get("status") == "running" and copy.get("name") == f"{name}-dev"
-                       and d.get("url", "").endswith(f"/{name}-dev/"),
-                       f"dev went to {copy.get('name')}, running without approval though dev is gated ({time.time() - t0:.0f}s)")
-                _check("you_must_ask_the_employee" in d and "production" in d["you_must_ask_the_employee"],
-                       "the result tells Claude to ask: production, or keep changing")
+                copy = (d.get("dev") or {}).get("dev_copy") or {}
+                _check(dev["status"] == "success" and (d.get("dev") or {}).get("status") == "running"
+                       and copy.get("name") == f"{name}-dev" and (d.get("url") or "").endswith(f"/{name}-dev/"),
+                       f"scaffold_project put it up on dev at once, without approval though dev is gated, and returned "
+                       f"the link ({time.time() - t0:.0f}s)")
+                _check("Give the employee the url now" in (d.get("tell_the_employee") or "")
+                       and "don't push it" in d["tell_the_employee"],
+                       "the result tells Claude to give the link now, production only when asked")
+                await _tool(s, "validate_application", {"application_id": app_id})
                 status, _ = call(BASE, "GET", f"/applications/{app_id}/deployments/latest", token=owner)
                 _check(status == 404, "the application itself has no deployment")
 

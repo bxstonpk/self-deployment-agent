@@ -133,12 +133,12 @@ async def _deploy_dev_copy(
             "waiting for approval. Its data stays between deployments. Its pages carry a DEV banner. The "
             "application itself (production) is untouched."
         ),
-        "you_must_ask_the_employee": (
-            "Give the employee the url, and say plainly that it is the DEV copy for trying the application, not "
-            "the live one. Then ASK which they want, and wait for the answer: (1) send it to production (it "
-            "waits for the approver; you will be asked about the dev data first), or (2) keep changing it "
-            "(deploy to dev again; the data stays). If you put any data into it yourself to test, call "
-            "record_test_data now."
+        "tell_the_employee": (
+            "Give the employee the url now: this is their application running, the way to see and use it (not a "
+            "local file or a local dev server). It is the dev copy, for trying; it stays, with its data, and "
+            "after each change you deploy to dev again and it's at the same url. Production is a separate step "
+            "they ask for when they're ready; mention that once, don't push it. If you put any data into it "
+            "yourself to test, call record_test_data now."
         ),
     }
     if test_run_id:
@@ -172,7 +172,7 @@ async def deploy_application(
     project_path: str | None = None,
     test_report: str | None = None,
     review_document: str | None = None,
-    run_tests: bool = True,
+    run_tests: bool | None = None,
     test_run_id: str | None = None,
     dev_data: str | None = None,
 ) -> dict[str, Any]:
@@ -214,6 +214,11 @@ async def deploy_application(
     # its own database and address, never waiting for approval.
     policy = await client.get_policy()
     to_dev_copy = target_environment == "dev" and bool((policy or {}).get("dev_copies"))
+    # Dev is the employee's running application to look at, redeployed after
+    # every change: fast, so the tests run only when asked (the build still
+    # compiles everything). Production always runs them, unless told not to.
+    if run_tests is None:
+        run_tests = not to_dev_copy
     if dev_data not in (None, "copy", "leave"):
         raise ToolError(ErrorCode.VALIDATION_ERROR, 'dev_data is "copy" or "leave"')
     copy_dev_data = False
