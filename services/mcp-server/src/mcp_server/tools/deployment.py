@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from ..review import ReviewError, read_review_document
 from ..envelope import ErrorCode, ToolError, pending_approval, success
 from ..source_packer import PackError, pack_project
 from ..idempotency import IdempotencyConflict, IdempotencyStore
@@ -57,6 +58,16 @@ def _primary_url(urls: dict[str, str]) -> str | None:
     return next(iter(urls.values()), None)
 
 
+_NO_REVIEW_MESSAGE = (
+    "deployments to {env} wait for the approver, who reviews every file before signing — write a REVIEW.md "
+    "in the project root first, then deploy again. It must cover: what the application does and who uses it; "
+    "the workflow (how a request moves through frontend, API and database); the structure, with the path and "
+    "purpose of every file you wrote or changed; the data it stores (tables, columns); anything it calls outside "
+    "itself; the configuration and secret NAMES it reads (never values); and what changed since the last "
+    "deployment. Nothing was built."
+)
+
+
 async def deploy_application(
     client: PlatformClient,
     idempotency: IdempotencyStore,
@@ -67,6 +78,7 @@ async def deploy_application(
     idempotency_key: str | None = None,
     project_path: str | None = None,
     test_report: str | None = None,
+    review_document: str | None = None,
 ) -> dict[str, Any]:
     # version_reference is accepted for shape-compliance with Section 13.6
     # but not enforced: this Platform API always deploys the application's
@@ -101,6 +113,20 @@ async def deploy_application(
         if cached is not None:
             return cached
 
+    # REVIEW.md: required for an environment that waits for approval, and
+    # checked before building so a missing one costs nothing.
+    if project_path:
+        try:
+            found = read_review_document(project_path)
+        except ReviewError as exc:
+            raise ToolError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
+        review_document = found or review_document
+    if not (review_document or "").strip():
+        policy = await client.get_policy()
+        gated = (policy or {}).get("approval_required_environments", ["production"]) if policy is not None else ["production"]
+        if target_environment in gated:
+            raise ToolError(ErrorCode.VALIDATION_ERROR, _NO_REVIEW_MESSAGE.format(env=target_environment))
+
     source_bytes: bytes | None = None
     packed: dict[str, Any] | None = None
     if project_path:
@@ -129,7 +155,7 @@ async def deploy_application(
             raise ToolError(ErrorCode.INTERNAL_ERROR, f"build failed (platform-side): {detail}")
 
     try:
-        deployment = await client.deploy_application(application_id, target_environment, test_report)
+        deployment = await client.deploy_application(application_id, target_environment, test_report, review_document)
     except ToolError as exc:
         if exc.platform_code == "no_successful_build":
             raise ToolError(ErrorCode.VALIDATION_ERROR, _NO_BUILD_MESSAGE) from exc

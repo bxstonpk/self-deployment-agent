@@ -248,6 +248,35 @@ employee's responsibility. If tests fail or none exist, say so clearly and
 ask the employee how to proceed rather than deploying untested code
 silently, or silently skipping this step.
 
+### 7b. Write REVIEW.md, for the approver
+
+If `target_environment` is in `get_platform_info`'s
+`approval_required_environments`, the approver reads **every file** of
+the build before signing. Alongside them they read a `REVIEW.md` that
+you write. Copy `templates/REVIEW.md` to the project root as `REVIEW.md`
+(not inside a service folder) and fill in every section from the code as
+it actually is:
+- what the application does and who uses it;
+- the workflow, i.e. how a request moves from the page through the API to
+  the database, naming the files and functions;
+- the structure, with the **path and purpose of every file** you wrote or
+  changed;
+- the data it stores (tables, columns, any personal data);
+- anything it calls outside itself;
+- the configuration and secret **names** it reads, never their values;
+- **what changed in this deployment**;
+- the tests run;
+- the risks the approver should know about.
+
+Write it in Thai unless the employee asks otherwise. Update it on every
+deployment; a stale REVIEW.md misleads the person signing it. Show it to
+the employee before deploying.
+
+`deploy_application` reads it from `project_path` and sends it. Its
+SHA-256, and the source archive's, are part of what the approver signs.
+Without it, a deployment to a gated environment is refused **before
+anything is built**, with a `VALIDATION_ERROR` saying what's missing.
+
 ### 8. Deploy
 
 **First, check the secrets it needs.** If Step 1 found the application

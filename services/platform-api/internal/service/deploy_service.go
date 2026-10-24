@@ -217,6 +217,11 @@ func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, r
 	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
 		return domain.Deployment{}, err
 	}
+	// Checked before anything is created: an approver must have something
+	// to read, and a requester finds out now rather than after the scan.
+	if s.requiresApproval(environment) && strings.TrimSpace(domain.ReviewDocumentFrom(ctx)) == "" {
+		return domain.Deployment{}, domain.ErrReviewDocumentRequired
+	}
 
 	build, err := s.builds.LatestForApplication(ctx, applicationID)
 	if err != nil {
@@ -289,8 +294,8 @@ func (s *DeploymentService) runScanThenBeyond(ctx context.Context, app domain.Ap
 		// FR-108: recipients are every active owner, standing in for "the
 		// designated approver(s)" — see NotifyOwners's doc comment for why.
 		s.notifications.NotifyOwners(ctx, app.ID, domain.NotificationApprovalRequest,
-			fmt.Sprintf("%s: production deployment awaiting approval", app.Name),
-			fmt.Sprintf("Deployment %s is awaiting production approval.", deployment.ID),
+			fmt.Sprintf("%s: %s deployment awaiting approval", app.Name, deployment.Environment),
+			fmt.Sprintf("Deployment %s to %s is awaiting approval.", deployment.ID, deployment.Environment),
 			"deployment", deployment.ID)
 		if s.notifyApprovers != nil {
 			s.notifyApprovers(ctx, app, deployment)

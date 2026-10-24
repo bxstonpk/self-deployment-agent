@@ -110,3 +110,23 @@ async def test_deploy_application_rejects_both_kinds_of_source_and_unsaved_yaml(
     with pytest.raises(ToolError) as exc:
         await deployment.deploy_application(client, idem, app["id"], "dev", project_path=str(_project()))
     assert "validate_application" in exc.value.message
+
+
+async def test_deploy_application_sends_the_projects_review_md_to_the_approver():
+    client = FakePlatformClient()
+    client.policy = {"approval_required_environments": ["dev", "production"], "signed_approval": True, "approvers": []}
+    idem = IdempotencyStore(ttl_seconds=60)
+    app = await client.register_application("leave", "desc", "dept-eng")
+    await client.save_deployment_yaml(
+        app["id"],
+        "app:\n  name: leave\n  owner: IT\nservices:\n  frontend:\n    runtime: react\n  api:\n    runtime: python\n    port: 8080\n",
+    )
+    root = _project()
+    (root / "review.md").write_text("# leave\n\n## Structure\n- api/app.py: the HTTP server\n", encoding="utf-8")
+
+    result = await deployment.deploy_application(client, idem, app["id"], "dev", project_path=str(root))
+
+    assert result["status"] == "success"
+    assert client.last_review_document.startswith("# leave")
+    names = _names([c for c in client.calls if c[0] == "trigger_build"][0][1][1])
+    assert "review.md" not in names, "REVIEW.md goes to the approver, not into an image"

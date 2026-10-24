@@ -27,7 +27,7 @@ async def test_deploy_application_production_is_pending_approval_not_an_error():
     client = FakePlatformClient()
     idem = IdempotencyStore(ttl_seconds=60)
     app = await _registered_app(client)
-    result = await deployment.deploy_application(client, idem, app["id"], "production")
+    result = await deployment.deploy_application(client, idem, app["id"], "production", review_document="# overtime\n")
     assert result["status"] == "success"  # PENDING_APPROVAL is Section 8's "not a failure"
     assert result["data"]["mcp_status"] == "PENDING_APPROVAL"
 
@@ -36,7 +36,7 @@ async def test_deploy_application_no_successful_build_and_no_source_gives_action
     client = FakePlatformClient()
     idem = IdempotencyStore(ttl_seconds=60)
 
-    async def fail_deploy(application_id, environment, test_report=None):
+    async def fail_deploy(application_id, environment, test_report=None, review_document=None):
         raise ToolError(ErrorCode.VALIDATION_ERROR, "application has no successful build to deploy", platform_code="no_successful_build")
 
     client.deploy_application = fail_deploy  # type: ignore[method-assign]
@@ -258,3 +258,16 @@ async def test_status_reports_active_alerts_to_an_owner():
     status = await deployment.get_application_status(client, app["id"])
     assert status["data"]["active_alerts"] == [{"service": "api", "rule": "error_rate", "level": "critical",
                                                 "message": "30% failed", "started_at": "2026-10-23T03:00:00Z"}]
+
+
+async def test_deploy_to_a_gated_environment_without_review_md_is_refused_before_building(tmp_path):
+    client = FakePlatformClient()
+    idem = IdempotencyStore(ttl_seconds=60)
+    app = await client.register_application("overtime", "desc", "dept-eng")
+    (tmp_path / "api").mkdir()
+    (tmp_path / "api" / "main.go").write_text("package main\n")
+    with pytest.raises(ToolError) as exc_info:
+        await deployment.deploy_application(client, idem, app["id"], "production", project_path=str(tmp_path))
+    assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
+    assert "REVIEW.md" in exc_info.value.message and "path and purpose of every file" in exc_info.value.message
+    assert not any(c[0] in ("trigger_build", "deploy_application") for c in client.calls), "nothing may be built"

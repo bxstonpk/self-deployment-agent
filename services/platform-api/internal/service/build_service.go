@@ -66,6 +66,7 @@ type BuildService struct {
 	baseImages BaseImageRepository
 	engine     BuildEngine
 	audit      AuditRecorder
+	sources    SourceSaver
 }
 
 func NewBuildService(apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository, baseImages BaseImageRepository, engine BuildEngine, audit AuditRecorder) *BuildService {
@@ -195,9 +196,21 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 		return domain.Build{}, err
 	}
 
-	imageRefs, buildErr := s.engine.Build(ctx, BuildEngineRequest{
-		BuildID: build.ID, ApplicationName: app.Name, Services: specs, SourceArchive: sourceArchive,
-	})
+	// Kept first, so an approver can always read exactly what was built.
+	// Not being able to keep it fails the build (a platform problem): a
+	// deployment nobody can review mustn't wait for someone to approve it.
+	var imageRefs map[string]string
+	var buildErr error
+	if s.sources != nil {
+		if err := s.sources.Save(app.ID, build.ID, sourceArchive); err != nil {
+			buildErr = fmt.Errorf("keep the source for review: %w", err)
+		}
+	}
+	if buildErr == nil {
+		imageRefs, buildErr = s.engine.Build(ctx, BuildEngineRequest{
+			BuildID: build.ID, ApplicationName: app.Name, Services: specs, SourceArchive: sourceArchive,
+		})
+	}
 	if buildErr != nil {
 		category := domain.ErrorCategoryPlatform
 		var bf *domain.BuildFailure
@@ -249,6 +262,15 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 	}
 	return build, nil
 }
+
+// SourceSaver keeps a build's source archive (internal/sourcestore).
+type SourceSaver interface {
+	Save(applicationID, buildID string, archive []byte) error
+}
+
+// SetSourceStore makes every build keep its source for the approver.
+// Optional, so tests that don't care keep working unchanged.
+func (s *BuildService) SetSourceStore(store SourceSaver) { s.sources = store }
 
 func (s *BuildService) LatestBuild(ctx context.Context, applicationID string) (domain.Build, error) {
 	return s.builds.LatestForApplication(ctx, applicationID)

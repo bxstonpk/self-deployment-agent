@@ -66,7 +66,7 @@ stdio, and a real Claude Code session. Each claim is backed by a script
 | Logs and metrics | Every line an application prints, with secrets redacted, kept 90 days. CPU, memory, requests, errors and latency are measured by the platform itself. | Modules S, T |
 | Alerts | Error rate, latency, CPU, memory and host disk against `DEC-028`'s thresholds. In-app delivery: owners get application alerts, administrators get platform alerts. | platform-api: How Alerts work |
 | Authentication | Passwords, Portal sessions, and per-machine API keys from a device approval. A key can't mint keys or approve devices. Only hashes are stored. | platform-api: How authentication works |
-| Signed approval | Production waits for the administrator's Ed25519 signature over the exact deployment, images and test report | platform-api: How signed approvals work |
+| Signed approval | Deployments to the gated environments (production; dev too on the company host) wait for the administrator's Ed25519 signature over the exact deployment, images, source archive, test report and the requester's REVIEW.md. `company-deploy review` downloads every file first. | platform-api: How signed approvals work |
 | Audit, notifications, reports | A hash-chained, append-only audit log; an in-app inbox; inventory and deployment-activity reports | Modules W, X, AB |
 | Ownership | Co-owners and contributors; a primary-ownership transfer the new owner must accept | Module E |
 | MCP server | 25 tools: sign-in, discovery, lifecycle, deploy from a project folder (`.env` files and keys never uploaded), status with per-service URLs and active alerts, logs, metrics, audit, ownership | `services/mcp-server` |

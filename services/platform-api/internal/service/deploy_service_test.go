@@ -320,7 +320,7 @@ func TestInitiateDeploy_Production_PausesForApproval(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
 	svc, lifecycle, _, runtime, _, _ := newDeployService(app, build, "owner-1")
 
-	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
+	d, err := svc.InitiateDeploy(reviewed(), "app-1", "owner-1", domain.EnvironmentProduction)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestDecideApproval_Approved_ContinuesToRunning(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
 	svc, lifecycle, _, runtime, _, _ := newDeployService(app, build, "owner-1")
 
-	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
+	d, err := svc.InitiateDeploy(reviewed(), "app-1", "owner-1", domain.EnvironmentProduction)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestDecideApproval_Rejected_MarksFailedWithReason(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
 	svc, lifecycle, _, runtime, _, _ := newDeployService(app, build, "owner-1")
 
-	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
+	d, err := svc.InitiateDeploy(reviewed(), "app-1", "owner-1", domain.EnvironmentProduction)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestDecideApproval_Rejected_NotifiesOwnersOfDeploymentStatus(t *testing.T) 
 	app, build := builtApp("app-1", "overtime")
 	svc, _, notifications := newDeployServiceWithNotifications(app, build, "owner-1")
 
-	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
+	d, err := svc.InitiateDeploy(reviewed(), "app-1", "owner-1", domain.EnvironmentProduction)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestInitiateDeploy_AlreadyInFlight_Rejected(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
 	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
 
-	if _, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction); err != nil {
+	if _, err := svc.InitiateDeploy(reviewed(), "app-1", "owner-1", domain.EnvironmentProduction); err != nil {
 		t.Fatalf("setup: %v", err) // leaves a pending_approval deployment in flight
 	}
 
@@ -902,7 +902,7 @@ func TestInitiateDeploy_Production_NotifiesOwnersOfApprovalRequest(t *testing.T)
 	app, build := builtApp("app-1", "overtime")
 	svc, _, notifications := newDeployServiceWithNotifications(app, build, "owner-1")
 
-	d, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
+	d, err := svc.InitiateDeploy(reviewed(), "app-1", "owner-1", domain.EnvironmentProduction)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1092,5 +1092,36 @@ func TestTriggerAutomaticRollback_ApplicationNotRunning_Rejected(t *testing.T) {
 	_, err := svc.TriggerAutomaticRollback(context.Background(), "app-1", "reason")
 	if !errors.Is(err, domain.ErrInvalidLifecycleTransition) {
 		t.Fatalf("expected ErrInvalidLifecycleTransition, got %v", err)
+	}
+}
+
+// reviewed is a request context carrying a REVIEW.md, as every deploy to an
+// environment that waits for approval must.
+func reviewed() context.Context {
+	return domain.WithReviewDocument(context.Background(), "# leave: workflow, structure, paths, what changed")
+}
+
+func TestInitiateDeploy_GatedEnvironmentWithoutReviewDocument_RefusedBeforeAnythingHappens(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, _, runtime, _, _ := newDeployService(app, build, "owner-1")
+	_, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentProduction)
+	if !errors.Is(err, domain.ErrReviewDocumentRequired) {
+		t.Fatalf("expected ErrReviewDocumentRequired, got %v", err)
+	}
+	if len(runtime.started) != 0 {
+		t.Fatalf("nothing may start without a review document, started %v", runtime.started)
+	}
+	// Whitespace isn't a review.
+	_, err = svc.InitiateDeploy(domain.WithReviewDocument(context.Background(), " \t\n "), "app-1", "owner-1", domain.EnvironmentProduction)
+	if !errors.Is(err, domain.ErrReviewDocumentRequired) {
+		t.Fatalf("a blank review document must be refused too, got %v", err)
+	}
+}
+
+func TestInitiateDeploy_UngatedEnvironmentNeedsNoReviewDocument(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, _, _, _, _ := newDeployService(app, build, "owner-1")
+	if _, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev); err != nil {
+		t.Fatalf("dev isn't gated by default, so no review document is needed: %v", err)
 	}
 }

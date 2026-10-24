@@ -1812,6 +1812,21 @@ deleting the application leaves no container behind.
 
 ## How signed approvals work (DEC-017)
 
+### Review before approval (2026-10-24)
+
+The platform owner reviews every file before anything goes up:
+- **The source is kept.** Every build's source archive is kept exactly as uploaded, in `SOURCE_DIR` (the `platform-sources` volume, `<application>/<build>.tar.gz`, readable only by platform-api). It is deleted with its application.
+- **A REVIEW.md is required.** A deployment to an environment that waits for approval needs a `review_document`. The MCP server sends the project's `REVIEW.md`, which the skill has Claude write from `templates/REVIEW.md`: workflow, structure with every file's path, data, external calls, configuration names, what changed, tests and risks. Without one the deployment is refused before anything is built. The MCP server checks against `GET /policy`, and the API checks again.
+- **Both are signed.** The signed text (now `v2`) adds `source-sha256` (of the kept archive) and `review-sha256`. Whatever the approver reviewed is what goes live: a different archive or document means a different text, so the signature doesn't verify.
+- **The approver gets everything.** `GET /approvals/{id}/source` (approvers only) serves the archive. `company-deploy review <id>` downloads it, refuses it unless its SHA-256 matches, and extracts it into a folder alongside `REVIEW.md`, the test report, the scans and the signing template. Extraction refuses absolute paths, `..` and links.
+
+Verified on the local stack, with dev gated and a throwaway approver key, using the real MCP tools and CLI:
+- a dev deploy without `REVIEW.md` was refused with no build recorded;
+- with one, it returned `PENDING_APPROVAL`;
+- `review` laid out the 11 built files (SHA-256 verified) and the same `REVIEW.md`;
+- `approve` signed, and the application answered at `/<app>/api/`;
+- deleting the application left nothing in its source folder.
+
 The platform owner decided that deployments needing approval (production)
 are approved by the platform administrator, who holds the private key. The
 platform only ever has the public key:
@@ -1823,6 +1838,7 @@ company-deploy approver keygen         # passphrase-encrypted Ed25519 key; print
 PLATFORM_APPROVER_KEYS=admin@sti-th.com=ed25519:<base64>
 # whenever a deployment waits
 company-deploy approvals               # what's waiting
+company-deploy review <deployment>     # the exact source, REVIEW.md, tests, scans, the text to sign — in one folder
 company-deploy approve <deployment>    # shows images, scan results and the test report; signs
 company-deploy approve <deployment> --reject --reason "run the integration tests"
 ```

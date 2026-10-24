@@ -36,6 +36,10 @@ type deployRequest struct {
 	// TestReport is what the requester tells the approver about the tests
 	// they ran: shown to the approver and bound into what they sign.
 	TestReport string `json:"test_report"`
+	// ReviewDocument is the requester's REVIEW.md — workflow, structure,
+	// paths, what changed — required for an environment that waits for
+	// approval, shown to the approver and bound into what they sign.
+	ReviewDocument string `json:"review_document"`
 }
 
 type deploymentResponse struct {
@@ -108,7 +112,11 @@ func (h *DeployHandler) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "test_report_too_large", domain.ErrTestReportTooLarge.Error())
 		return
 	}
-	ctx := domain.WithTestReport(r.Context(), req.TestReport)
+	if len(req.ReviewDocument) > domain.MaxReviewDocumentBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "review_document_too_large", domain.ErrReviewDocumentTooLarge.Error())
+		return
+	}
+	ctx := domain.WithReviewDocument(domain.WithTestReport(r.Context(), req.TestReport), req.ReviewDocument)
 	deployment, err := h.svc.InitiateDeploy(ctx, id, caller.ID, environment)
 	if err != nil {
 		writeDeployError(w, err)
@@ -230,6 +238,8 @@ func (h *DeployHandler) DecideApproval(w http.ResponseWriter, r *http.Request) {
 
 func writeDeployError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, domain.ErrReviewDocumentRequired):
+		writeError(w, http.StatusBadRequest, "review_document_required", err.Error())
 	// FR-067's exception flow surfaced, not swallowed: the application was
 	// deliberately not started without its secrets, and the owner should be
 	// told why. The message names the secret and the cause (e.g. a changed

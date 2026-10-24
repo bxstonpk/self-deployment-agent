@@ -21,16 +21,16 @@ func NewDeploymentApprovalRepo(pool *pgxpool.Pool) *DeploymentApprovalRepo {
 }
 
 const approvalColumns = `id, deployment_id, requested_by, decided_by, decision, reason, created_at, decided_at,
-	test_report, signer_fingerprint, signed_at`
+	test_report, review_document, signer_fingerprint, signed_at`
 
 // Create records a deployment awaiting approval, with the test report the
 // request carried (domain.WithTestReport), if any.
 func (r *DeploymentApprovalRepo) Create(ctx context.Context, deploymentID, requestedBy string) (domain.DeploymentApproval, error) {
 	return r.scanOne(ctx, `
-		INSERT INTO deployment_approvals (deployment_id, requested_by, test_report)
-		VALUES ($1, $2, $3)
+		INSERT INTO deployment_approvals (deployment_id, requested_by, test_report, review_document)
+		VALUES ($1, $2, $3, $4)
 		RETURNING `+approvalColumns,
-		deploymentID, requestedBy, domain.TestReportFrom(ctx))
+		deploymentID, requestedBy, domain.TestReportFrom(ctx), domain.ReviewDocumentFrom(ctx))
 }
 
 func (r *DeploymentApprovalRepo) Get(ctx context.Context, deploymentID string) (domain.DeploymentApproval, error) {
@@ -68,7 +68,7 @@ func scanApproval(row rowScanner) (domain.DeploymentApproval, error) {
 	var a domain.DeploymentApproval
 	var decision string
 	err := row.Scan(&a.ID, &a.DeploymentID, &a.RequestedBy, &a.DecidedBy, &decision, &a.Reason, &a.CreatedAt, &a.DecidedAt,
-		&a.TestReport, &a.SignerFingerprint, &a.SignedAt)
+		&a.TestReport, &a.ReviewDocument, &a.SignerFingerprint, &a.SignedAt)
 	a.Decision = domain.ApprovalDecision(decision)
 	return a, err
 }

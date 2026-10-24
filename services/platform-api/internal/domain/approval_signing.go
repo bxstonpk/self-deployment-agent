@@ -67,6 +67,12 @@ type ApprovalSubject struct {
 	BuildID         string
 	ImageRefs       map[string]string
 	TestReport      string
+	// SourceSHA256 is the SHA-256 of the exact source archive the build was
+	// made from ("none" if it wasn't kept); ReviewDocument is the requester's
+	// REVIEW.md. Both are bound into what the approver signs, so what they
+	// reviewed is what goes live.
+	SourceSHA256   string
+	ReviewDocument string
 }
 
 func TestReportSHA256(report string) string {
@@ -83,7 +89,7 @@ func TestReportSHA256(report string) string {
 // can't drift apart.
 func (s ApprovalSubject) SigningTemplate() string {
 	var b strings.Builder
-	b.WriteString("company-platform deployment approval v1\n")
+	b.WriteString("company-platform deployment approval v2\n")
 	fmt.Fprintf(&b, "deployment: %s\n", s.DeploymentID)
 	fmt.Fprintf(&b, "application: %s (%s)\n", s.ApplicationID, s.ApplicationName)
 	fmt.Fprintf(&b, "environment: %s\n", s.Environment)
@@ -97,6 +103,12 @@ func (s ApprovalSubject) SigningTemplate() string {
 		fmt.Fprintf(&b, "image: %s=%s\n", svc, s.ImageRefs[svc])
 	}
 	fmt.Fprintf(&b, "test-report-sha256: %s\n", TestReportSHA256(s.TestReport))
+	source := s.SourceSHA256
+	if source == "" {
+		source = "none"
+	}
+	fmt.Fprintf(&b, "source-sha256: %s\n", source)
+	fmt.Fprintf(&b, "review-sha256: %s\n", TestReportSHA256(s.ReviewDocument))
 	b.WriteString("decision: {decision}\nreason: {reason}\nsigned-at: {signed_at}\n")
 	return b.String()
 }

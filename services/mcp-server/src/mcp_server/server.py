@@ -187,14 +187,19 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         idempotency_key: str | None = None,
         project_path: str | None = None,
         test_report: str | None = None,
+        review_document: str | None = None,
     ) -> dict[str, Any]:
         """Build (when source is given) and deploy. Give the source as
         project_path: the absolute path of the project folder on this machine,
         containing one sub-folder per service in deployment.yaml. It is packed
         here — dependencies, build output, .git and local secret files (.env,
-        keys) are left out. For a deployment that needs approval (production),
-        pass test_report: the test commands you ran and their results, which
-        the approving administrator reads before signing."""
+        keys) are left out. For a deployment that needs approval (see
+        get_platform_info's approval_required_environments), pass test_report:
+        the test commands you ran and their results; and have a REVIEW.md in
+        the project root (workflow, structure and the path of every file,
+        what changed) — it is sent automatically, or pass review_document when
+        not deploying from a folder. The approver reads both, with every file,
+        before signing."""
         params = {
             "application_id": application_id,
             "target_environment": target_environment,
@@ -203,6 +208,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "idempotency_key": idempotency_key,
             "project_path": project_path,
             "test_report": test_report,
+            "review_document_bytes": len(review_document or ""),
         }
         return await _run_tool(
             audit("deploy_application", params, application_id),
@@ -215,7 +221,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
                 source_archive_base64,
                 idempotency_key,
                 project_path,
-                test_report,
+                test_report, review_document,
             ),
         )
 

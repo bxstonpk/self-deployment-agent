@@ -31,6 +31,7 @@ type ApplicationResources struct {
 	databases DatabaseLifecycle
 	secrets   SecretInjector
 	backups   BackupPurger
+	sources   BackupPurger
 }
 
 // BackupPurger is the part of database backups (FR-064) that deleting an
@@ -43,6 +44,9 @@ type BackupPurger interface {
 // (FR-065: purge). Optional, so the many tests that build resources
 // without backups keep working unchanged.
 func (r *ApplicationResources) SetBackups(b BackupPurger) { r.backups = b }
+
+// SetSources makes Deprovision delete the application's kept build sources.
+func (r *ApplicationResources) SetSources(p BackupPurger) { r.sources = p }
 
 func NewApplicationResources(databases DatabaseLifecycle, secrets SecretInjector) *ApplicationResources {
 	return &ApplicationResources{databases: databases, secrets: secrets}
@@ -84,6 +88,11 @@ func (r *ApplicationResources) Deprovision(ctx context.Context, applicationID st
 	if r.backups != nil {
 		if err := r.backups.PurgeApplication(ctx, applicationID); err != nil {
 			return fmt.Errorf("delete database backups: %w", err)
+		}
+	}
+	if r.sources != nil {
+		if err := r.sources.PurgeApplication(ctx, applicationID); err != nil {
+			return fmt.Errorf("delete kept build sources: %w", err)
 		}
 	}
 	if err := r.secrets.DeleteAllForApplication(ctx, applicationID); err != nil {

@@ -138,9 +138,17 @@ their machine (`DEC-017`).
 2. Put the line it prints in the host's `.env` as
    `PLATFORM_APPROVER_KEYS=…`, add the same email to
    `PLATFORM_ADMIN_EMAILS`, and run `docker compose up -d platform-api`.
-3. From then on, `company-deploy approvals` lists what's waiting, and
-   `company-deploy approve <id>` shows the images, scan results and the
-   requester's test report, then signs.
+3. From then on, `company-deploy approvals` lists what's waiting.
+   `company-deploy review <id>` puts everything to read into one folder:
+   - the exact source that was built, checked against the SHA-256 you
+     sign;
+   - the requester's `REVIEW.md` (workflow, structure and every file's
+     path, data, what changed);
+   - the test report, the scans and the text you'll sign.
+
+   `company-deploy approve <id>` then signs (or `--reject --reason`).
+   A deployment that waits for approval without a `REVIEW.md` is refused
+   before anything is built.
 
 **Backups.** Every application database is backed up automatically
 (`DEC-025`): a full every Sunday and a differential every other day, from

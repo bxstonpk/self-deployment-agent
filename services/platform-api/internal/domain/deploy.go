@@ -100,6 +100,7 @@ type DeploymentApproval struct {
 	// approval_signing.go. SignerFingerprint and SignedAt record a signed
 	// decision.
 	TestReport        string
+	ReviewDocument    string // the requester's REVIEW.md
 	SignerFingerprint *string
 	SignedAt          *time.Time
 }
@@ -117,6 +118,28 @@ func TestReportFrom(ctx context.Context) string {
 	s, _ := ctx.Value(testReportKey{}).(string)
 	return s
 }
+
+type reviewDocumentKey struct{}
+
+// WithReviewDocument carries a deployment request's REVIEW.md the same way
+// as its test report.
+func WithReviewDocument(ctx context.Context, doc string) context.Context {
+	return context.WithValue(ctx, reviewDocumentKey{}, doc)
+}
+
+func ReviewDocumentFrom(ctx context.Context) string {
+	s, _ := ctx.Value(reviewDocumentKey{}).(string)
+	return s
+}
+
+// MaxReviewDocumentBytes bounds a REVIEW.md.
+const MaxReviewDocumentBytes = 256 * 1024
+
+var (
+	ErrReviewDocumentRequired = errors.New("deployments to this environment wait for approval and need a review document: " +
+		"put a REVIEW.md in the project root describing the workflow, the structure and the path of every file, and what changed")
+	ErrReviewDocumentTooLarge = errors.New("the review document is larger than 256 KiB")
+)
 
 var (
 	ErrNoSuccessfulBuild            = errors.New("application has no successful build to deploy")
