@@ -386,6 +386,26 @@ func TestDecideApproval_Rejected_MarksFailedWithReason(t *testing.T) {
 	}
 }
 
+// A rejected redeploy leaves the version already serving: the application
+// is Running, so it can still be archived (it used to be left Failed).
+func TestDecideApproval_RejectedWhileAnEarlierVersionServes_LeavesItRunning(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, lifecycle, deployments, _, _, _ := newDeployService(app, build, "owner-1")
+	deployments.byID["earlier"] = domain.Deployment{ID: "earlier", ApplicationID: "app-1", Status: domain.DeploymentRunning,
+		Environment: domain.EnvironmentDev}
+
+	d, err := svc.InitiateDeploy(reviewed(), "app-1", "owner-1", domain.EnvironmentProduction)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if _, err := svc.DecideApproval(context.Background(), d.ID, "owner-1", false, "not ready"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lifecycle.apps["app-1"].LifecycleStatus; got != domain.StatusRunning {
+		t.Fatalf("an earlier version still serves: want Running, got %q", got)
+	}
+}
+
 func TestDecideApproval_Rejected_NotifiesOwnersOfDeploymentStatus(t *testing.T) {
 	app, build := builtApp("app-1", "overtime")
 	svc, _, notifications := newDeployServiceWithNotifications(app, build, "owner-1")

@@ -68,6 +68,14 @@ _NO_REVIEW_MESSAGE = (
 )
 
 
+def _report_tail(report: str, lines: int = 60) -> str:
+    """The end of a test report, where failures and summaries are."""
+    kept = report.rstrip("\n").split("\n")
+    if len(kept) <= lines:
+        return "\n".join(kept)
+    return "(earlier lines: run_tests returns the whole report)\n" + "\n".join(kept[-lines:])
+
+
 async def deploy_application(
     client: PlatformClient,
     idempotency: IdempotencyStore,
@@ -79,6 +87,8 @@ async def deploy_application(
     project_path: str | None = None,
     test_report: str | None = None,
     review_document: str | None = None,
+    run_tests: bool = True,
+    test_run_id: str | None = None,
 ) -> dict[str, Any]:
     # version_reference is accepted for shape-compliance with Section 13.6
     # but not enforced: this Platform API always deploys the application's
@@ -104,7 +114,8 @@ async def deploy_application(
     # no filesystem access to the project.
     if project_path and source_archive_base64:
         raise ToolError(ErrorCode.VALIDATION_ERROR, "pass project_path or source_archive_base64, not both")
-    fingerprint = (application_id, target_environment, version_reference, source_archive_base64, project_path)
+    fingerprint = (application_id, target_environment, version_reference, source_archive_base64, project_path,
+                   run_tests, test_run_id)
     if idempotency_key:
         try:
             cached = idempotency.get_cached(idempotency_key, fingerprint)
@@ -142,6 +153,18 @@ async def deploy_application(
             raise ToolError(
                 ErrorCode.VALIDATION_ERROR, f"source_archive_base64 is not valid base64: {exc}"
             ) from exc
+    # The platform runs the tests on this exact source before building it,
+    # and the deployment carries the platform's report (DEC-029 part 2).
+    tests: dict[str, Any] | None = None
+    if source_bytes is not None and run_tests and not test_run_id:
+        tests = await client.run_tests(application_id, source_bytes)
+        if tests.get("status") != "passed":
+            raise ToolError(
+                ErrorCode.VALIDATION_ERROR,
+                f"the tests didn't pass on the platform ({tests.get('status')}); nothing was built.\n"
+                + _report_tail(tests.get("report", "")),
+            )
+        test_run_id = tests.get("id")
     if source_bytes is not None:
         build = await client.trigger_build(application_id, source_bytes)
         if build.get("status") == "failed":
@@ -157,7 +180,9 @@ async def deploy_application(
             raise ToolError(ErrorCode.INTERNAL_ERROR, f"build failed (platform-side): {detail}")
 
     try:
-        deployment = await client.deploy_application(application_id, target_environment, test_report, review_document)
+        deployment = await client.deploy_application(
+            application_id, target_environment, test_report, review_document, test_run_id
+        )
     except ToolError as exc:
         if exc.platform_code == "no_successful_build":
             raise ToolError(ErrorCode.VALIDATION_ERROR, _NO_BUILD_MESSAGE) from exc
@@ -185,6 +210,11 @@ async def deploy_application(
     }
     if status == "running":
         data["urls"] = _service_urls(deployment)
+    if test_run_id:
+        data["test_run_id"] = test_run_id
+        data["tests"] = "run by the platform; its report is attached to this deployment"
+        if tests is not None:
+            data["test_services"] = tests.get("services", [])
     if packed is not None:
         data["source"] = packed
         if packed["skipped_secret_files"]:

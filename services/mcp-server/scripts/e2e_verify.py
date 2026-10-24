@@ -173,9 +173,9 @@ async def main() -> None:
             tools = await session.list_tools()
             tool_names = sorted(t.name for t in tools.tools)
             _check(
-                len(tool_names) == 31,
+                len(tool_names) == 32,
                 f"all 13 Section-13 tools, the 8 later-module tools (Modules W/X/AB/E), the 4 "
-                f"sign-in tools and the 6 governance tools discovered via MCP protocol: {tool_names}",
+                f"sign-in tools, the 6 governance tools and run_tests discovered via MCP protocol: {tool_names}",
             )
             portal_session = await _sign_in_through_mcp(session)
 

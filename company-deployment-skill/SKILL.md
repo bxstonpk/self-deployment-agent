@@ -51,7 +51,7 @@ Every platform interaction goes through these, and nothing else:
 `whoami`, `login`, `complete_login`, `logout`,
 `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`,
 `get_standards`, `start_project`, `scaffold_project`, `check_project`,
-`request_exception`, `list_exceptions`,
+`request_exception`, `list_exceptions`, `run_tests`,
 `create_application`, `validate_application`, `deploy_application`,
 `get_application_status`, `get_deployment_status`, `get_application_logs`,
 `get_application_metrics`, `rollback_application`, `restart_application`,
@@ -134,7 +134,9 @@ writing any code:
 4. **While writing it, `check_project(application_id, project_path)`.**
    It runs the platform's own dependency check (the same one the build
    runs) and checks the profile, `REVIEW.md` and pending exceptions. Fix
-   every `error` before deploying.
+   every `error` before deploying. Write tests as you go and run them with
+   `run_tests`: the platform runs them, so nothing needs installing here
+   (Step 7).
 5. **Something outside the standard?** A library it doesn't allow, a
    stack it doesn't list, anything else: tell the employee, and only if
    they still want it, `request_exception(application_id, kind, subject,
@@ -290,14 +292,32 @@ A local schema pass is never treated as "validated." Only this call's
 a **normal successful tool call**, not an error — read the `findings`
 array and handle it per **Handling validation failures** below.
 
-### 7. Run the project's own tests
+### 7. Test — on the platform
 
-Run whatever test tooling the project already has (`npm test`,
-`go test ./...`, `pytest`). The platform validates infrastructure/policy
-compliance, not application correctness — that's still your and the
-employee's responsibility. If tests fail or none exist, say so clearly and
-ask the employee how to proceed rather than deploying untested code
-silently, or silently skipping this step.
+The platform runs the tests, so this machine needs no Go, Node or Python.
+`run_tests(application_id, project_path)` tests every service in its own
+runtime: `go vet` and `go test ./...`; Python files compiled, then
+`pytest` when there are test files (`test_*.py`, `*_test.py`); npm's
+`build` script, then its `test` script. Use it while writing the
+application, as often as needed. It returns `passed`, `failed` or `error`
+(the platform couldn't run them: a time limit or a download), each
+service's result, and the platform's report.
+
+- **Write tests with the application** (Go `*_test.go`, `pytest` files, a
+  `test` script in `package.json`). The report says "no tests to run" for
+  a service without any: tell the employee that rather than calling it
+  tested.
+- **A failure is a fact to fix,** not to work around. Show the employee
+  the failing lines from the report.
+- `deploy_application` with `project_path` runs the tests again on exactly
+  what it builds and builds only if they pass (`run_tests=False` skips
+  that; don't, unless the employee asks). The deployment then carries the
+  platform's report, which the approver signs.
+- `RATE_LIMITED` means the platform is running someone else's tests: wait a
+  minute and try again.
+
+The platform runs tests without the application's database or secrets:
+tests that need them can't pass there. Say so if the project's do.
 
 Then run `check_project(application_id, project_path)`. It runs the
 platform's dependency check on the source without building; fix every
@@ -409,11 +429,13 @@ don't declare success on the deploy call alone.
 **Deployments to an environment in `approval_required_environments` wait
 for approval.** `approval_rules_summary` says whose: on a platform with
 approver keys, the platform administrator's signed approval. Before
-calling `deploy_application` for such an environment, run the project's
-tests (Step 7). Pass what you ran and the results as `test_report`, e.g.
-`"go test ./...: ok (12 tests)\nnpm test: 42 passed"`. Keep it honest and
-complete: the approver reads it before signing, and the signature covers
-it. The call returns `PENDING_APPROVAL`; nothing you can call approves it.
+calling `deploy_application` for such an environment, have the tests
+passing on the platform (Step 7): `deploy_application` runs them on what it
+builds and attaches the platform's report. `test_report` is only for what
+the platform can't run (e.g. a check against the real database you did by
+hand): it is added after the platform's report, marked as yours. Keep it
+honest: the approver reads both before signing, and the signature covers
+them. The call returns `PENDING_APPROVAL`; nothing you can call approves it.
 Tell the employee it is with the approver, and check later with
 `get_deployment_status`.
 

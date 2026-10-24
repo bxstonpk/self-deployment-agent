@@ -112,6 +112,14 @@ type Config struct {
 	// started with a profile (GOVERNANCE_REQUIRE_PROFILE, on by default).
 	RequireProfile bool
 
+	// Tests run by the platform: per service, at most TestRunMemoryMB of
+	// memory and TestRunCPUs CPUs; a whole run at most TestRunTimeout; and
+	// TestRunConcurrent runs at once.
+	TestRunMemoryMB   int
+	TestRunCPUs       float64
+	TestRunTimeout    time.Duration
+	TestRunConcurrent int
+
 	// AdminEmails are the platform administrators (PLATFORM_ADMIN_EMAILS):
 	// they receive platform-level alerts.
 	AdminEmails []string
@@ -233,12 +241,32 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	testRunMemory, err := strconv.Atoi(getEnv("TEST_RUN_MEMORY_MB", "1024"))
+	if err != nil || testRunMemory < 256 {
+		return Config{}, fmt.Errorf("TEST_RUN_MEMORY_MB must be a whole number of megabytes, at least 256")
+	}
+	testRunCPUs, err := strconv.ParseFloat(getEnv("TEST_RUN_CPUS", "2"), 64)
+	if err != nil || testRunCPUs <= 0 {
+		return Config{}, fmt.Errorf("TEST_RUN_CPUS must be a positive number of CPUs")
+	}
+	testRunTimeout, err := getEnvSeconds("TEST_RUN_TIMEOUT_SECONDS", 600)
+	if err != nil {
+		return Config{}, err
+	}
+	testRunConcurrent, err := strconv.Atoi(getEnv("TEST_RUN_CONCURRENT", "1"))
+	if err != nil || testRunConcurrent < 1 {
+		return Config{}, fmt.Errorf("TEST_RUN_CONCURRENT must be at least 1")
+	}
 	port := getEnv("PORT", "8080")
 	return Config{
 		AdminEmails:                  getEnvList("PLATFORM_ADMIN_EMAILS", ""),
 		ApproverKeys:                 approverKeys,
 		ApprovalEnvironments:         approvalEnvs,
 		RequireProfile:               getEnv("GOVERNANCE_REQUIRE_PROFILE", "true") != "false",
+		TestRunMemoryMB:              testRunMemory,
+		TestRunCPUs:                  testRunCPUs,
+		TestRunTimeout:               testRunTimeout,
+		TestRunConcurrent:            testRunConcurrent,
 		Alerts:                       alerts,
 		AlertEvalInterval:            alertEval,
 		BackupEnabled:                getEnv("BACKUP_ENABLED", "true") != "false",

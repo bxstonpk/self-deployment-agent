@@ -1968,8 +1968,8 @@ administrator decides.
 - **Applications registered before this** have no profile, so their next
   build answers `profile_required` until `start_project` is called with
   their `application_id`.
-- **Not built yet:** running an application's tests on the platform, and
-  a preview environment (DEC-029's parts 2 and 3).
+- **Not built yet:** a preview environment (DEC-029's part 3). Tests run
+  on the platform: see "How tests run on the platform".
 
 ### Verifying it
 
@@ -2007,6 +2007,102 @@ Chromium: approve, reject without a reason refused, a direct visit to
 `/standards`, no page errors. A pending exception left the queue once its
 application was deleted, and the deleted application's new request got
 404.
+
+## How tests run on the platform (DEC-029 part 2)
+
+An application's tests run on the platform, so an employee's machine
+needs no Go, Node or Python. The report an approver signs is the
+platform's own, not the requester's word.
+
+- **Running them.** `POST /applications/{id}/test-runs` (owners) takes the
+  same tar.gz a build does. Each service in the saved deployment.yaml is
+  tested in its runtime's governed image:
+  - `go`: `go vet ./...` and `go test ./...`;
+  - `python`: requirements installed, `python -m compileall`, then
+    `pytest` when there are test files (`test_*.py`, `*_test.py`);
+  - Node runtimes: `npm install`, the `build` script when there is one,
+    then the `test` script when there is one. npm's placeholder test
+    script doesn't count.
+
+  A service with no tests is reported as "no tests to run", never as
+  passed tests. The run is `passed`, `failed`, or `error` (the platform
+  couldn't run it: a pull, the time limit), and the report keeps the end
+  of each service's output.
+- **The sandbox.** A test run is a throwaway image build of a test recipe
+  (`internal/buildengine/testrun.go`): the same sandbox a build uses, with
+  no Docker socket and nothing mounted from the host, plus memory and CPU
+  limits per service (`TEST_RUN_MEMORY_MB`, `TEST_RUN_CPUS`) and a time
+  limit for the whole run (`TEST_RUN_TIMEOUT_SECONDS`). The image is
+  removed afterwards. Dependencies install before a per-run build
+  argument, so the layer cache keeps them between runs while the test
+  steps always run again. One run at a time by default
+  (`TEST_RUN_CONCURRENT`): one more is refused with 429, not queued.
+- **Into the deployment.** A deploy request can name `test_run_id`. The
+  platform attaches that run's report only if the run passed and was made
+  on the same source as the build being deployed. "Same source" means the
+  same files and contents (`domain.SourceTreeDigest`, compared with the
+  build's kept source archive), so a project packed twice still matches.
+  Otherwise the deploy is refused with 409 `test_run_not_usable`. A
+  `test_report` given as well is added after it under a "from the
+  requester" line. A `test_report` alone is now always marked that way, so
+  no report can pass for one the platform ran. The approval page shows
+  "Run by the platform" or "Requester's report only".
+- **The MCP.** `run_tests`, and `deploy_application`, which runs the tests
+  on exactly the bytes it then builds and builds nothing if they fail.
+
+**Also fixed here: an application built but not deployed couldn't be
+built again.** A build moves the application to `Build`, and a build was
+only accepted from Validated, Running or Failed. When a deploy was refused
+after a successful build, the application stayed in `Build`, and a
+running one, with its previous version still serving, couldn't be
+archived or deleted either. `verify_test_runs.py` hit exactly that, with a
+test run of other source. A build is now accepted from `Build` too (a
+build in flight is still refused), and a failed one returns to `Build`.
+
+### Known gaps
+
+- **No database or secrets in a test run.** Tests that need the
+  application's MySQL or its secrets can't pass there.
+- **The network is open** during a test run, as it is during a build:
+  dependencies are downloaded from the registries.
+- **Only the runtimes' standard commands run.** There is no field for a
+  custom test command.
+- **Interrupted runs.** A run interrupted by a restart is closed as
+  `error` when the platform starts.
+
+### Verifying it
+
+```bash
+cd services/mcp-server
+.venv/Scripts/python.exe scripts/verify_test_runs.py
+```
+
+It runs through the real MCP server over stdio against the local stack.
+platform-api is restarted with a throwaway approver key and production
+needing approval, and without them at the end. Results (2026-10-24):
+
+- **The scaffolded React + Go project.** `run_tests` passed in about
+  100–120 s. The report showed `go vet`, `go test` (including a test that
+  checks the Docker socket isn't reachable from a test run), the React
+  build, and "no tests to run" for the frontend.
+- **A failing test.** The run failed with the test's output, Thai text
+  intact. `deploy_application` refused and showed the failure, and built
+  nothing (no build record).
+- **Two runs at once.** A second run during one got 429.
+- **Fixed.** `deploy_application` ran the tests on what it built, built,
+  and deployed to dev (about 135 s).
+- **Changed source.** A passed run of the earlier files was refused for a
+  build of changed source.
+- **Production.** The tests ran again on what was built, and the
+  deployment waited for approval. The approver's view had the platform's
+  report (no terminal codes) and the requester's note after it, marked as
+  theirs. The report's hash was in the signing template.
+- **Two state bugs on the way, both fixed and unit-tested.**
+  - An app stuck in `Build` (above).
+  - A **rejected** deployment marked the application `Failed` even with
+    an earlier version still serving. It could then be neither archived
+    (only Running or Suspended can be) nor deleted (something is live).
+    It now stays `Running` when an earlier version serves.
 
 ## How Alerts work (FR-092, DEC-028)
 

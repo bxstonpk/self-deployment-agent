@@ -283,8 +283,27 @@ func TestTriggerBuild_FromFailed_FailedRebuildLeavesApplicationFailed(t *testing
 	}
 }
 
-func TestTriggerBuild_FromDraftOrBuildOrSuspended_StillRejected(t *testing.T) {
-	for _, status := range []domain.LifecycleStatus{domain.StatusDraft, domain.StatusBuild, domain.StatusSuspended, domain.StatusArchived, domain.StatusDeleted} {
+// Built but not deployed (a deployment refused after the build) can build
+// again; before, it was stuck: no rebuild, and with a version still
+// serving, no archive or delete either.
+func TestTriggerBuild_FromBuild_RebuildsAndAFailureLeavesItInBuild(t *testing.T) {
+	app := validatedApp("app-1", "overtime")
+	app.LifecycleStatus = domain.StatusBuild
+	svc, lifecycle, _, engine := newBuildService(app, "owner-1")
+	if b, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("v2")); err != nil || b.Status != domain.BuildSucceeded {
+		t.Fatalf("rebuild from Build: %v %v", b.Status, err)
+	}
+	engine.err = &domain.BuildFailure{Category: domain.ErrorCategorySource, Detail: "compile error"}
+	if b, err := svc.TriggerBuild(context.Background(), "app-1", "owner-1", []byte("v3")); err != nil || b.Status != domain.BuildFailed {
+		t.Fatalf("failed rebuild: %v %v", b.Status, err)
+	}
+	if got := lifecycle.apps["app-1"].LifecycleStatus; got != domain.StatusBuild {
+		t.Fatalf("a failed rebuild from Build goes back to Build, got %q", got)
+	}
+}
+
+func TestTriggerBuild_FromDraftOrSuspended_StillRejected(t *testing.T) {
+	for _, status := range []domain.LifecycleStatus{domain.StatusDraft, domain.StatusSuspended, domain.StatusArchived, domain.StatusDeleted} {
 		t.Run(string(status), func(t *testing.T) {
 			app := validatedApp("app-1", "overtime")
 			app.LifecycleStatus = status

@@ -122,7 +122,14 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 		return domain.Build{}, err
 	}
 	fromStatus := app.LifecycleStatus
-	if fromStatus != domain.StatusValidated && fromStatus != domain.StatusRunning && fromStatus != domain.StatusFailed {
+	// Build too: built, but not deployed — e.g. its deployment was refused
+	// after the build (a test run of other source, a missing review). Not
+	// accepting it left such an application unable to build again, and a
+	// running one (its previous version still serving) unable to be
+	// archived or deleted either: found for real by verify_test_runs.py.
+	// A build actually in flight is still refused just below.
+	if fromStatus != domain.StatusValidated && fromStatus != domain.StatusRunning && fromStatus != domain.StatusFailed &&
+		fromStatus != domain.StatusBuild {
 		return domain.Build{}, domain.ErrNotValidated
 	}
 	if len(sourceArchive) == 0 {
@@ -258,8 +265,11 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 		// first-ever build (fromStatus == Validated) or a rebuild attempted
 		// while already Failed has nothing good to fall back to.
 		target := domain.StatusFailed
-		if fromStatus == domain.StatusRunning {
-			target = domain.StatusRunning
+		if fromStatus == domain.StatusRunning || fromStatus == domain.StatusBuild {
+			// Build: whatever was serving before still is; back to where
+			// it was (its latest build is the failed one now, so deploying
+			// needs another build).
+			target = fromStatus
 		}
 		if _, err := s.apps.UpdateLifecycleStatus(detachedCtx, applicationID, domain.StatusBuild, target, false); err != nil {
 			return domain.Build{}, err

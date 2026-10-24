@@ -85,6 +85,11 @@ class FakePlatformClient:
             "violations": [], "allowed_by_exception": [],
         }
         self.profile_error: ToolError | None = None
+        # Tests run by the platform: what run_tests returns next.
+        self.next_test_run: dict[str, Any] = {
+            "id": "run-1", "status": "passed", "report": "Tests run by the platform\nresult: passed\n",
+            "services": [{"service": "api", "runtime": "go", "status": "passed"}],
+        }
 
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -141,6 +146,10 @@ class FakePlatformClient:
     async def check_standards(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
         self._record("check_standards", application_id, source_archive)
         return self.next_standards_check
+
+    async def run_tests(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        self._record("run_tests", application_id, source_archive)
+        return dict(self.next_test_run)
 
     async def whoami(self) -> dict[str, Any]:
         self._record("whoami")
@@ -205,9 +214,11 @@ class FakePlatformClient:
 
     async def deploy_application(
         self, application_id: str, environment: str, test_report: str | None = None, review_document: str | None = None,
+        test_run_id: str | None = None,
     ) -> dict[str, Any]:
         self._record("deploy_application", application_id, environment)
         self.last_test_report = test_report
+        self.last_test_run_id = test_run_id
         self.last_review_document = review_document
         app = self.applications[application_id]
         dep_id = f"dep-{uuid.uuid4().hex[:8]}"

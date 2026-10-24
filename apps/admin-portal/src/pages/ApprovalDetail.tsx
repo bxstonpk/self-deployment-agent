@@ -104,9 +104,15 @@ export function ApprovalDetail() {
           <span>REVIEW.md</span>
           <strong>{req.review_document.trim() ? `${req.review_document.split("\n").length} lines` : "None attached"}</strong>
         </div>
-        <div className={`fact fact-${req.test_report.trim() ? "ok" : "warn"}`}>
+        <div className={`fact fact-${testsBy(req.test_report) === "platform" ? "ok" : "warn"}`}>
           <span>Tests</span>
-          <strong>{req.test_report.trim() ? "Report attached" : "None attached"}</strong>
+          <strong>
+            {testsBy(req.test_report) === "platform"
+              ? "Run by the platform"
+              : testsBy(req.test_report) === "requester"
+                ? "Requester's report only"
+                : "None attached"}
+          </strong>
         </div>
         <div className={`fact fact-${scanFailed ? "bad" : "ok"}`}>
           <span>Image scans</span>
@@ -255,10 +261,24 @@ function FileBrowser({
   );
 }
 
+// The platform starts a test run's report with its own header, and marks
+// anything a requester wrote as theirs, so one can't pass for the other.
+const PLATFORM_TEST_HEADER = "Tests run by the platform";
+
+function testsBy(report: string): "platform" | "requester" | "none" {
+  if (!report.trim()) return "none";
+  return report.startsWith(PLATFORM_TEST_HEADER) ? "platform" : "requester";
+}
+
 function TestsAndScans({ req }: { req: ApprovalRequest }) {
   return (
     <>
       <h3>Test report</h3>
+      {testsBy(req.test_report) === "requester" && (
+        <p className="hint">
+          Written by the requester, not run by the platform: what it says hasn't been checked.
+        </p>
+      )}
       {req.test_report.trim() ? <pre className="code-block">{req.test_report}</pre> : <p className="empty-state">No test report was attached.</p>}
       <h3>Images and scans</h3>
       <div className="table-wrap">

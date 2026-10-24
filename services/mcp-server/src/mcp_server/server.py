@@ -217,6 +217,21 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         )
 
     @mcp.tool()
+    async def run_tests(application_id: str, project_path: str) -> dict[str, Any]:
+        """Run the project's tests on the platform — no toolchain needed on
+        this machine. Each service in deployment.yaml is tested in its
+        runtime: go vet and go test; Python files compiled, then pytest if
+        there are test files; npm's build script, then its test script.
+        Returns passed / failed / error, each service's result and the
+        platform's report. A passed run's test_run_id can go to
+        deploy_application for the same files."""
+        params = {"application_id": application_id, "project_path": project_path}
+        return await _run_tool(
+            audit("run_tests", params, application_id),
+            governance.run_tests(client, application_id, project_path),
+        )
+
+    @mcp.tool()
     async def request_exception(application_id: str, kind: str, subject: str, reason: str) -> dict[str, Any]:
         """Ask the platform administrator to allow something outside the
         company standard, before using it. kind: dependency (subject is
@@ -285,8 +300,14 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         project_path: str | None = None,
         test_report: str | None = None,
         review_document: str | None = None,
+        run_tests: bool = True,
+        test_run_id: str | None = None,
     ) -> dict[str, Any]:
-        """Build (when source is given) and deploy. Give the source as
+        """Test, build (when source is given) and deploy. With source, the
+        platform first runs every service's tests on it (run_tests=True, the
+        default) and builds only if they pass; the deployment then carries
+        the platform's own test report. Pass test_run_id instead to use a
+        passed run_tests result for the same files. Give the source as
         project_path: the absolute path of the project folder on this machine,
         containing one sub-folder per service in deployment.yaml. It is packed
         here — dependencies, build output, .git and local secret files (.env,
@@ -306,6 +327,8 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "project_path": project_path,
             "test_report": test_report,
             "review_document_bytes": len(review_document or ""),
+            "run_tests": run_tests,
+            "test_run_id": test_run_id,
         }
         return await _run_tool(
             audit("deploy_application", params, application_id),
@@ -318,7 +341,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
                 source_archive_base64,
                 idempotency_key,
                 project_path,
-                test_report, review_document,
+                test_report, review_document, run_tests, test_run_id,
             ),
         )
 

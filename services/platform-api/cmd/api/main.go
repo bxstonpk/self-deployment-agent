@@ -182,6 +182,19 @@ func main() {
 	// DEC-017: who may approve, and which environments need it.
 	deployService.SetApprovalEnvironments(cfg.ApprovalEnvironments)
 	deployHandler := httpapi.NewDeployHandler(deployService, applicationRepo, cfg.PublicBaseURL)
+	// Tests run by the platform (DEC-029 part 2), in the build sandbox.
+	testRunRepo := postgres.NewTestRunRepo(pool)
+	if n, err := testRunRepo.FailUnfinished(ctx); err != nil {
+		log.Printf("test runs: %v", err)
+	} else if n > 0 {
+		log.Printf("test runs: closed %d run(s) a restart interrupted", n)
+	}
+	testRunService := service.NewTestRunService(applicationRepo, ownerRepo, testRunRepo, baseImageRepo, buildRepo, sources,
+		dockerEngine, auditService, service.TestLimits{MemoryBytes: int64(cfg.TestRunMemoryMB) << 20, CPUs: cfg.TestRunCPUs},
+		cfg.TestRunTimeout, cfg.TestRunConcurrent)
+	deployHandler.SetTestRuns(testRunService)
+	log.Printf("test runs: %d at a time, each service %d MB and %.1f CPUs, at most %s a run",
+		cfg.TestRunConcurrent, cfg.TestRunMemoryMB, cfg.TestRunCPUs, cfg.TestRunTimeout)
 	var approvalHandler *httpapi.ApprovalHandler
 	if len(cfg.ApproverKeys) > 0 {
 		approvalService := service.NewApprovalService(postgres.NewDeploymentApprovalRepo(pool), service.ApprovalLookups{
@@ -227,6 +240,7 @@ func main() {
 		Alerts:             httpapi.NewAlertHandler(alertService),
 		Approvals:          approvalHandler,
 		Governance:         httpapi.NewGovernanceHandler(governanceService),
+		TestRuns:           httpapi.NewTestRunHandler(testRunService),
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,

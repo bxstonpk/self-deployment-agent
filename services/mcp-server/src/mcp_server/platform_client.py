@@ -42,6 +42,7 @@ _WRONG_STATE_CODES = {
     "not_pending_approval",
     "invalid_rollback_target",
     "profile_required",
+    "test_run_not_usable",
 }
 
 # Codes that genuinely are Section 8's narrower CONFLICT definition.
@@ -193,6 +194,20 @@ class PlatformClient:
             extra_headers={"Content-Type": "application/gzip"}, content=source_archive,
         )
 
+    # --- Tests run by the platform ------------------------------------------
+
+    async def run_tests(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        """Runs every service's tests on the platform. Takes as long as the
+        tests do (the platform stops a run at its own limit), so this call
+        waits longer than the client's usual timeout."""
+        return (await self._request(
+            "POST", f"/applications/{application_id}/test-runs",
+            extra_headers={"Content-Type": "application/gzip"}, content=source_archive, timeout=900,
+        )).get("test_run", {})
+
+    async def get_test_run(self, application_id: str, test_run_id: str) -> dict[str, Any]:
+        return (await self._request("GET", f"/applications/{application_id}/test-runs/{test_run_id}")).get("test_run", {})
+
     # --- Departments -----------------------------------------------------
 
     async def list_departments(self) -> list[dict[str, Any]]:
@@ -278,10 +293,13 @@ class PlatformClient:
 
     async def deploy_application(
         self, application_id: str, environment: str, test_report: str | None = None, review_document: str | None = None,
+        test_run_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"environment": environment}
         if test_report:
             body["test_report"] = test_report
+        if test_run_id:
+            body["test_run_id"] = test_run_id
         if review_document:
             body["review_document"] = review_document
         return await self._request("POST", f"/applications/{application_id}/deploy", json=body)
