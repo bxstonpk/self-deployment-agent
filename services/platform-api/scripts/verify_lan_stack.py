@@ -155,6 +155,11 @@ def _deploy(dept_id: str, app_name: str, runtime: str) -> str | None:
         "deployment_yaml_draft": yaml,
     })
     app_id = app["id"]
+    # Started the company way: a build refuses an application with no profile.
+    _api("PUT", f"/applications/{app_id}/profile", {
+        "purpose": f"LAN standard verification ({runtime})", "handles_personal_data": False,
+        "frontend": "react", "backend": runtime, "database": "mysql",
+    })
     _api("PUT", f"/applications/{app_id}/deployment-yaml", {"deployment_yaml": yaml})
     validation = _api("POST", f"/applications/{app_id}/validate")
     if not _check(validation.get("report", {}).get("valid") is True,

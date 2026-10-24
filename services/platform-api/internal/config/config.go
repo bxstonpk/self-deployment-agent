@@ -108,6 +108,10 @@ type Config struct {
 	ApproverKeys         []domain.ApproverKey
 	ApprovalEnvironments []domain.Environment
 
+	// RequireProfile makes a build refuse an application that wasn't
+	// started with a profile (GOVERNANCE_REQUIRE_PROFILE, on by default).
+	RequireProfile bool
+
 	// AdminEmails are the platform administrators (PLATFORM_ADMIN_EMAILS):
 	// they receive platform-level alerts.
 	AdminEmails []string
@@ -234,6 +238,7 @@ func Load() (Config, error) {
 		AdminEmails:                  getEnvList("PLATFORM_ADMIN_EMAILS", ""),
 		ApproverKeys:                 approverKeys,
 		ApprovalEnvironments:         approvalEnvs,
+		RequireProfile:               getEnv("GOVERNANCE_REQUIRE_PROFILE", "true") != "false",
 		Alerts:                       alerts,
 		AlertEvalInterval:            alertEval,
 		BackupEnabled:                getEnv("BACKUP_ENABLED", "true") != "false",

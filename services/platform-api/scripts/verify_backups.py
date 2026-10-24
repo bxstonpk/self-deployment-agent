@@ -99,6 +99,7 @@ def _yaml(name, engine, backup=None):
 def _deploy(dept, name, engine, backup=None):
     _, app = _api("POST", "/applications", {"name": name, "description": "backup verification",
                                             "owning_department_id": dept, "deployment_yaml_draft": _yaml(name, engine, backup)})
+    _api("PUT", f"/applications/{app['id']}/profile", {"purpose": "backup verification", "handles_personal_data": False})
     _, v = _api("POST", f"/applications/{app['id']}/validate")
     if not v["report"]["valid"]:
         raise SystemExit(f"validation failed: {v}")

@@ -1880,8 +1880,9 @@ company-deploy approve <deployment> --reject --reason "run the integration tests
 
 ### Known gaps
 
-- **No Portal UI for approving**, by design: a browser would need the
-  private key. Approval happens in the CLI on the administrator's machine.
+- **Approving in the Portal** signs in the browser: the key file and
+  passphrase are read there and never sent (see **Approving in the Admin
+  Portal**). The CLI remains the other way.
 - **Losing the key file** means nothing can be approved until a new public
   key is configured. Keep an offline copy.
 - **Rollback** doesn't pass the approval gate (unchanged; see **How
@@ -1909,6 +1910,103 @@ and without it at the end. Results:
   (409).
 - **Rejection and dev:** `--reject` rejected the next deployment, and a
   dev deployment still went straight through.
+
+## How development governance works (DEC-029)
+
+The company standard applies from the moment an application is started,
+not only when it is deployed. Starting is registering, not asking
+permission. Stepping outside the standard is an exception that a platform
+administrator decides.
+
+- **Profile.** `PUT /applications/{id}/profile` (owners) records what the
+  application is for, who uses it, whether it handles personal data and
+  which, and its stack. The MCP's `start_project` registers the
+  application and records this in one step. A build refuses an application
+  without a profile (`profile_required`, 409, before any build record is
+  made). `GOVERNANCE_REQUIRE_PROFILE=false` turns that off, e.g. for the
+  older dev-header verify scripts. Owners and administrators can read it.
+- **The standard.** `GET /standards` (anyone signed in): the stack
+  catalog, the rules in words (`domain.CompanyStandardRules`), and the
+  dependency rules.
+- **Dependency rules.** `POST /standards/dependency-rules` and `DELETE
+  /standards/dependency-rules/{id}` (administrators only). Each rule names
+  a library the company doesn't allow, per ecosystem (`npm`, `go`,
+  `pypi`). Names are compared the way each ecosystem does: npm without
+  regard to case, PyPI also treating `-`, `_` and `.` as one (PEP 503),
+  and Go module paths as written. None are set by default.
+- **The build's check.** After the source is kept for review and before
+  anything is installed, the build reads each service's root
+  `package.json` (every kind of dependency, since the build installs dev
+  dependencies too), `go.mod` (`require`) and `requirements.txt`. A
+  library on a rule fails the build with category `source`, naming the
+  library, the manifest and the rule's reason. A manifest that doesn't
+  parse fails it the same way. `POST /applications/{id}/standards-check`
+  runs the same check on an uploaded archive without building (the MCP's
+  `check_project`).
+- **Exceptions.** `POST /applications/{id}/exceptions` (owners): kind
+  `dependency` (subject `<ecosystem>:<package>`, normalized like the
+  rules), `stack` or `other`, with a reason. Asking again for what is
+  already pending or approved returns that request. Administrators are
+  notified, see the queue at `GET /standards/exceptions?status=pending`,
+  and decide with `POST /standards/exceptions/{id}/decision` (a rejection
+  needs a reason). The owners are notified of the decision. Every step is
+  in the audit log. An approved dependency exception lets that library
+  through the build for that application only. A deleted application's
+  pending requests leave the queue, and it can't ask for new ones.
+- **Portal.** The **Standards** page (administrators): the exception
+  queue with approve/reject, the dependency rules, the standard, and the
+  decided exceptions.
+
+### Known gaps
+
+- **Stack and other exceptions aren't enforced.** They record the
+  administrator's decision; validation still accepts only the active
+  catalog, whatever an exception says.
+- **Only root manifests are read**, the ones the build installs from.
+  `pyproject.toml`, `package-lock.json`'s transitive dependencies and
+  `go.sum` aren't checked.
+- **Applications registered before this** have no profile, so their next
+  build answers `profile_required` until `start_project` is called with
+  their `application_id`.
+- **Not built yet:** running an application's tests on the platform, and
+  a preview environment (DEC-029's parts 2 and 3).
+
+### Verifying it
+
+```bash
+cd services/mcp-server
+.venv/Scripts/python.exe scripts/verify_governance.py
+```
+
+It runs through the real MCP server over stdio against the local stack.
+platform-api is restarted with a throwaway administrator, and without it
+at the end. Results (2026-10-24, all passed):
+
+- **Start:** `start_project` refused `php` and registered nothing. It
+  then registered the application with its profile, which the
+  administrator read with its Thai text intact. `scaffold_project` laid
+  out the React + Go templates with `REVIEW.md` and `deployment.yaml`.
+- **Rules:** an employee couldn't add a rule (403). The administrator
+  added one against the templates' own MySQL driver.
+- **The check and the build:** `check_project` found it, and the real
+  build failed with category `source`, naming the library and what to do.
+- **Exceptions:** `request_exception` notified the administrator. The
+  owner couldn't decide it (403), and a rejection without a reason was
+  refused (400). The administrator approved it, and the owner was
+  notified.
+- **After approval:** `check_project` showed the library as allowed by
+  the exception, and the same project built and deployed for real (38 s).
+- **No profile:** an application registered with `create_application`
+  alone was refused at build with a message naming `start_project`, and
+  no build was recorded.
+
+Also run against the same stack: `e2e_verify.py` (59 checks, now 31 tools,
+recording a profile with `start_project` for an existing application) and
+`verify_lan_stack.py` with `RUNTIMES=go`. The Standards page was driven in
+Chromium: approve, reject without a reason refused, a direct visit to
+`/standards`, no page errors. A pending exception left the queue once its
+application was deleted, and the deleted application's new request got
+404.
 
 ## How Alerts work (FR-092, DEC-028)
 

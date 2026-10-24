@@ -129,6 +129,11 @@ func main() {
 	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo, auditService)
 	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine, auditService)
 	buildService.SetSourceStore(sources)
+	// Development governance: the company standard from the start (a
+	// profile, allowed libraries only, exceptions decided by an admin).
+	governanceService := service.NewGovernanceService(postgres.NewGovernanceRepo(pool), applicationRepo, ownerRepo, stackRepo,
+		admins, notificationService, auditService, cfg.RequireProfile)
+	buildService.SetGovernance(governanceService)
 	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime, resources)
 	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService, notificationService, resources)
 	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService, resources, buildRepo)
@@ -221,6 +226,7 @@ func main() {
 		Backups:            httpapi.NewBackupHandler(backupService),
 		Alerts:             httpapi.NewAlertHandler(alertService),
 		Approvals:          approvalHandler,
+		Governance:         httpapi.NewGovernanceHandler(governanceService),
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,

@@ -147,6 +147,8 @@ async def deploy_application(
         if build.get("status") == "failed":
             category = build.get("error_category")
             detail = build.get("error_detail") or "build failed for an unspecified reason"
+            # The platform's detail already starts "build failed: " (domain.BuildFailure).
+            detail = detail.removeprefix("build failed: ")
             if category == "source":
                 # FR-038: a source-category failure (compiler/dependency
                 # error) is the employee's/agent's problem to fix, not the

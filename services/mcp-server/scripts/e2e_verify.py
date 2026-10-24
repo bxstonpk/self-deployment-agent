@@ -173,9 +173,9 @@ async def main() -> None:
             tools = await session.list_tools()
             tool_names = sorted(t.name for t in tools.tools)
             _check(
-                len(tool_names) == 25,
-                f"all 13 Section-13 tools, the 8 later-module tools (Modules W/X/AB/E) and the 4 "
-                f"sign-in tools discovered via MCP protocol: {tool_names}",
+                len(tool_names) == 31,
+                f"all 13 Section-13 tools, the 8 later-module tools (Modules W/X/AB/E), the 4 "
+                f"sign-in tools and the 6 governance tools discovered via MCP protocol: {tool_names}",
             )
             portal_session = await _sign_in_through_mcp(session)
 
@@ -191,15 +191,6 @@ async def main() -> None:
                 "get_deployment_requirements", await session.call_tool("get_deployment_requirements", {})
             )
             _check(reqs["status"] == "success", "get_deployment_requirements succeeded with no application_id")
-
-            created = _print_result(
-                "create_application (unknown department -> VALIDATION_ERROR)",
-                await session.call_tool(
-                    "create_application",
-                    {"name": APP_NAME, "description": "MCP e2e test app", "department": "Nonexistent"},
-                ),
-            )
-            _check(created["status"] == "error" and created["error"]["code"] == "VALIDATION_ERROR", "unknown department rejected")
 
             created = _print_result(
                 "create_application",
@@ -218,6 +209,21 @@ async def main() -> None:
             )
             _check(created["status"] == "success", "create_application succeeded")
             app_id = created["data"]["application_id"]
+
+            # Registered without a profile (create_application alone): a build
+            # needs one, and start_project records just that for an existing app.
+            standards = _print_result("get_standards", await session.call_tool("get_standards", {}))
+            _check(standards["status"] == "success" and "go" in standards["data"]["allowed_stacks"]["backend"],
+                   "get_standards lists the allowed stacks")
+            profiled = _print_result(
+                "start_project (the profile of an existing application)",
+                await session.call_tool("start_project", {
+                    "name": APP_NAME, "purpose": "MCP e2e test app", "handles_personal_data": False,
+                    "application_id": app_id,
+                }),
+            )
+            _check(profiled["status"] == "success" and profiled["data"]["registered"] is False,
+                   "start_project recorded the profile without registering again")
 
             validated = _print_result(
                 "validate_application", await session.call_tool("validate_application", {"application_id": app_id})

@@ -218,10 +218,18 @@ to the dev environment as leave-tracker"*. The skill makes Claude:
 
 1. **`whoami`** — if the machine isn't signed in, **`login`**, ask you to
    approve the code, then **`complete_login`**;
-2. start from the templates for a new application; write
-   `deployment.yaml`;
-3. **`create_application`**, then **`validate_application`** against the
-   live catalog;
+2. for a **new** application, follow the company standard from the start
+   (DEC-029): **`get_standards`**; ask you what it's for, who uses it,
+   whether it handles personal data, and which API language; then
+   **`start_project`** (registers it with that profile and the standard
+   `deployment.yaml`; nobody approves a start) and **`scaffold_project`**
+   (the templates, `REVIEW.md` to fill in). While writing it,
+   **`check_project`** runs the platform's own dependency check. A library
+   or stack outside the standard needs **`request_exception`**, decided by
+   an administrator in the Portal's **Standards** page;
+3. **`validate_application`** against the live catalog (an existing
+   application without a profile gets one through `start_project` first:
+   a build refuses it otherwise);
 4. **`deploy_application`** with **`project_path`** — the MCP server packs
    the service folders itself, leaving out `node_modules`, build output,
    `.git` and local secret files (`.env`, keys), and reports any it left
@@ -252,8 +260,10 @@ frontend was served. See section 8.
   tokens. `verify_auth.py` checks a full database dump.
 - **What a deployment can reach:** its own MySQL, on a private network no
   other application can reach.
-- **Authorization:** owners only (`DEC-002`). There are no administrator
-  roles.
+- **Authorization:** owners act on their own applications (`DEC-002`).
+  Platform administrators (`PLATFORM_ADMIN_EMAILS`) see the Dashboard,
+  manage the dependency rules and decide exceptions; approvers
+  (`PLATFORM_APPROVER_KEYS`) sign deployments.
 
 ## 7. Known gaps
 
@@ -280,6 +290,7 @@ frontend was served. See section 8.
 | The four stacks build, deploy and run, incl. a real browser, isolation and password rotation | `services/platform-api/scripts/verify_lan_stack.py` |
 | Authentication end to end, incl. the database holding no secret | `services/platform-api/scripts/verify_auth.py` |
 | The MCP server over real stdio: sign-in, deploy, rebuild, rollback, secrets, logs, metrics, delete | `services/mcp-server/scripts/e2e_verify.py` |
+| Development governance over real stdio: start, scaffold, a blocked library, an exception decided, the real build, no profile | `services/mcp-server/scripts/verify_governance.py` |
 | Gateway routes, installers on Windows and Linux, a real Claude Code deploy | described in sections 4–5; run by hand for PR "LAN onboarding" |
 
 ## 9. สรุปภาษาไทย (Quick start)
@@ -300,6 +311,8 @@ frontend was served. See section 8.
    - macOS/Linux: `curl -fsSL http://<ชื่อเครื่อง>:8080/downloads/install.sh | sh`
 3. ตัวติดตั้งจะแสดงรหัสและลิงก์ ให้เปิดลิงก์ เข้าสู่ระบบด้วยบัญชีของตัวเอง (หรือสมัครด้วย enrollment code) ตรวจว่ารหัสตรงกัน แล้วกด **Approve**
 4. เครื่องจะได้ API key ของตัวเองเก็บไว้ในเครื่อง โดยไม่แสดงให้ใครเห็น
+
+**เริ่มแอปใหม่:** บอก Claude Code ว่าอยากสร้างแอปอะไร Claude จะอ่านมาตรฐาน (`get_standards`) แล้วถามว่าแอปทำอะไร ใครใช้ เก็บข้อมูลส่วนบุคคลหรือไม่ และใช้ภาษาอะไร จากนั้นลงทะเบียนแอปพร้อมข้อมูลเหล่านี้ (`start_project`) ซึ่งไม่ต้องรออนุมัติ แล้วสร้างโปรเจกต์จาก templates (`scaffold_project`) ระหว่างเขียนโค้ดจะใช้ `check_project` ตรวจกับกฎของบริษัท ถ้าต้องใช้ library หรือเทคโนโลยีนอกมาตรฐาน ต้องขอ exception (`request_exception`) แล้วรอผู้ดูแลระบบอนุมัติในหน้า **Standards** ของ Portal ก่อน ถ้า build เจอ library ที่บริษัทไม่อนุญาตโดยยังไม่ได้รับอนุมัติ build จะไม่ผ่าน
 
 **การ deploy:** เปิดโปรเจกต์ใน Claude Code แล้วสั่ง เช่น "deploy แอปนี้ขึ้น dev ชื่อ leave-tracker"
 

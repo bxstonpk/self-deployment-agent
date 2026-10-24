@@ -67,6 +67,7 @@ type BuildService struct {
 	engine     BuildEngine
 	audit      AuditRecorder
 	sources    SourceSaver
+	governance BuildGovernance
 }
 
 func NewBuildService(apps ApplicationLifecycleRepository, owners ApplicationOwnerRepository, builds BuildRepository, baseImages BaseImageRepository, engine BuildEngine, audit AuditRecorder) *BuildService {
@@ -126,6 +127,11 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 	}
 	if len(sourceArchive) == 0 {
 		return domain.Build{}, domain.ErrNoSourceArchive
+	}
+	if s.governance != nil {
+		if err := s.governance.RequireProfile(ctx, applicationID); err != nil {
+			return domain.Build{}, err
+		}
 	}
 
 	if latest, err := s.builds.LatestForApplication(ctx, applicationID); err == nil {
@@ -206,6 +212,11 @@ func (s *BuildService) TriggerBuild(ctx context.Context, applicationID, requeste
 			buildErr = fmt.Errorf("keep the source for review: %w", err)
 		}
 	}
+	// The company's dependency rules, before anything is installed: a
+	// library it doesn't allow fails the build as the source's problem.
+	if buildErr == nil && s.governance != nil {
+		buildErr = s.governance.SourceFailure(ctx, app.ID, sourceArchive)
+	}
 	if buildErr == nil {
 		imageRefs, buildErr = s.engine.Build(ctx, BuildEngineRequest{
 			BuildID: build.ID, ApplicationName: app.Name, Services: specs, SourceArchive: sourceArchive,
@@ -271,6 +282,18 @@ type SourceSaver interface {
 // SetSourceStore makes every build keep its source for the approver.
 // Optional, so tests that don't care keep working unchanged.
 func (s *BuildService) SetSourceStore(store SourceSaver) { s.sources = store }
+
+// BuildGovernance is the company standard's part in a build
+// (GovernanceService): the application was started with a profile, and its
+// source uses only allowed libraries.
+type BuildGovernance interface {
+	RequireProfile(ctx context.Context, applicationID string) error
+	SourceFailure(ctx context.Context, applicationID string, archive []byte) error
+}
+
+// SetGovernance applies the company standard to every build. Optional, so
+// tests that don't care keep working unchanged.
+func (s *BuildService) SetGovernance(g BuildGovernance) { s.governance = g }
 
 func (s *BuildService) LatestBuild(ctx context.Context, applicationID string) (domain.Build, error) {
 	return s.builds.LatestForApplication(ctx, applicationID)
