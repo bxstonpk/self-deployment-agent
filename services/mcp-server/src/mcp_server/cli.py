@@ -27,10 +27,11 @@ import os
 import sys
 
 import getpass
+import tarfile
 import textwrap
 from pathlib import Path
 
-from . import approver, credentials, login_flow
+from . import approver, credentials, login_flow, review
 from .config import Config
 from .envelope import ToolError
 from .platform_client import PlatformClient
@@ -161,6 +162,63 @@ def _show(req: dict) -> None:
     print("Test report:" if req["test_report"] else "Test report:  (none attached)")
     if req["test_report"]:
         print(textwrap.indent(req["test_report"], "  | "))
+    source = req.get("source_sha256") or ""
+    print(f"Source:       {req.get('source_bytes', 0)} bytes, SHA-256 {source}" if source else "Source:       (not kept for this build)")
+    doc = req.get("review_document") or ""
+    print(f"REVIEW.md:    {len(doc.splitlines())} lines" if doc.strip() else "REVIEW.md:    (none attached)")
+    print(f"To read every file first: company-deploy review {req['deployment_id']}")
+
+
+async def _review(client: PlatformClient, deployment_id: str, out_dir: str | None) -> int:
+    """Lays everything the approver should read out in one folder: the exact
+    source that was built, REVIEW.md, the test report, the scans, and the
+    text they'll sign. The source is checked against the SHA-256 that the
+    signature covers before anything is written."""
+    try:
+        req = await client.approval_request(deployment_id)
+    except ToolError as exc:
+        print(exc.message)
+        return 1
+    folder = Path(out_dir or f"review-{req['application_name']}-{deployment_id[:8]}").resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    files: list[str] = []
+    expected = req.get("source_sha256") or ""
+    if expected and expected != "none":
+        try:
+            archive = await client.approval_source(deployment_id)
+        except ToolError as exc:
+            print(f"Could not download the source: {exc.message}")
+            return 1
+        if review.sha256_hex(archive) != expected:
+            print("The downloaded source doesn't match the SHA-256 the platform reported. Nothing was written; don't approve.")
+            return 1
+        try:
+            files = review.safe_extract(archive, folder / "source")
+        except (review.ReviewError, tarfile.TarError) as exc:
+            print(f"Refused to unpack the source: {exc}")
+            return 1
+    (folder / "REVIEW.md").write_text(req.get("review_document") or "(no REVIEW.md was attached)\n", encoding="utf-8")
+    (folder / "TEST_REPORT.txt").write_text(req.get("test_report") or "(no test report was attached)\n", encoding="utf-8")
+    scan_lines = [f"{svc}: {ref}  scan {'passed' if req['scans'].get(svc, {}).get('passed') else 'NOT passed'}, "
+                  f"{req['scans'].get(svc, {}).get('critical', '?')} critical, {req['scans'].get(svc, {}).get('high', '?')} high"
+                  for svc, ref in sorted(req["images"].items())]
+    (folder / "SCANS.txt").write_text("\n".join(scan_lines) + "\n", encoding="utf-8")
+    (folder / "SIGNING_TEMPLATE.txt").write_text(req["signing_template"], encoding="utf-8")
+
+    _show(req)
+    print(f"\nEverything to review is in {folder}")
+    print("  REVIEW.md          what Claude wrote: workflow, structure, paths, what changed")
+    print("  TEST_REPORT.txt    the tests that were run")
+    print("  SCANS.txt          the image scans")
+    print("  SIGNING_TEMPLATE.txt  exactly what you'll sign")
+    if files:
+        print(f"  source/            the {len(files)} files that were built (SHA-256 {expected[:16]}…, verified):")
+        print(textwrap.indent(review.tree(files), "    "))
+    else:
+        print("  source/            (no source was kept for this build)")
+    print(f"\nOpen it with:  code \"{folder}\"")
+    print(f"Then sign:     company-deploy approve {deployment_id}   (or --reject --reason \"...\")")
+    return 0
 
 
 async def _approve(client: PlatformClient, deployment_id: str, reject: bool, reason: str, yes: bool, key_path: Path) -> int:
@@ -208,6 +266,10 @@ def main(argv: list[str] | None = None) -> None:
     kg = keygen.add_parser("keygen", help="create your approver key and print the public half for the platform")
     kg.add_argument("--key", type=Path, default=approver.default_key_path())
     kg.add_argument("--url", help=argparse.SUPPRESS)
+    rv = sub.add_parser("review", help="download a waiting deployment's source, REVIEW.md, tests and scans into a folder")
+    rv.add_argument("deployment_id")
+    rv.add_argument("--out", help="folder to write into (default: ./review-<app>-<id>)")
+    rv.add_argument("--url", help=argparse.SUPPRESS)
     ap = sub.add_parser("approve", help="review a deployment and sign your decision")
     ap.add_argument("deployment_id")
     ap.add_argument("--reject", action="store_true", help="sign a rejection instead")
@@ -232,6 +294,8 @@ def main(argv: list[str] | None = None) -> None:
                 return await _whoami(client)
             if args.command == "approvals":
                 return await _approvals(client)
+            if args.command == "review":
+                return await _review(client, args.deployment_id, args.out)
             if args.command == "approve":
                 return await _approve(client, args.deployment_id, args.reject, args.reason, args.yes, args.key)
             return await _logout(client)

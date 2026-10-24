@@ -192,6 +192,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Use(RequireAuth(cfg.Authenticator))
 			r.Get("/pending", cfg.Approvals.Pending)
 			r.Get("/{deploymentId}", cfg.Approvals.Get)
+			r.Get("/{deploymentId}/source", cfg.Approvals.Source)
 			r.Post("/{deploymentId}/decision", cfg.Approvals.Decide)
 		})
 	}

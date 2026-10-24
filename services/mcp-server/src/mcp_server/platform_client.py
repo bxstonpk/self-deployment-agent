@@ -249,10 +249,14 @@ class PlatformClient:
 
     # --- Deployments -------------------------------------------------------
 
-    async def deploy_application(self, application_id: str, environment: str, test_report: str | None = None) -> dict[str, Any]:
+    async def deploy_application(
+        self, application_id: str, environment: str, test_report: str | None = None, review_document: str | None = None,
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {"environment": environment}
         if test_report:
             body["test_report"] = test_report
+        if review_document:
+            body["review_document"] = review_document
         return await self._request("POST", f"/applications/{application_id}/deploy", json=body)
 
     # --- Signed approvals (DEC-017) -----------------------------------------
@@ -262,6 +266,20 @@ class PlatformClient:
 
     async def approval_request(self, deployment_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/approvals/{deployment_id}")
+
+    async def approval_source(self, deployment_id: str) -> bytes:
+        """The exact source archive the deployment's build was made from."""
+        try:
+            resp = await self._client.request("GET", f"/approvals/{deployment_id}/source", headers=self._headers())
+        except httpx.RequestError as exc:
+            raise ToolError(ErrorCode.INTERNAL_ERROR, f"could not reach the Platform API: {exc}") from exc
+        if resp.status_code >= 400:
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            raise _map_error(resp.status_code, body)
+        return resp.content
 
     async def decide_approval(self, deployment_id: str, decision: str, reason: str, signed_at: str, signature: str) -> dict[str, Any]:
         return await self._request("POST", f"/approvals/{deployment_id}/decision", json={

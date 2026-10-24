@@ -118,6 +118,9 @@ services:
       # same disk as the database protects against mistakes, not against
       # losing the disk.
       - platform-backups:/var/lib/platform/backups
+      # Every build's source archive, kept so an approver can review exactly
+      # what was built before signing; deleted with its application.
+      - platform-sources:/var/lib/platform/sources
     extra_hosts:
       # Deployment health checks (Module J) reach a just-started sibling
       # container via this host, since the container's own "localhost"
@@ -151,3 +154,4 @@ services:
 volumes:
   pgdata:
   platform-backups:
+  platform-sources:

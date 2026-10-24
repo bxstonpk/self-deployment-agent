@@ -94,6 +94,8 @@ type Config struct {
 	// files go — a volume of its own in docker-compose.yml.
 	BackupEnabled     bool
 	BackupDir         string
+	// SourceDir keeps every build's source archive, for approvers to review.
+	SourceDir string
 	BackupHour        int
 	BackupLocation    *time.Location
 	BackupFullWeekday time.Weekday
@@ -236,6 +238,7 @@ func Load() (Config, error) {
 		AlertEvalInterval:            alertEval,
 		BackupEnabled:                getEnv("BACKUP_ENABLED", "true") != "false",
 		BackupDir:                    getEnv("BACKUP_DIR", "/var/lib/platform/backups"),
+		SourceDir:                    getEnv("SOURCE_DIR", "/var/lib/platform/sources"),
 		BackupHour:                   backupHour,
 		BackupLocation:               backupLocation,
 		BackupFullWeekday:            fullWeekday,

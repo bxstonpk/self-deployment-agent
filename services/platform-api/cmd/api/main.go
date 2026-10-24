@@ -24,6 +24,7 @@ import (
 	"platform-api/internal/db"
 	"platform-api/internal/hostdisk"
 	"platform-api/internal/hostinfo"
+	"platform-api/internal/sourcestore"
 	"platform-api/internal/httpapi"
 	"platform-api/internal/imagescan"
 	"platform-api/internal/repository/postgres"
@@ -106,6 +107,10 @@ func main() {
 		log.Printf("secret store: moved %d legacy plaintext database password(s) into the encrypted store", moved)
 	}
 	resources := service.NewApplicationResources(databaseService, secretService)
+	// Every build's source, kept for the approver to review (and deleted
+	// with its application).
+	sources := sourcestore.New(cfg.SourceDir)
+	resources.SetSources(sources)
 	backupService := service.NewBackupService(postgres.NewBackupRepo(pool), databaseRepo, applicationRepo, ownerRepo,
 		secretService, runtime, secretBox, nil, auditService, cfg.BackupDir, service.BackupSchedule{
 			Location: cfg.BackupLocation, Hour: cfg.BackupHour, FullWeekday: cfg.BackupFullWeekday,
@@ -122,6 +127,7 @@ func main() {
 	)
 	validationService := service.NewValidationService(applicationRepo, ownerRepo, stackRepo, auditService)
 	buildService := service.NewBuildService(applicationRepo, ownerRepo, buildRepo, baseImageRepo, dockerEngine, auditService)
+	buildService.SetSourceStore(sources)
 	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime, resources)
 	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService, notificationService, resources)
 	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService, resources, buildRepo)
@@ -168,6 +174,7 @@ func main() {
 		approvalService := service.NewApprovalService(postgres.NewDeploymentApprovalRepo(pool), service.ApprovalLookups{
 			Deployments: deploymentRepo, Builds: buildRepo, Apps: applicationRepo, Users: userRepo,
 		}, deployService, notificationService, cfg.ApproverKeys)
+		approvalService.SetSourceStore(sources)
 		deployService.RequireSignedApprovals(approvalService.NotifyApprovers)
 		approvalHandler = httpapi.NewApprovalHandler(approvalService, deployHandler)
 		for _, k := range cfg.ApproverKeys {

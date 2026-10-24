@@ -9,7 +9,9 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -63,6 +65,10 @@ func toApprovalRequest(r service.ApprovalRequest) map[string]any {
 		"scans":              scans,
 		"test_report":        r.Subject.TestReport,
 		"test_report_sha256": domain.TestReportSHA256(r.Subject.TestReport),
+		"review_document":    r.Subject.ReviewDocument,
+		"review_sha256":      domain.TestReportSHA256(r.Subject.ReviewDocument),
+		"source_sha256":      r.Subject.SourceSHA256,
+		"source_bytes":       r.SourceBytes,
 		"signing_template":   r.SigningTemplate,
 	}
 }
@@ -97,6 +103,28 @@ func (h *ApprovalHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toApprovalRequest(req))
+}
+
+// Source is GET /approvals/{deploymentId}/source: the exact source archive
+// the build was made from, for the approver to review before signing. Its
+// SHA-256 is in the request and in what they sign.
+func (h *ApprovalHandler) Source(w http.ResponseWriter, r *http.Request) {
+	caller, ok := UserFromContext(r.Context())
+	if !ok {
+		writeUnauthorized(w, domain.ErrInvalidToken)
+		return
+	}
+	f, size, name, err := h.svc.Source(r.Context(), caller, chi.URLParam(r, "deploymentId"))
+	if err != nil {
+		writeApprovalError(w, err)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
 }
 
 func (h *ApprovalHandler) Decide(w http.ResponseWriter, r *http.Request) {

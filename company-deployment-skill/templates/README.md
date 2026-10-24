@@ -7,6 +7,7 @@ Every new application on the platform starts from the same shape:
 | Frontend | React (Vite) | `frontend-react/` |
 | API | one of Python, JavaScript (Node.js), TypeScript, Go | `api-python/`, `api-nodejs/`, `api-typescript/`, `api-go/` |
 | Database | MySQL 8.4, provisioned by the platform | declared in `deployment.yaml` |
+| Review document | what the approver reads alongside every file: workflow, structure and paths, data, what changed | `REVIEW.md`, at the project root, required for an environment that waits for approval |
 
 ## Assembling a project
 

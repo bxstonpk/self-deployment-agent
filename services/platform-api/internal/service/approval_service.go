@@ -5,6 +5,8 @@ package service
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"io"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -47,7 +49,64 @@ type ApprovalService struct {
 	decider  SignedDecider
 	notifier AlertNotifier
 	keys     []domain.ApproverKey
+	sources  SourceReader
 	now      func() time.Time
+}
+
+// SourceReader opens a build's kept source archive (internal/sourcestore).
+type SourceReader interface {
+	Open(applicationID, buildID string) (io.ReadCloser, int64, error)
+}
+
+// SetSourceStore lets approvers read what was built.
+func (s *ApprovalService) SetSourceStore(store SourceReader) { s.sources = store }
+
+// sourceDigest is the SHA-256 and size of a build's kept source, or "" when
+// none was kept (a build from before sources were kept).
+func (s *ApprovalService) sourceDigest(applicationID, buildID string) (string, int64) {
+	if s.sources == nil {
+		return "", 0
+	}
+	f, size, err := s.sources.Open(applicationID, buildID)
+	if err != nil {
+		return "", 0
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", 0
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), size
+}
+
+// Source is a build's kept source archive, for an approver to review.
+func (s *ApprovalService) Source(ctx context.Context, caller domain.User, deploymentID string) (io.ReadCloser, int64, string, error) {
+	if err := s.requireApprover(caller); err != nil {
+		return nil, 0, "", err
+	}
+	if _, err := s.records.Get(ctx, deploymentID); err != nil {
+		return nil, 0, "", err
+	}
+	d, err := s.lookups.Deployments.GetByID(ctx, deploymentID)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	app, err := s.lookups.Apps.GetByID(ctx, d.ApplicationID)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if s.sources == nil {
+		return nil, 0, "", domain.ErrNotFound
+	}
+	f, size, err := s.sources.Open(d.ApplicationID, d.BuildID)
+	if err != nil {
+		return nil, 0, "", domain.ErrNotFound
+	}
+	short := d.BuildID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return f, size, fmt.Sprintf("%s-%s.tar.gz", app.Name, short), nil
 }
 
 func NewApprovalService(records ApprovalRecords, lookups ApprovalLookups, decider SignedDecider, notifier AlertNotifier, keys []domain.ApproverKey) *ApprovalService {
@@ -62,6 +121,7 @@ type ApprovalRequest struct {
 	RequestedBy     string // email
 	RequestedAt     time.Time
 	ScanReports     map[string]domain.ScanReport
+	SourceBytes     int64
 	SigningTemplate string
 }
 
@@ -99,12 +159,15 @@ func (s *ApprovalService) request(ctx context.Context, a domain.DeploymentApprov
 	if u, err := s.lookups.Users.GetByID(ctx, a.RequestedBy); err == nil {
 		requester = u.Email
 	}
+	sourceSHA, sourceBytes := s.sourceDigest(app.ID, b.ID)
 	subject := domain.ApprovalSubject{
 		DeploymentID: d.ID, ApplicationID: app.ID, ApplicationName: app.Name, Environment: d.Environment,
 		BuildID: b.ID, ImageRefs: b.ImageRefs, TestReport: a.TestReport,
+		SourceSHA256: sourceSHA, ReviewDocument: a.ReviewDocument,
 	}
 	return ApprovalRequest{Subject: subject, Status: d.Status, Decision: a.Decision, RequestedBy: requester,
-		RequestedAt: a.CreatedAt, ScanReports: d.ScanReports, SigningTemplate: subject.SigningTemplate()}, nil
+		RequestedAt: a.CreatedAt, ScanReports: d.ScanReports, SourceBytes: sourceBytes,
+		SigningTemplate: subject.SigningTemplate()}, nil
 }
 
 // Pending lists every deployment waiting for a decision.
