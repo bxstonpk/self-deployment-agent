@@ -1968,8 +1968,8 @@ administrator decides.
 - **Applications registered before this** have no profile, so their next
   build answers `profile_required` until `start_project` is called with
   their `application_id`.
-- Tests run on the platform, and previews: see "How tests run on the
-  platform" and "How previews work" (DEC-029 parts 2 and 3).
+- Tests run on the platform, and dev copies: see "How tests run on the
+  platform" and "How dev copies work" (DEC-029 parts 2 and 3).
 
 ### Verifying it
 
@@ -2104,97 +2104,137 @@ needing approval, and without them at the end. Results (2026-10-24):
     (only Running or Suspended can be) nor deleted (something is live).
     It now stays `Running` when an earlier version serves.
 
-## How previews work (DEC-029 part 3)
+## How dev copies work (DEC-029 part 3)
 
-A preview is a short-lived copy of an application, made to try a change
-on the platform, or to show it to someone, before deploying it.
+Each application can have one long-lived **dev copy**, `<name>-dev`, to
+try changes on.
+- **Its own application.** Like any application: its own database, its
+  own address (`/<name>-dev/`) and its own lifecycle.
+- **Approval.** Deploying to it never waits for approval.
+- **Data.** Its database stays from one deployment to the next, so what
+  an employee entered while trying it is still there after each change.
+- **Production.** The application itself is production, which waits for
+  approval as before.
 
-**Why its own application, not a third environment.** One application
-has one live deployment, one database, one address and one lifecycle
-status. Activating a deployment supersedes whatever is running.
-Automatic rollback is application-wide. A "preview" environment inside
-the same application would have replaced the running version and shared
-its data. So a preview is its own application:
-- **Name:** `<name>-preview-<4 hex>`. A deleted application keeps its
-  name, so the suffix is new each time.
-- **Link:** `application_previews` records which application it
-  previews.
-- **What it gets:** its own empty database, its own address, its own
-  lifecycle. The application it previews is never touched.
+The platform owner first asked for a 24-hour preview. They changed this
+on 2026-10-24 because an employee changing an application wants to keep
+the data they entered.
 
-- **Starting one.** `POST /applications/{id}/preview` (owners) takes the
-  same tar.gz a build does and goes through the ordinary steps, with the
-  ordinary checks: register (as the caller) → validate → build → deploy.
-  The preview gets:
-  - the application's deployment.yaml, with its own name and database
-    backups off;
-  - the application's profile;
-  - for its build, the application's approved dependency exceptions.
+**Why its own application, not the application's dev environment.** One
+application has one live deployment, one database, one address and one
+lifecycle status. A dev deployment of the application itself would
+replace what production serves, and share its data. An ungated dev on
+the same address and database would bypass approval altogether. So the
+copy is a linked application (`dev_copies`). A dev deployment of the
+application itself through the API still follows
+`APPROVAL_REQUIRED_ENVIRONMENTS`.
 
-  A live preview of the same application is torn down first, so there is
-  one per application. A preview that doesn't build is removed at once.
-  One whose deployment fails stays until it expires, so its logs can be
-  read.
-- **The `preview` environment.** A preview deploys only to `preview`, and
-  only a preview can (400 otherwise). It waits for approval only if
-  `APPROVAL_REQUIRED_ENVIRONMENTS` names `preview`.
-- **Ending.** A sweeper (every minute) tears a preview down: archive,
-  delete (which stops its containers and removes its database), as its
-  creator. It does so:
-  - when it expires (`PREVIEW_TTL_HOURS`, 24 by default);
-  - when the application it previews is archived or deleted.
-
-  `DELETE /applications/{id}/preview` does it now. `GET` shows the live
-  one.
-- **Where it shows.**
-  - MCP: `preview_application` (tests first, on the same bytes) and
-    `stop_preview`.
-  - Portal: a Preview card on the application's page, with the address,
-    the expiry and **Stop preview**.
+- **Deploying to dev.** `POST /applications/{id}/dev` (owners; `{id}` is
+  the application or its copy) takes the same tar.gz a build does.
+  - **The first time,** it makes the copy: registered as the caller,
+    named `<name>-dev`, or `-dev2`, `-dev3` (a deleted application keeps
+    its name). It uses the application's deployment.yaml (database
+    backups off) and its profile.
+  - **Every time,** it follows the application's current deployment.yaml,
+    then validate → build → deploy to `dev`.
+  - **On failure,** a failed build leaves the copy's running version and
+    data as they were.
+  - **Approved exceptions.** The copy builds with the application's
+    approved dependency exceptions.
+- **The DEV banner.** Its pages carry a "DEV — not the live application"
+  banner, added by the proxy to HTML responses.
+- **Test data Claude adds.** `POST .../dev/test-data {"note"}` (MCP
+  `record_test_data`) keeps Claude's record of test data it put in the
+  copy's database itself, with who and when. This happens every time
+  Claude does it.
+- **Data into production, once.**
+  - **The request.** A production deployment can ask for
+    `copy_dev_data`, only while production has never run (409
+    `dev_data_not_copyable` otherwise), and only when there is a dev copy
+    with a database.
+  - **What the approver signs.** The deployment records which copy and a
+    summary that includes Claude's test-data note. The summary is added
+    to the signing template as a `dev-data:` line, and shown in the
+    Portal and `company-deploy approve`.
+  - **The copy.** Once the deployment is live, production's database is
+    backed up and then filled from the copy's (a dump and restore). The
+    result is recorded on the deployment (`dev_data_copied_at` /
+    `dev_data_copy_error`), and the owners are told if it failed.
+- **The MCP side.**
+  - `deploy_application` to dev goes to the copy, with no REVIEW.md
+    needed.
+  - To production, if there is a copy and production has never run, it
+    stops and makes Claude **ask the employee whether the dev data is
+    real**. The question names Claude's recorded test data. Claude answers
+    with `dev_data="copy"` or `"leave"`.
+  - After every dev deployment Claude is told to ask: production, or
+    keep changing.
+- **Ending.** `DELETE .../dev` (`reset_dev`) removes the copy, its code
+  and its data. A sweeper (every minute) removes the copy of an archived
+  or deleted application. A copy deleted on its own is replaced on the
+  next dev deployment.
+- **Portal.** A Dev copy card on the application's page shows the link,
+  Claude's test-data note, and **Reset** (with a confirmation). The
+  approval page shows where production's data comes from.
 
 ### Known gaps
 
-- **No secrets, no data.** A preview has neither the application's
-  secrets nor its data: its database starts empty.
-- **Only its creator owns it**, as a separate application. The
-  application's other owners see it through `GET .../preview` and can
-  replace or stop it.
-- **A new address each time.** Every preview has a new address, since
-  application names are never reused.
-- **It counts as an application.** It shows in listings and the admin
-  Dashboard like any other application while it lives.
+- **RAM.** A copy's MySQL runs all the time (only the frontend and API
+  scale to zero). Each application with a dev copy and production runs
+  two databases.
+- **The copy is owned only by whoever made it.** The application's other
+  owners see, deploy to and reset it through the application.
+- **Dev data goes to production once, whole.** There is no merge and no
+  per-table choice. After production has run, its data is never replaced
+  from dev.
+- **A deployed copy keeps the deployment.yaml it was made with.** As with
+  any application, deployment.yaml can be changed only before the first
+  deploy. If the application's changes after that (a service added), the
+  dev deployment is refused (409 `dev_copy_yaml_changed`) until the copy
+  is reset, which removes its data.
+- **The test-data record is only as complete as Claude's reports.** The
+  platform can't tell who wrote a row.
 
 ### Verifying it
 
 ```bash
 cd services/mcp-server
-.venv/Scripts/python.exe scripts/verify_previews.py
+.venv/Scripts/python.exe scripts/verify_dev_copies.py
 ```
 
 It runs through the real MCP server over stdio against the local stack,
-with `APPROVAL_REQUIRED_ENVIRONMENTS=dev,production` (as on the LAN
-server). Results (2026-10-24):
+with a throwaway approver key and `APPROVAL_REQUIRED_ENVIRONMENTS=dev,production`
+(as on the LAN server). Results (2026-10-24):
 
-- **The original.** It was deployed to dev (which waited for approval)
-  and held an item.
-- **`preview_application`.** It ran the tests, then made
-  `<name>-preview-xxxx` and deployed it to `preview` without waiting
-  (about 2 minutes). The preview had its own address, expired after
-  `PREVIEW_TTL_HOURS` exactly, and its database was empty. The original's
-  item was still there, and its deployment was the same one, still
-  running.
-- **Replacing and refusals.**
-  - Another preview replaced it at a new address. The old one was
-    deleted, and its database container was gone.
-  - A preview of a preview was refused.
-  - A "preview" deploy of an ordinary application was refused.
-- **Ending.**
-  - `stop_preview` removed it and its database.
-  - An expired preview (its `expires_at` moved into the past) was
-    removed by the sweep.
-  - Archiving the application removed its preview.
-
-Also run on this branch: `e2e_verify.py` (59 checks, 34 tools).
+- **The first dev deployment.** It made `<name>-dev` and was running
+  without waiting, though dev is gated (about 2 minutes, tests included).
+  The application itself had no deployment. The copy's page carried the
+  DEV banner.
+- **Data kept.** An employee's item and Claude's item (recorded with
+  `record_test_data`) were still there after the next dev deployment, at
+  the same address.
+- **The first production deployment.** It stopped and asked about the
+  data, naming Claude's test item, and built nothing.
+- **`dev_data="copy"`.** The deployment waited for approval. The approval
+  request showed the copy and Claude's note, and the signing template had
+  the `dev-data:` line. Signed with a throwaway key, it went live, and the
+  copy was recorded as done.
+  - Production served both items.
+  - Production's page had no banner.
+  - The dev copy kept its own data.
+- **No second copy.** A second production deployment couldn't copy again,
+  through the MCP or the API (409).
+- **Reset.** `reset_dev` removed the copy and its database container, and
+  production's data was untouched. The next dev deployment made `-dev2`,
+  empty.
+- **Archive.** Archiving the application removed its dev copy within the
+  sweep.
+- **A bug found on the way and fixed.** The second dev deployment first
+  failed ("not in a state this operation can be performed from"). It
+  re-saved deployment.yaml onto a running copy, which no deployed
+  application accepts. An unchanged deployment.yaml now goes straight to
+  the build. A changed one gets a clear 409 that says resetting removes
+  the data.
 
 ## How Alerts work (FR-092, DEC-028)
 

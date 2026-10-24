@@ -32,7 +32,7 @@ type RouterConfig struct {
 	Approvals     *ApprovalHandler
 	Governance    *GovernanceHandler
 	TestRuns      *TestRunHandler
-	Previews      *PreviewHandler
+	DevCopies     *DevCopyHandler
 	// Auth serves /auth/*. Nil under the dev-header mode, which has no
 	// accounts to sign in to.
 	Auth *AuthHandler
@@ -133,10 +133,11 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		if cfg.Alerts != nil {
 			r.Get("/{id}/alerts", cfg.Alerts.ForApplication)
 		}
-		if cfg.Previews != nil {
-			r.Post("/{id}/preview", cfg.Previews.Start)
-			r.Get("/{id}/preview", cfg.Previews.Get)
-			r.Delete("/{id}/preview", cfg.Previews.Stop)
+		if cfg.DevCopies != nil {
+			r.Post("/{id}/dev", cfg.DevCopies.Deploy)
+			r.Get("/{id}/dev", cfg.DevCopies.Get)
+			r.Delete("/{id}/dev", cfg.DevCopies.Reset)
+			r.Post("/{id}/dev/test-data", cfg.DevCopies.RecordTestData)
 		}
 		if cfg.TestRuns != nil {
 			r.Post("/{id}/test-runs", cfg.TestRuns.Run)

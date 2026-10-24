@@ -68,6 +68,91 @@ _NO_REVIEW_MESSAGE = (
 )
 
 
+_ASK_ABOUT_DEV_DATA = (
+    "Before deploying to production, ASK the employee whether the data in the dev copy ({name}) is real data "
+    "to keep. {test_data}Production's first deployment can start with that data (dev_data=\"copy\": the "
+    "approver sees and signs that choice, and the data is copied once production is live) or empty "
+    "(dev_data=\"leave\"). This happens only once: after that, production's data is its own. Then call "
+    "deploy_application again with their answer. Nothing was built."
+)
+
+
+async def _dev_data_choice(client: PlatformClient, application_id: str, dev_data: str | None) -> bool:
+    """Whether this production deployment takes the dev copy's data. Asks
+    (through an error) when there is a choice to make and none was given."""
+    copy = await client.get_dev_copy(application_id)
+    if not copy:
+        if dev_data == "copy":
+            raise ToolError(ErrorCode.VALIDATION_ERROR, "there is no dev copy to take data from")
+        return False
+    history = await client.deployment_history(application_id)
+    production_ran = any(
+        d.get("environment") == "production" and d.get("status") in ("running", "superseded") for d in history
+    )
+    if production_ran:
+        if dev_data == "copy":
+            raise ToolError(
+                ErrorCode.VALIDATION_ERROR,
+                "production has already run and has its own data: dev data is copied only by the first "
+                "production deployment, so real data is never replaced",
+            )
+        return False
+    if dev_data is None:
+        test_data = (
+            f"You (Claude) recorded test data in it: {copy.get('test_data_note')}. Say so: that data must not "
+            "go to production unless the employee says it is real. "
+            if copy.get("test_data") else
+            "No test data was recorded as added by Claude, but ask anyway. "
+        )
+        raise ToolError(ErrorCode.VALIDATION_ERROR,
+                        _ASK_ABOUT_DEV_DATA.format(name=copy.get("name"), test_data=test_data))
+    return dev_data == "copy"
+
+
+async def _deploy_dev_copy(
+    client: PlatformClient, application_id: str, source: bytes, test_run_id: str | None, packed: dict[str, Any] | None,
+) -> dict[str, Any]:
+    res = await client.deploy_dev(application_id, source)
+    copy = res.get("dev_copy", {})
+    build = res.get("build", {})
+    deployment = res.get("deployment") or {}
+    if build.get("status") == "failed":
+        detail = (build.get("error_detail") or "no detail").removeprefix("build failed: ")
+        code = ErrorCode.VALIDATION_ERROR if build.get("error_category") == "source" else ErrorCode.INTERNAL_ERROR
+        raise ToolError(code, f"the dev copy didn't build (its running version and data are as they were): {detail}")
+    data: dict[str, Any] = {
+        "application_id": application_id,
+        "environment": "dev",
+        "dev_copy": copy,
+        "url": copy.get("url"),
+        "status": deployment.get("status"),
+        "deployment_id": deployment.get("id"),
+        "created": res.get("created", False),
+        "note": (
+            f"Deployed to the dev copy {copy.get('name')}: its own application, database and address, never "
+            "waiting for approval. Its data stays between deployments. Its pages carry a DEV banner. The "
+            "application itself (production) is untouched."
+        ),
+        "you_must_ask_the_employee": (
+            "Give the employee the url, and say plainly that it is the DEV copy for trying the application, not "
+            "the live one. Then ASK which they want, and wait for the answer: (1) send it to production (it "
+            "waits for the approver; you will be asked about the dev data first), or (2) keep changing it "
+            "(deploy to dev again; the data stays). If you put any data into it yourself to test, call "
+            "record_test_data now."
+        ),
+    }
+    if test_run_id:
+        data["test_run_id"] = test_run_id
+    if packed is not None:
+        data["source"] = packed
+    if deployment.get("status") not in (None, "running"):
+        data["deployment_note"] = (
+            f"the dev deployment is {deployment.get('status')}: {deployment.get('failure_reason') or ''} "
+            "Read its logs with get_application_logs on the dev copy's application_id."
+        )
+    return success(data)
+
+
 def _report_tail(report: str, lines: int = 60) -> str:
     """The end of a test report, where failures and summaries are."""
     kept = report.rstrip("\n").split("\n")
@@ -89,6 +174,7 @@ async def deploy_application(
     review_document: str | None = None,
     run_tests: bool = True,
     test_run_id: str | None = None,
+    dev_data: str | None = None,
 ) -> dict[str, Any]:
     # version_reference is accepted for shape-compliance with Section 13.6
     # but not enforced: this Platform API always deploys the application's
@@ -115,7 +201,7 @@ async def deploy_application(
     if project_path and source_archive_base64:
         raise ToolError(ErrorCode.VALIDATION_ERROR, "pass project_path or source_archive_base64, not both")
     fingerprint = (application_id, target_environment, version_reference, source_archive_base64, project_path,
-                   run_tests, test_run_id)
+                   run_tests, test_run_id, dev_data)
     if idempotency_key:
         try:
             cached = idempotency.get_cached(idempotency_key, fingerprint)
@@ -123,6 +209,16 @@ async def deploy_application(
             raise ToolError(ErrorCode.CONFLICT, str(exc)) from exc
         if cached is not None:
             return cached
+
+    # Dev deployments go to the application's dev copy (DEC-029 part 3):
+    # its own database and address, never waiting for approval.
+    policy = await client.get_policy()
+    to_dev_copy = target_environment == "dev" and bool((policy or {}).get("dev_copies"))
+    if dev_data not in (None, "copy", "leave"):
+        raise ToolError(ErrorCode.VALIDATION_ERROR, 'dev_data is "copy" or "leave"')
+    copy_dev_data = False
+    if target_environment == "production" and (policy or {}).get("dev_copies"):
+        copy_dev_data = await _dev_data_choice(client, application_id, dev_data)
 
     # REVIEW.md: required for an environment that waits for approval, and
     # checked before building so a missing one costs nothing.
@@ -132,8 +228,7 @@ async def deploy_application(
         except ReviewError as exc:
             raise ToolError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
         review_document = found or review_document
-    if not (review_document or "").strip():
-        policy = await client.get_policy()
+    if not (review_document or "").strip() and not to_dev_copy:
         gated = (policy or {}).get("approval_required_environments", ["production"]) if policy is not None else ["production"]
         if target_environment in gated:
             raise ToolError(ErrorCode.VALIDATION_ERROR, _NO_REVIEW_MESSAGE.format(env=target_environment))
@@ -165,6 +260,13 @@ async def deploy_application(
                 + _report_tail(tests.get("report", "")),
             )
         test_run_id = tests.get("id")
+    if to_dev_copy:
+        if source_bytes is None:
+            raise ToolError(ErrorCode.VALIDATION_ERROR, "a dev deployment needs the source: pass project_path")
+        result = await _deploy_dev_copy(client, application_id, source_bytes, test_run_id, packed)
+        if idempotency_key:
+            idempotency.store(idempotency_key, fingerprint, result)
+        return result
     if source_bytes is not None:
         build = await client.trigger_build(application_id, source_bytes)
         if build.get("status") == "failed":
@@ -181,7 +283,7 @@ async def deploy_application(
 
     try:
         deployment = await client.deploy_application(
-            application_id, target_environment, test_report, review_document, test_run_id
+            application_id, target_environment, test_report, review_document, test_run_id, copy_dev_data
         )
     except ToolError as exc:
         if exc.platform_code == "no_successful_build":
@@ -210,6 +312,14 @@ async def deploy_application(
     }
     if status == "running":
         data["urls"] = _service_urls(deployment)
+        if copy_dev_data:
+            if deployment.get("dev_data_copied_at"):
+                data["dev_data"] = "copied from the dev copy into production's database"
+            else:
+                data["dev_data"] = (
+                    "NOT copied: " + (deployment.get("dev_data_copy_error") or "no reason given")
+                    + ". Production is running with an empty database; tell the employee."
+                )
     if test_run_id:
         data["test_run_id"] = test_run_id
         data["tests"] = "run by the platform; its report is attached to this deployment"

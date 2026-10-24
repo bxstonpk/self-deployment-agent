@@ -201,14 +201,17 @@ async def main() -> None:
 
                 (project / "api" / "main.go").write_text(
                     (project / "api" / "main.go").read_text(encoding="utf-8") + "\n// changed after the tests\n", encoding="utf-8")
-                mismatch = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "dev",
-                                                                "project_path": str(project), "test_run_id": passed_id})
+                # Production (dev goes to the dev copy, which carries no report).
+                mismatch = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "production",
+                                                                "project_path": str(project), "test_run_id": passed_id,
+                                                                "dev_data": "leave"})
                 _check(mismatch["status"] == "error" and "different source" in mismatch["error"]["message"],
                        "a passed run of other source isn't accepted for a build of changed source")
 
                 t0 = time.time()
                 dep = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "production",
-                                                           "project_path": str(project), "test_report": "ทดสอบเพิ่มเองบนเครื่อง"})
+                                                           "project_path": str(project), "test_report": "ทดสอบเพิ่มเองบนเครื่อง",
+                                                           "dev_data": "leave"})
                 dep_id = dep.get("data", {}).get("deployment_id")
                 pending_id = dep_id
                 _check(dep["data"].get("status") == "pending_approval" and dep["data"].get("test_run_id"),

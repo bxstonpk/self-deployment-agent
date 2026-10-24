@@ -14,7 +14,13 @@ import (
 type PolicyHandler struct {
 	environments []string
 	approvers    []string
+	// devCopies: a dev deployment made through the MCP goes to the
+	// application's dev copy, which never waits for approval (DEC-029).
+	devCopies bool
 }
+
+// SetDevCopies says dev deployments go to dev copies.
+func (h *PolicyHandler) SetDevCopies(on bool) { h.devCopies = on }
 
 func NewPolicyHandler(environments []domain.Environment, keys []domain.ApproverKey) *PolicyHandler {
 	h := &PolicyHandler{environments: []string{}, approvers: []string{}}
@@ -33,5 +39,6 @@ func (h *PolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 		"approval_required_environments": h.environments,
 		"signed_approval":                len(h.approvers) > 0,
 		"approvers":                      h.approvers,
+		"dev_copies":                     h.devCopies,
 	})
 }

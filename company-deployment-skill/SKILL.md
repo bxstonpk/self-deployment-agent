@@ -52,7 +52,7 @@ Every platform interaction goes through these, and nothing else:
 `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`,
 `get_standards`, `start_project`, `scaffold_project`, `check_project`,
 `request_exception`, `list_exceptions`, `run_tests`,
-`preview_application`, `stop_preview`,
+`record_test_data`, `reset_dev`,
 `create_application`, `validate_application`, `deploy_application`,
 `get_application_status`, `get_deployment_status`, `get_application_logs`,
 `get_application_metrics`, `rollback_application`, `restart_application`,
@@ -327,7 +327,9 @@ doesn't allow fails the build: remove it, or `request_exception`).
 
 ### 7b. Write REVIEW.md, for the approver
 
-If `target_environment` is in `get_platform_info`'s
+(A dev deployment goes to the dev copy, which doesn't wait for approval:
+no REVIEW.md is needed for it. Write it as you go anyway; production needs
+it.) If `target_environment` is in `get_platform_info`'s
 `approval_required_environments`, the approver reads **every file** of
 the build before signing. Alongside them they read a `REVIEW.md` that
 you write. Copy `templates/REVIEW.md` to the project root as `REVIEW.md`
@@ -469,27 +471,54 @@ executing it on the platform's behalf), `helm`, `ssh`, or any other
 infrastructure-level command, even if explicitly asked, even "just to
 check something."
 
-## Trying a change: previews
+## Dev and production: the dev copy, and its data
 
-When the employee wants to see or share a change before it is deployed,
-`preview_application(application_id, project_path)` runs the tests on the
-platform and then puts the project up as a **separate, short-lived copy**:
-its own application, `<name>-preview-xxxx`, at its own address, with its
-own **empty** database. The application it previews and its data are not
-touched. Give the employee the `url` and `expires_at` from the result,
-and say plainly that the data there is empty and is deleted with the
-preview.
+`deploy_application(target_environment="dev")` deploys to the
+application's **dev copy**, `<name>-dev`: its own application at its own
+address (`/<name>-dev/`), with **its own database**. It never waits for
+approval, and its data stays from one deployment to the next, so the
+employee can keep trying the application with what they entered while you
+change it. Its pages carry a DEV banner. `production` is the application
+itself, at `/<name>/`, which waits for approval as before.
 
-- It expires on its own (24 hours unless the platform is set otherwise),
-  and goes when its application is archived or deleted.
-  `stop_preview(application_id)` removes it sooner.
-- Starting another replaces the current one, with a new address.
-- A preview doesn't wait for approval unless the platform's
-  `approval_required_environments` names `preview`. It is not a
-  deployment: never call a preview "deployed" or "live", and never use one
-  instead of `deploy_application` when the employee asked to deploy.
-- It uses the application's own profile and approved exceptions, but not
-  its secrets: a preview that needs a secret won't have it.
+**After every dev deployment, ask what next.** Give the `url`, say plainly
+it is the dev copy for trying, not the live application, and ask, then
+wait for the answer. For example, in Thai: *"ขึ้น dev แล้วที่ลิงก์นี้
+(เป็นตัวทดลอง ยังไม่ใช่ระบบจริง) จะส่งขึ้น production ให้ผู้อนุมัติเลยไหม
+หรือจะปรับแก้ต่ออีก?"*
+- **Keep changing:** change it and deploy to dev again; the data stays.
+- **Production:** `deploy_application(target_environment="production")`
+  (Step 8 onwards: REVIEW.md, the tests, approval).
+
+**Test data you put in the dev copy yourself: record it, every time.** If
+you add data to the dev copy's database yourself (test rows through its
+API, sample records, anything that isn't the employee's own entry), call
+`record_test_data(application_id, note)` right away, saying what and
+roughly how much. It is kept with the dev copy, across conversations, so
+it is never taken for real data.
+
+**The first production deployment asks about the data.** If the
+application has a dev copy and production has never run,
+`deploy_application` to production stops and asks: **ask the employee
+whether the data in the dev copy is real data to keep.**
+- Tell them what you recorded as test data (the error message lists it).
+  Don't recommend copying data you recorded as test data; if the employee
+  still says copy, it goes to the approver marked as containing Claude's
+  test data.
+- `dev_data="copy"`: production's database is filled from the dev copy
+  once production is live. The approver sees and signs this choice.
+- `dev_data="leave"`: production starts with an empty database.
+- **Never decide this yourself.** It happens only once: after production
+  has run, its data is its own and is never replaced.
+
+If a dev deployment answers that the application's deployment.yaml
+changed since the dev copy first deployed (e.g. you added a service), the
+copy can only take it by being reset, which deletes its data: explain that
+and ask the employee before calling `reset_dev`.
+
+`reset_dev(application_id)` removes the dev copy, its code and **all its
+data**, only when the employee asks. The next dev deployment makes a new
+one at a new address.
 
 ## Handling approval
 

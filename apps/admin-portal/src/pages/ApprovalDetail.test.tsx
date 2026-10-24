@@ -35,6 +35,7 @@ const REQUEST = {
   source_sha256: sha256Hex(archive),
   source_bytes: archive.length,
   signing_template: fixture.template,
+  dev_data: "",
 };
 
 function mockApi(overrides: Partial<typeof REQUEST> = {}) {
@@ -162,5 +163,12 @@ describe("Approvals", () => {
     mockApi({ test_report: "--- from the requester (not run by the platform) ---\ngo test: ok\n" });
     renderDetail();
     expect(await screen.findByText("Requester's report only")).toBeInTheDocument();
+  });
+
+  it("says when production's data comes from the dev copy, and Claude's test data in it", async () => {
+    mockApi({ dev_data: "copy from leave-dev; Claude reported adding test data: 3 ใบลาทดสอบ" });
+    renderDetail();
+    expect(await screen.findByText("Copied from the dev copy")).toBeInTheDocument();
+    expect(screen.getByText(/3 ใบลาทดสอบ/)).toBeInTheDocument();
   });
 });

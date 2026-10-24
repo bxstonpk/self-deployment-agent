@@ -163,7 +163,7 @@ func (s *ApprovalService) request(ctx context.Context, a domain.DeploymentApprov
 	subject := domain.ApprovalSubject{
 		DeploymentID: d.ID, ApplicationID: app.ID, ApplicationName: app.Name, Environment: d.Environment,
 		BuildID: b.ID, ImageRefs: b.ImageRefs, TestReport: a.TestReport,
-		SourceSHA256: sourceSHA, ReviewDocument: a.ReviewDocument,
+		SourceSHA256: sourceSHA, ReviewDocument: a.ReviewDocument, DevData: d.DevDataSummary,
 	}
 	return ApprovalRequest{Subject: subject, Status: d.Status, Decision: a.Decision, RequestedBy: requester,
 		RequestedAt: a.CreatedAt, ScanReports: d.ScanReports, SourceBytes: sourceBytes,

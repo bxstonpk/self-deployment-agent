@@ -43,10 +43,12 @@ _WRONG_STATE_CODES = {
     "invalid_rollback_target",
     "profile_required",
     "test_run_not_usable",
+    "dev_copy_yaml_changed",
+    "dev_data_not_copyable",
 }
 
 # Codes that genuinely are Section 8's narrower CONFLICT definition.
-_CONFLICT_CODES = {"build_in_flight", "deployment_in_flight", "name_taken"}
+_CONFLICT_CODES = {"build_in_flight", "deployment_in_flight", "name_taken", "in_flight"}
 
 _STATUS_TO_CODE = {
     400: ErrorCode.VALIDATION_ERROR,
@@ -208,18 +210,32 @@ class PlatformClient:
     async def get_test_run(self, application_id: str, test_run_id: str) -> dict[str, Any]:
         return (await self._request("GET", f"/applications/{application_id}/test-runs/{test_run_id}")).get("test_run", {})
 
-    # --- Previews ------------------------------------------------------------
+    # --- Dev copies (DEC-029 part 3) ----------------------------------------
 
-    async def start_preview(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
-        """Registers, builds and deploys the preview: as long as a build and
-        a deploy take together."""
+    async def deploy_dev(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        """Deploys to the application's dev copy, making it the first time:
+        as long as a build and a deploy take together."""
         return await self._request(
-            "POST", f"/applications/{application_id}/preview",
+            "POST", f"/applications/{application_id}/dev",
             extra_headers={"Content-Type": "application/gzip"}, content=source_archive, timeout=900,
         )
 
-    async def stop_preview(self, application_id: str) -> dict[str, Any]:
-        return await self._request("DELETE", f"/applications/{application_id}/preview")
+    async def get_dev_copy(self, application_id: str) -> dict[str, Any] | None:
+        """The application's dev copy, or None if it has none."""
+        try:
+            return (await self._request("GET", f"/applications/{application_id}/dev")).get("dev_copy")
+        except ToolError as exc:
+            if exc.code == ErrorCode.NOT_FOUND:
+                return None
+            raise
+
+    async def reset_dev(self, application_id: str) -> dict[str, Any]:
+        return await self._request("DELETE", f"/applications/{application_id}/dev")
+
+    async def record_test_data(self, application_id: str, note: str) -> dict[str, Any]:
+        return (await self._request(
+            "POST", f"/applications/{application_id}/dev/test-data", json={"note": note},
+        )).get("dev_copy", {})
 
     # --- Departments -----------------------------------------------------
 
@@ -306,9 +322,11 @@ class PlatformClient:
 
     async def deploy_application(
         self, application_id: str, environment: str, test_report: str | None = None, review_document: str | None = None,
-        test_run_id: str | None = None,
+        test_run_id: str | None = None, copy_dev_data: bool = False,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"environment": environment}
+        if copy_dev_data:
+            body["copy_dev_data"] = True
         if test_report:
             body["test_report"] = test_report
         if test_run_id:

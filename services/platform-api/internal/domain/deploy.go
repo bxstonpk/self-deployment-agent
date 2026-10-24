@@ -77,6 +77,13 @@ type Deployment struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	CompletedAt       *time.Time
+	// A production deployment that takes its data from the dev copy
+	// (migration 0026): which copy, what was said about its data (part of
+	// what the approver signs), and how the copy went.
+	DevDataFrom      *string
+	DevDataSummary   string
+	DevDataCopiedAt  *time.Time
+	DevDataCopyError string
 }
 
 type ApprovalDecision string

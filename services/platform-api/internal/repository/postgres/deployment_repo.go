@@ -22,7 +22,8 @@ func NewDeploymentRepo(pool *pgxpool.Pool) *DeploymentRepo {
 
 const deploymentColumns = `id, application_id, build_id, environment, requested_by, status,
 	scan_passed, scan_critical_count, scan_high_count, scan_reports,
-	rejection_reason, failure_reason, containers, created_at, updated_at, completed_at`
+	rejection_reason, failure_reason, containers, created_at, updated_at, completed_at,
+	dev_data_from, dev_data_summary, dev_data_copied_at, dev_data_copy_error`
 
 func (r *DeploymentRepo) Create(ctx context.Context, applicationID, buildID, requestedBy string, environment domain.Environment) (domain.Deployment, error) {
 	return r.scanOne(ctx, `
@@ -30,6 +31,22 @@ func (r *DeploymentRepo) Create(ctx context.Context, applicationID, buildID, req
 		VALUES ($1, $2, $3, $4, 'scanning')
 		RETURNING `+deploymentColumns,
 		applicationID, buildID, requestedBy, string(environment))
+}
+
+// SetDevDataSource records that this deployment takes its data from a dev
+// copy, and what was said about that data.
+func (r *DeploymentRepo) SetDevDataSource(ctx context.Context, deploymentID, fromApplicationID, summary string) (domain.Deployment, error) {
+	return r.scanOne(ctx, `
+		UPDATE deployments SET dev_data_from = $2, dev_data_summary = $3, updated_at = now()
+		WHERE id = $1 RETURNING `+deploymentColumns, deploymentID, fromApplicationID, summary)
+}
+
+// SetDevDataCopied records how copying the dev data went ("" is success).
+func (r *DeploymentRepo) SetDevDataCopied(ctx context.Context, deploymentID, copyError string) (domain.Deployment, error) {
+	return r.scanOne(ctx, `
+		UPDATE deployments SET dev_data_copied_at = CASE WHEN $2 = '' THEN now() END, dev_data_copy_error = $2,
+		       updated_at = now()
+		WHERE id = $1 RETURNING `+deploymentColumns, deploymentID, copyError)
 }
 
 func (r *DeploymentRepo) UpdateScanResult(ctx context.Context, deploymentID string, reports map[string]domain.ScanReport) (domain.Deployment, error) {
@@ -188,6 +205,7 @@ func scanDeploymentRow(row rowScanner) (domain.Deployment, error) {
 		&d.ScanPassed, &d.ScanCriticalCount, &d.ScanHighCount, &scanReportsJSON,
 		&d.RejectionReason, &d.FailureReason, &containersJSON,
 		&d.CreatedAt, &d.UpdatedAt, &d.CompletedAt,
+		&d.DevDataFrom, &d.DevDataSummary, &d.DevDataCopiedAt, &d.DevDataCopyError,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Deployment{}, domain.ErrNotFound

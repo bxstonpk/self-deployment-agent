@@ -85,13 +85,15 @@ class FakePlatformClient:
             "violations": [], "allowed_by_exception": [],
         }
         self.profile_error: ToolError | None = None
-        # Previews: what start_preview returns next.
-        self.next_preview: dict[str, Any] = {
-            "preview": {"application_id": "pv-1", "name": "leave-preview-a1b2", "previews": "leave",
-                        "url": "http://platform.local/leave-preview-a1b2/", "expires_at": "2026-10-25T09:00:00Z"},
+        # Dev copies: what deploy_dev returns next, and the live copy.
+        self.next_dev: dict[str, Any] = {
+            "dev_copy": {"application_id": "dev-1", "name": "leave-dev", "copy_of": "leave",
+                         "url": "http://platform.local/leave-dev/", "test_data": False, "test_data_note": ""},
+            "created": True,
             "build": {"status": "succeeded"},
-            "deployment": {"id": "d-pv", "status": "running", "environment": "preview"},
+            "deployment": {"id": "d-dev", "status": "running", "environment": "dev"},
         }
+        self.dev_copy: dict[str, Any] | None = None
         # Tests run by the platform: what run_tests returns next.
         self.next_test_run: dict[str, Any] = {
             "id": "run-1", "status": "passed", "report": "Tests run by the platform\nresult: passed\n",
@@ -154,13 +156,25 @@ class FakePlatformClient:
         self._record("check_standards", application_id, source_archive)
         return self.next_standards_check
 
-    async def start_preview(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
-        self._record("start_preview", application_id, source_archive)
-        return dict(self.next_preview)
+    async def deploy_dev(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        self._record("deploy_dev", application_id, source_archive)
+        self.dev_copy = dict(self.next_dev["dev_copy"])
+        return dict(self.next_dev)
 
-    async def stop_preview(self, application_id: str) -> dict[str, Any]:
-        self._record("stop_preview", application_id)
-        return {"stopped": "leave-preview-a1b2"}
+    async def get_dev_copy(self, application_id: str) -> dict[str, Any] | None:
+        self._record("get_dev_copy", application_id)
+        return self.dev_copy
+
+    async def reset_dev(self, application_id: str) -> dict[str, Any]:
+        self._record("reset_dev", application_id)
+        self.dev_copy = None
+        return {"removed": "leave-dev"}
+
+    async def record_test_data(self, application_id: str, note: str) -> dict[str, Any]:
+        self._record("record_test_data", application_id, note)
+        if self.dev_copy is not None:
+            self.dev_copy = {**self.dev_copy, "test_data": True, "test_data_note": note}
+        return self.dev_copy or {}
 
     async def run_tests(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
         self._record("run_tests", application_id, source_archive)
@@ -229,9 +243,10 @@ class FakePlatformClient:
 
     async def deploy_application(
         self, application_id: str, environment: str, test_report: str | None = None, review_document: str | None = None,
-        test_run_id: str | None = None,
+        test_run_id: str | None = None, copy_dev_data: bool = False,
     ) -> dict[str, Any]:
         self._record("deploy_application", application_id, environment)
+        self.last_copy_dev_data = copy_dev_data
         self.last_test_report = test_report
         self.last_test_run_id = test_run_id
         self.last_review_document = review_document

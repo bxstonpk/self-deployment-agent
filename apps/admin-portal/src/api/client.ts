@@ -580,6 +580,8 @@ export interface ApprovalRequest {
   source_sha256: string;
   source_bytes: number;
   signing_template: string;
+  // Set when the deployment takes its data from the dev copy.
+  dev_data?: string;
 }
 
 export function listPendingApprovals(identity: Identity): Promise<{ pending: ApprovalRequest[] }> {
@@ -683,29 +685,30 @@ export function decideStandardException(
   });
 }
 
-// --- Previews: a short-lived copy of an application (DEC-029 part 3) ---
+// --- Dev copies: an application's copy to try changes on (DEC-029 part 3) ---
 
-export interface Preview {
+export interface DevCopy {
   application_id: string;
   name: string;
-  previews: string;
-  previews_id: string;
+  copy_of: string;
+  copy_of_id: string;
   url: string;
   created_at: string;
-  expires_at: string;
+  test_data: boolean;
+  test_data_note: string;
 }
 
-// The application's live preview, or null when it has none.
-export async function getPreview(identity: Identity, applicationId: string): Promise<Preview | null> {
+// The application's dev copy, or null when it has none.
+export async function getDevCopy(identity: Identity, applicationId: string): Promise<DevCopy | null> {
   try {
-    return (await request<{ preview: Preview }>(identity, "GET", `/applications/${encodeURIComponent(applicationId)}/preview`))
-      .preview;
+    return (await request<{ dev_copy: DevCopy }>(identity, "GET", `/applications/${encodeURIComponent(applicationId)}/dev`))
+      .dev_copy;
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) return null;
     throw err;
   }
 }
 
-export function stopPreview(identity: Identity, applicationId: string): Promise<{ stopped: string }> {
-  return request(identity, "DELETE", `/applications/${encodeURIComponent(applicationId)}/preview`);
+export function resetDevCopy(identity: Identity, applicationId: string): Promise<{ removed: string }> {
+  return request(identity, "DELETE", `/applications/${encodeURIComponent(applicationId)}/dev`);
 }

@@ -53,6 +53,8 @@ type DeploymentRepository interface {
 	// every deployment ever attempted for an application, newest first. This
 	// is what a rollback requester (FR-098 step 1) picks a target from.
 	ListForApplication(ctx context.Context, applicationID string) ([]domain.Deployment, error)
+	SetDevDataSource(ctx context.Context, deploymentID, fromApplicationID, summary string) (domain.Deployment, error)
+	SetDevDataCopied(ctx context.Context, deploymentID, copyError string) (domain.Deployment, error)
 }
 
 type DeploymentApprovalRepository interface {
@@ -81,7 +83,7 @@ type ResourceProvisioner interface {
 }
 
 type DeploymentService struct {
-	previews      PreviewParents
+	devCopies     DevCopies
 	apps          ApplicationLifecycleRepository
 	owners        ApplicationOwnerRepository
 	builds        BuildRepository
@@ -119,13 +121,42 @@ func (s *DeploymentService) RequireSignedApprovals(notify func(ctx context.Conte
 	s.notifyApprovers = notify
 }
 
-// PreviewParents says which applications are previews, and of what.
-type PreviewParents interface {
+// CopyParents says which applications are dev copies, and of what ("" if
+// it isn't one).
+type CopyParents interface {
 	ParentOf(ctx context.Context, applicationID string) (string, error)
 }
 
-// SetPreviews lets previews deploy to the "preview" environment.
-func (s *DeploymentService) SetPreviews(p PreviewParents) { s.previews = p }
+// DevCopies is what deployments need of dev copies (DEC-029 part 3).
+type DevCopies interface {
+	CopyParents
+	// DataSource is the dev copy a production deployment may take its data
+	// from, and the summary the approver signs; domain.ErrDevDataNoDatabase
+	// if there is none with a database.
+	DataSource(ctx context.Context, parentID string) (domain.DevCopy, string, error)
+	// CopyData replaces toApplicationID's database contents with
+	// fromApplicationID's, backing up what it replaces first.
+	CopyData(ctx context.Context, fromApplicationID, toApplicationID, actorID string) error
+}
+
+// SetDevCopies lets dev copies deploy without approval, and production
+// deployments take their data from them.
+func (s *DeploymentService) SetDevCopies(d DevCopies) { s.devCopies = d }
+
+// gated is whether a deployment of this application to env waits for
+// approval: what APPROVAL_REQUIRED_ENVIRONMENTS says, except that a dev
+// copy never does.
+func (s *DeploymentService) gated(ctx context.Context, applicationID string, env domain.Environment) bool {
+	if !s.requiresApproval(env) {
+		return false
+	}
+	if s.devCopies != nil {
+		if parent, err := s.devCopies.ParentOf(ctx, applicationID); err == nil && parent != "" {
+			return false
+		}
+	}
+	return true
+}
 
 func (s *DeploymentService) requiresApproval(env domain.Environment) bool {
 	if s.approvalEnvs == nil {
@@ -215,22 +246,24 @@ func isInFlight(status domain.DeploymentStatus) bool {
 // straight through to Deploy/HealthCheck/Activate (FR-042's alternative
 // flow: dev skips the gate entirely).
 func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, requesterID string, environment domain.Environment) (deployment domain.Deployment, err error) {
-	if environment != domain.EnvironmentDev && environment != domain.EnvironmentProduction && environment != domain.EnvironmentPreview {
+	if environment != domain.EnvironmentDev && environment != domain.EnvironmentProduction {
 		return domain.Deployment{}, domain.ErrInvalidEnvironment
 	}
-	// A preview (DEC-029 part 3) deploys only to "preview", and only a
-	// preview does: its own application, so nothing else shares it.
-	if s.previews != nil {
-		parent, err := s.previews.ParentOf(ctx, applicationID)
+	// A dev copy (DEC-029 part 3) deploys only to dev, and never waits for
+	// approval: it is its own application, with its own database and
+	// address, so nothing it runs reaches the application or its data.
+	isDevCopy := false
+	if s.devCopies != nil {
+		parent, err := s.devCopies.ParentOf(ctx, applicationID)
 		if err != nil {
 			return domain.Deployment{}, err
 		}
-		if (parent != "") != (environment == domain.EnvironmentPreview) {
-			return domain.Deployment{}, domain.ErrPreviewOnlyEnvironment
-		}
-	} else if environment == domain.EnvironmentPreview {
-		return domain.Deployment{}, domain.ErrPreviewOnlyEnvironment
+		isDevCopy = parent != ""
 	}
+	if isDevCopy && environment != domain.EnvironmentDev {
+		return domain.Deployment{}, domain.ErrDevCopyEnvironment
+	}
+	gated := s.requiresApproval(environment) && !isDevCopy
 
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
@@ -241,8 +274,33 @@ func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, r
 	}
 	// Checked before anything is created: an approver must have something
 	// to read, and a requester finds out now rather than after the scan.
-	if s.requiresApproval(environment) && strings.TrimSpace(domain.ReviewDocumentFrom(ctx)) == "" {
+	if gated && strings.TrimSpace(domain.ReviewDocumentFrom(ctx)) == "" {
 		return domain.Deployment{}, domain.ErrReviewDocumentRequired
+	}
+	// Taking production's data from the dev copy: only for production, and
+	// only the first time, so real data is never replaced.
+	var devData domain.DevCopy
+	var devDataSummary string
+	if domain.DevDataRequestFrom(ctx).Copy {
+		if environment != domain.EnvironmentProduction || isDevCopy {
+			return domain.Deployment{}, domain.ErrDevDataNotProduction
+		}
+		if s.devCopies == nil {
+			return domain.Deployment{}, domain.ErrDevDataNoDatabase
+		}
+		history, err := s.deployments.ListForApplication(ctx, applicationID)
+		if err != nil {
+			return domain.Deployment{}, err
+		}
+		for _, d := range history {
+			if d.Environment == domain.EnvironmentProduction &&
+				(d.Status == domain.DeploymentRunning || d.Status == domain.DeploymentSuperseded) {
+				return domain.Deployment{}, domain.ErrDevDataNotFirst
+			}
+		}
+		if devData, devDataSummary, err = s.devCopies.DataSource(ctx, applicationID); err != nil {
+			return domain.Deployment{}, err
+		}
 	}
 
 	build, err := s.builds.LatestForApplication(ctx, applicationID)
@@ -270,6 +328,9 @@ func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, r
 	defer s.auditDeployOutcome(ctx, domain.AuditActionInitiateDeploy, applicationID, requesterID, &deployment, &err)
 
 	deployment, err = s.deployments.Create(ctx, applicationID, build.ID, requesterID, environment)
+	if err == nil && devData.ApplicationID != "" {
+		deployment, err = s.deployments.SetDevDataSource(ctx, deployment.ID, devData.ApplicationID, devDataSummary)
+	}
 	if err != nil {
 		return domain.Deployment{}, err
 	}
@@ -305,7 +366,7 @@ func (s *DeploymentService) runScanThenBeyond(ctx context.Context, app domain.Ap
 			"image scan found blocking-severity (CRITICAL) vulnerabilities — see scan_reports for detail")
 	}
 
-	if s.requiresApproval(deployment.Environment) {
+	if s.gated(ctx, app.ID, deployment.Environment) {
 		deployment, err = s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentPendingApproval)
 		if err != nil {
 			return domain.Deployment{}, err
@@ -583,7 +644,36 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 		return domain.Deployment{}, err
 	}
 
+	if deployment.DevDataFrom != nil && deployment.DevDataCopiedAt == nil && s.devCopies != nil {
+		deployment = s.copyDevData(ctx, app, deployment)
+	}
 	return deployment, nil
+}
+
+// copyDevData fills a newly live production deployment's database from the
+// dev copy, as the approver signed. The deployment is live either way; a
+// copy that fails is recorded and the owners are told, with the dev copy's
+// data still there to copy again by hand.
+func (s *DeploymentService) copyDevData(ctx context.Context, app domain.Application, deployment domain.Deployment) domain.Deployment {
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+	defer cancel()
+	copyErr := s.devCopies.CopyData(detached, *deployment.DevDataFrom, app.ID, deployment.RequestedBy)
+	msg := ""
+	if copyErr != nil {
+		msg = copyErr.Error()
+	}
+	if updated, err := s.deployments.SetDevDataCopied(detached, deployment.ID, msg); err == nil {
+		deployment = updated
+	} else {
+		log.Printf("deploy: record the dev data copy for %s: %v", deployment.ID, err)
+	}
+	if copyErr != nil {
+		s.notifications.NotifyOwners(detached, app.ID, domain.NotificationDeploymentStatus,
+			fmt.Sprintf("%s: the dev data wasn't copied to production", app.Name),
+			fmt.Sprintf("Deployment %s is running, with an empty database: %s", deployment.ID, msg),
+			"deployment", deployment.ID)
+	}
+	return deployment
 }
 
 // markDeploymentFailed is the pre-Deploying failure path (scan failures):

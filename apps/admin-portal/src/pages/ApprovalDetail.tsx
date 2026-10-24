@@ -114,11 +114,24 @@ export function ApprovalDetail() {
                 : "None attached"}
           </strong>
         </div>
+        {req.dev_data && (
+          <div className={`fact fact-${req.dev_data.includes("Claude reported adding test data") ? "bad" : "warn"}`}>
+            <span>Data</span>
+            <strong>Copied from the dev copy</strong>
+          </div>
+        )}
         <div className={`fact fact-${scanFailed ? "bad" : "ok"}`}>
           <span>Image scans</span>
           <strong>{scanFailed ? "Not passed" : "Passed"}</strong>
         </div>
       </section>
+
+      {req.dev_data && (
+        <div className="info-banner" role="note">
+          <strong>Production's data:</strong> once live, its database is filled from the dev copy — part of what you
+          sign. {req.dev_data}
+        </div>
+      )}
 
       <div className="tabs" role="tablist">
         {(
