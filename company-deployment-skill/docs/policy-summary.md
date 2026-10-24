@@ -12,20 +12,19 @@ Two environments exist: `dev` and `production`. There is no `staging`
 environment in this platform as built, regardless of what any other
 document references.
 
-## Production approval gate
+## Approval gate
 
-A `production` deploy pauses as `PENDING_APPROVAL` after the image scan
-passes, before Build proceeds. An authorized human (today: any active
-owner of the application) approves or rejects it through the Platform API
-directly — there is no MCP tool that grants approval, by design.
+Which environments wait for approval is the platform's own setting
+(`APPROVAL_REQUIRED_ENVIRONMENTS`); `get_platform_info` reports it live as
+`approval_required_environments` and `approval_rules_summary`. Production
+always waits by default, and a platform can require it for `dev` too.
 
-**Known limitation, not hidden**: the approver is *not* currently required
-to be a different person than the requester. Real role-based access
-control (a distinct "Platform Administrator" / "Security Administrator"
-role) doesn't exist yet — every authorization check on this platform today
-is "are you an owner of this application," nothing more granular. Don't
-imply to an employee that production approval carries independent
-oversight beyond that.
+A gated deploy pauses as `PENDING_APPROVAL` once the image scan passes.
+With approver keys configured (`PLATFORM_APPROVER_KEYS`), only a decision
+signed with one of those private keys releases it. The administrator signs
+with `company-deploy approve`, which covers the exact images, scan results
+and `test_report`. Without approver keys, an owner of the application
+approves. There is no MCP tool that grants approval, by design.
 
 ## What's enforced today
 

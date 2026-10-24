@@ -154,6 +154,18 @@ class PlatformClient:
     async def revoke_own_key(self) -> None:
         await self._request("POST", "/auth/logout")
 
+    # --- Policy ----------------------------------------------------------
+
+    async def get_policy(self) -> dict[str, Any] | None:
+        """The platform's deployment rules (GET /policy), or None from a
+        platform too old to have the endpoint."""
+        try:
+            return await self._request("GET", "/policy")
+        except ToolError as exc:
+            if exc.code == ErrorCode.NOT_FOUND:
+                return None
+            raise
+
     # --- Departments -----------------------------------------------------
 
     async def list_departments(self) -> list[dict[str, Any]]:

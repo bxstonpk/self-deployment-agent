@@ -59,3 +59,33 @@ async def test_get_deployment_requirements_includes_application_context_when_giv
     assert result["status"] == "success"
     assert result["data"]["application_id"] == app["id"]
     assert result["data"]["current_lifecycle_state"] == "draft"
+
+
+async def test_get_platform_info_reports_the_platforms_own_approval_rules():
+    client = FakePlatformClient()
+    client.policy = {
+        "approval_required_environments": ["dev", "production"],
+        "signed_approval": True,
+        "approvers": ["prasit.k@sti-th.com"],
+    }
+    data = (await discovery.get_platform_info(client))["data"]
+    assert data["approval_required_environments"] == ["dev", "production"]
+    summary = data["approval_rules_summary"]
+    assert "dev, production" in summary and "prasit.k@sti-th.com" in summary and "signed" in summary
+    assert "activate immediately" not in summary  # nothing is ungated
+
+
+async def test_get_platform_info_production_only_says_dev_is_immediate():
+    client = FakePlatformClient()
+    data = (await discovery.get_platform_info(client))["data"]
+    assert data["approval_required_environments"] == ["production"]
+    assert "dev deployments activate immediately" in data["approval_rules_summary"]
+    assert "an application owner's approval" in data["approval_rules_summary"]
+
+
+async def test_get_platform_info_from_a_platform_without_policy_falls_back():
+    client = FakePlatformClient()
+    client.policy = None
+    data = (await discovery.get_platform_info(client))["data"]
+    assert data["approval_required_environments"] == ["production"]
+    assert "production deployments pause" in data["approval_rules_summary"]

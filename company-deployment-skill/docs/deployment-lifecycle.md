@@ -9,7 +9,7 @@ each value means in plain language.
 | `data.phase` | Meaning |
 |---|---|
 | `IMAGE_SCAN` | Built image(s) are being scanned for vulnerabilities |
-| `PENDING_APPROVAL` | A production deploy is waiting on human approval — not a failure, see `SKILL.md`'s "Handling production approval" |
+| `PENDING_APPROVAL` | A deploy to an environment that needs approval (see `get_platform_info`'s `approval_required_environments`; may include dev) is waiting on a human — not a failure, see `SKILL.md`'s "Handling approval" |
 | `DEPLOYING` | Container(s) starting |
 | `HEALTH_CHECK` | Waiting for the new container(s) to respond healthily |
 | `COMPLETED` | Terminal success — traffic is live on this version. `data.result.url` carries the reachable address when applicable |

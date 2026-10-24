@@ -219,6 +219,10 @@ successful build, and runs:
    `{"decision": "approve"|"reject", "reason": "..."}` from an owner
    resumes or rejects it, as it did before `DEC-017`.
    `APPROVAL_REQUIRED_ENVIRONMENTS` (default `production`) can add `dev`.
+   `GET /policy` reports these rules from the configuration
+   (`approval_required_environments`, `signed_approval`, `approvers`). The
+   MCP server's `get_platform_info` relays them to Claude, so the skill
+   needn't assume dev never waits.
 3. **Deploy** — `internal/runtimeengine` (real Docker Engine API — the
    platform's actual, permanent runtime per `DEC-004`'s 2026-09-11
    revision, a single existing on-prem Docker host rather than a future

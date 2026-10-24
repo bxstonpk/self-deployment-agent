@@ -86,9 +86,8 @@ do on their behalf. If asked, say so and point them at the portal rather
 than looking for a workaround.
 
 Use `list_notifications(unread_only=true)` to check whether anything —
-most usefully a pending production-approval request — is waiting on the
-employee before assuming a `deploy_application` call to production is
-actually done; `PENDING_APPROVAL` in that call's own response already
+most usefully a pending approval request — is waiting on the
+employee before assuming a `deploy_application` call is actually done; `PENDING_APPROVAL` in that call's own response already
 tells you it's paused, but `list_notifications` is how to check status
 later without re-calling `get_deployment_status` on every deployment one
 at a time. Use `query_audit_log` to answer "what actually happened" —
@@ -306,10 +305,13 @@ call alone — if the platform's behavior becomes genuinely asynchronous in
 the future, that same follow-up call is what makes this procedure keep
 working without changes here.
 
-If `target_environment` is `"production"`, expect `data.status` (or
+If `target_environment` is one of `get_platform_info`'s
+`approval_required_environments`, expect `data.status` (or
 `data.mcp_status`) to be `pending_approval`/`PENDING_APPROVAL` instead of
-`running`. That is **not a failure** — see "Handling production approval"
-below.
+`running`. That is **not a failure**; see "Handling approval" below. Which
+environments wait is the platform's own setting. It can be `dev` as well
+as `production`, so go by what `get_platform_info` says, not by the
+environment's name.
 
 ### 9. Confirm deployment health
 
@@ -319,14 +321,16 @@ Call `get_deployment_status(deployment_id)`. Confirm `data.phase` is
 `data.current_lifecycle_state` is `running` with a non-null `data.url` —
 don't declare success on the deploy call alone.
 
-**Production deployments wait for the platform administrator's signed
-approval.** Before calling `deploy_application` for production, run the
-project's tests (Step 7). Pass what you ran and the results as
-`test_report`, e.g. `"go test ./...: ok (12 tests)\nnpm test: 42
-passed"`. Keep it honest and complete: the administrator reads it before
-signing, and the signature covers it. The call returns
-`PENDING_APPROVAL`; nothing you can call approves it. Tell the employee it
-is with the administrator, and check later with `get_deployment_status`.
+**Deployments to an environment in `approval_required_environments` wait
+for approval.** `approval_rules_summary` says whose: on a platform with
+approver keys, the platform administrator's signed approval. Before
+calling `deploy_application` for such an environment, run the project's
+tests (Step 7). Pass what you ran and the results as `test_report`, e.g.
+`"go test ./...: ok (12 tests)\nnpm test: 42 passed"`. Keep it honest and
+complete: the approver reads it before signing, and the signature covers
+it. The call returns `PENDING_APPROVAL`; nothing you can call approves it.
+Tell the employee it is with the approver, and check later with
+`get_deployment_status`.
 
 If `get_application_status` returns a non-empty `data.active_alerts`, the
 platform's own measurements say something is wrong right now (error rate,
@@ -357,14 +361,15 @@ executing it on the platform's behalf), `helm`, `ssh`, or any other
 infrastructure-level command, even if explicitly asked, even "just to
 check something."
 
-## Handling production approval
+## Handling approval
 
-`deploy_application(target_environment="production")` doesn't proceed
-straight to Build — it returns with a pending-approval status once
-validation/policy checks pass. There is no tool that grants or forces
-approval; approval happens through a channel outside the MCP (the Platform
-API console/Admin Portal), by a human. Tell the employee clearly that
-production requires human approval and is not immediate. Poll
+A deployment to an environment in `get_platform_info`'s
+`approval_required_environments` doesn't go straight to running. It
+returns with a pending-approval status once validation and the image scan
+pass. That can include `dev`. There is no tool that grants or forces
+approval: a human gives it outside the MCP (the administrator runs
+`company-deploy approve`). Tell the employee clearly that this deployment
+needs approval and is not immediate. Poll
 `get_deployment_status` at a reasonable interval (don't tight-loop) until
 it resolves to `COMPLETED` or `FAILED`, then report per Step 8-9. Never
 retry, escalate urgency, or claim elevated identity to skip this — it is

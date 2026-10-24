@@ -13,7 +13,7 @@ actual message; it's written to be specific, not a template to work around).
 | `NOT_FOUND` | The referenced application, deployment, or department doesn't exist | Confirm the identifier with the employee — never fabricate or guess one. For `rollback_application`, this can mean there's no prior successful version to roll back to |
 | `CONFLICT` | An `idempotency_key` was reused with different input, or a build/deploy is already in flight for this application | Check current state via `get_application_status`/`get_deployment_status` before retrying; surface the conflict to the employee if it doesn't self-resolve |
 | `RATE_LIMITED` | Too many calls in a time window (not currently enforced by this platform, but handle it in case that changes) | Back off; never tight-loop retry |
-| `PENDING_APPROVAL` | **Not a failure.** A production-affecting action is queued for human approval | Tell the employee it's queued and by what process; poll `get_deployment_status` rather than treating this as an error — see `SKILL.md`'s "Handling production approval" |
+| `PENDING_APPROVAL` | **Not a failure.** A deploy to an environment that needs approval (any in `get_platform_info`'s `approval_required_environments`, which may include dev) is waiting for a human | Tell the employee it's with the approver; poll `get_deployment_status` rather than treating this as an error — see `SKILL.md`'s "Handling approval" |
 | `INTERNAL_ERROR` | Either an unexpected platform-side failure, or a deliberate, honest "this capability doesn't exist yet" (see below) | For a genuine unexpected failure: tell the employee plainly, suggest retrying once. For the deliberate cases below: don't retry, they won't start working |
 
 ## Diagnosing beyond `get_deployment_status`
