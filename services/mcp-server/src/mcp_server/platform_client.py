@@ -43,7 +43,7 @@ _WRONG_STATE_CODES = {
     "invalid_rollback_target",
     "profile_required",
     "test_run_not_usable",
-    "dev_copy_yaml_changed",
+    "database_change_loses_data",
     "dev_data_not_copyable",
 }
 

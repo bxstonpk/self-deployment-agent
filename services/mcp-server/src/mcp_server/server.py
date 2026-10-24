@@ -249,7 +249,10 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     @mcp.tool()
     async def reset_dev(application_id: str) -> dict[str, Any]:
         """Remove the application's dev copy, its code and ALL its data. Only
-        when the employee asks for it. The next dev deployment makes a new one."""
+        when the employee explicitly asks for exactly that — never to fix a
+        problem: a changed deployment.yaml (a service added) doesn't need
+        it, the copy takes that and keeps its data. The next dev deployment
+        makes a new, empty one."""
         params = {"application_id": application_id}
         return await _run_tool(audit("reset_dev", params, application_id), devcopy.reset_dev(client, application_id))
 

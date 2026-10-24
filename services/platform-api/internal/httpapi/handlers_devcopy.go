@@ -52,8 +52,10 @@ func writeDevCopyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "not_validated", err.Error())
 	case errors.Is(err, domain.ErrInvalidLifecycleTransition):
 		writeError(w, http.StatusConflict, "invalid_lifecycle_transition", err.Error())
-	case errors.Is(err, domain.ErrDevCopyYAMLChanged):
-		writeError(w, http.StatusConflict, "dev_copy_yaml_changed", err.Error())
+	case errors.Is(err, domain.ErrDatabaseChangeLosesData):
+		writeError(w, http.StatusConflict, "database_change_loses_data", err.Error())
+	case errors.Is(err, domain.ErrInvalidYAML):
+		writeError(w, http.StatusBadRequest, "invalid_yaml", err.Error())
 	case errors.Is(err, domain.ErrProfileRequired):
 		writeError(w, http.StatusConflict, "profile_required", err.Error())
 	case errors.Is(err, domain.ErrNoSourceArchive), errors.Is(err, domain.ErrInvalidTestDataNote):

@@ -35,6 +35,16 @@ type ApplicationLifecycleRepository interface {
 	GetByID(ctx context.Context, id string) (domain.Application, error)
 	UpdateLifecycleStatus(ctx context.Context, id string, from, to domain.LifecycleStatus, markValidated bool) (domain.Application, error)
 	UpdateDeploymentYAML(ctx context.Context, id, yamlContent string) (domain.Application, error)
+	// ReviseDeploymentYAML replaces a deployed application's deployment.yaml
+	// and leaves its lifecycle status as it is.
+	ReviseDeploymentYAML(ctx context.Context, id, yamlContent string) (domain.Application, error)
+}
+
+// deployedStatuses are the states of an application that has been
+// deployed: its deployment.yaml is revised in place, keeping its database.
+var deployedStatuses = map[domain.LifecycleStatus]bool{
+	domain.StatusBuild: true, domain.StatusRunning: true, domain.StatusFailed: true,
+	domain.StatusSuspended: true, domain.StatusRolledBack: true,
 }
 
 type ValidationService struct {
@@ -76,7 +86,54 @@ func (s *ValidationService) SaveDeploymentYAML(ctx context.Context, applicationI
 		return domain.Application{}, fmt.Errorf("%w: %s", domain.ErrInvalidYAML, err.Error())
 	}
 
+	app, err := s.apps.GetByID(ctx, applicationID)
+	if err != nil {
+		return domain.Application{}, err
+	}
+	if deployedStatuses[app.LifecycleStatus] {
+		return s.revise(ctx, app, requesterID, yamlContent)
+	}
 	return s.apps.UpdateDeploymentYAML(ctx, applicationID, yamlContent)
+}
+
+// revise changes a deployed application's deployment.yaml in place: a
+// service added or changed, scaling, resources. The application keeps its
+// lifecycle status, its database and its data; the next build and
+// deployment use the new contract. It must pass the same checks a new one
+// does, and it may not change or remove the database: the data is in it.
+func (s *ValidationService) revise(ctx context.Context, app domain.Application, requesterID, yamlContent string) (result domain.Application, err error) {
+	var before, after domain.DeploymentYAML
+	_ = yaml.Unmarshal([]byte(app.DeploymentYAMLDraft), &before)
+	if err := yaml.Unmarshal([]byte(yamlContent), &after); err != nil {
+		return domain.Application{}, fmt.Errorf("%w: %s", domain.ErrInvalidYAML, err.Error())
+	}
+	if t := strings.TrimSpace(before.Database.Type); t != "" && strings.TrimSpace(after.Database.Type) != t {
+		return domain.Application{}, fmt.Errorf("%w: it is %s, and the new deployment.yaml says %q", domain.ErrDatabaseChangeLosesData, t, after.Database.Type)
+	}
+	candidate := app
+	candidate.DeploymentYAMLDraft = yamlContent
+	if report := s.runChecks(ctx, candidate); !report.Valid {
+		var problems []string
+		for _, c := range report.Checks {
+			if c.Status == domain.CheckFailed {
+				problems = append(problems, c.Name+": "+strings.Join(c.Details, "; "))
+			}
+		}
+		return domain.Application{}, fmt.Errorf("%w: %s", domain.ErrInvalidYAML, strings.Join(problems, " | "))
+	}
+	defer func() {
+		outcome, detail := domain.AuditSuccess, "the deployment.yaml of a deployed application, revised in place (its database kept)"
+		if err != nil {
+			outcome, detail = domain.AuditFailure, err.Error()
+		}
+		if auditErr := s.audit.Record(ctx, domain.AuditEntry{
+			ActorUserID: requesterID, Action: domain.AuditActionReviseDeploymentYAML,
+			ResourceType: "application", ResourceID: app.ID, Outcome: outcome, Detail: detail,
+		}); auditErr != nil && err == nil {
+			err = fmt.Errorf("revised but audit trail failed to record: %w", auditErr)
+		}
+	}()
+	return s.apps.ReviseDeploymentYAML(ctx, app.ID, yamlContent)
 }
 
 // Validate implements FR-029 (docs/02_Functional_Requirements.md Module H):
@@ -92,6 +149,11 @@ func (s *ValidationService) Validate(ctx context.Context, applicationID, request
 	}
 	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
 		return domain.ValidationReport{}, domain.Application{}, err
+	}
+	if deployedStatuses[app.LifecycleStatus] {
+		// A deployed application's contract is checked where it's revised;
+		// here it is re-checked as it stands, and its status kept.
+		return s.runChecks(ctx, app), app, nil
 	}
 	if app.LifecycleStatus != domain.StatusDraft {
 		return domain.ValidationReport{}, domain.Application{}, domain.ErrInvalidLifecycleTransition
@@ -122,6 +184,21 @@ func (s *ValidationService) Validate(ctx context.Context, applicationID, request
 		}
 	}()
 
+	statusReport := s.runChecks(ctx, app)
+	if !statusReport.Valid {
+		return statusReport, app, nil
+	}
+
+	updated, err := s.apps.UpdateLifecycleStatus(ctx, applicationID, domain.StatusDraft, domain.StatusValidated, true)
+	if err != nil {
+		return statusReport, app, err
+	}
+	return statusReport, updated, nil
+}
+
+// runChecks is the validation pass itself, on the application's
+// deployment.yaml as given.
+func (s *ValidationService) runChecks(ctx context.Context, app domain.Application) domain.ValidationReport {
 	report, parsed, schemaOK := s.checkSchema(app)
 	checks := []domain.ValidationCheck{report}
 
@@ -152,17 +229,7 @@ func (s *ValidationService) Validate(ctx context.Context, applicationID, request
 			valid = false
 		}
 	}
-	statusReport := domain.ValidationReport{Valid: valid, Checks: checks}
-
-	if !valid {
-		return statusReport, app, nil
-	}
-
-	updated, err := s.apps.UpdateLifecycleStatus(ctx, applicationID, domain.StatusDraft, domain.StatusValidated, true)
-	if err != nil {
-		return statusReport, app, err
-	}
-	return statusReport, updated, nil
+	return domain.ValidationReport{Valid: valid, Checks: checks}
 }
 
 // checkSchema implements FR-024 as far as it applies at validation time,

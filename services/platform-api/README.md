@@ -2169,6 +2169,21 @@ application itself through the API still follows
     with `dev_data="copy"` or `"leave"`.
   - After every dev deployment Claude is told to ask: production, or
     keep changing.
+- **A changed deployment.yaml keeps the data.** Applications that have
+  been deployed (Build, Running, Failed, Suspended, Rolled back) now
+  revise their deployment.yaml in place: `PUT .../deployment-yaml` (MCP
+  `validate_application` with `deployment_yaml`).
+  - The new contract passes the same checks as a new one, or nothing is
+    saved.
+  - The application keeps its status, its database and its data. The
+    next build and deployment use the new contract, for example a service
+    added.
+  - The only change refused is to the database: another type, or none
+    (409 `database_change_loses_data`), because the data is in it.
+  - Before, a deployed application's deployment.yaml couldn't change at
+    all, and a dev copy would have had to be reset, losing its data. On
+    each dev deployment the copy takes the application's deployment.yaml
+    this way.
 - **Ending.** `DELETE .../dev` (`reset_dev`) removes the copy, its code
   and its data. A sweeper (every minute) removes the copy of an archived
   or deleted application. A copy deleted on its own is replaced on the
@@ -2187,11 +2202,15 @@ application itself through the API still follows
 - **Dev data goes to production once, whole.** There is no merge and no
   per-table choice. After production has run, its data is never replaced
   from dev.
-- **A deployed copy keeps the deployment.yaml it was made with.** As with
-  any application, deployment.yaml can be changed only before the first
-  deploy. If the application's changes after that (a service added), the
-  dev deployment is refused (409 `dev_copy_yaml_changed`) until the copy
-  is reset, which removes its data.
+- **Rolling back past a deployment.yaml change.** Activation reads the
+  application's current deployment.yaml. A rollback to a deployment built
+  before a service was added would look for that service's image in an
+  older build, which doesn't have it. This gap existed before, but
+  revising deployed contracts makes it reachable.
+- **The approver doesn't see deployment.yaml.** A revised one takes
+  effect at the next deployment, which a gated environment approves. The
+  signing template covers the images, source, tests and REVIEW.md, not
+  the deployment.yaml.
 - **The test-data record is only as complete as Claude's reports.** The
   platform can't tell who wrote a row.
 
@@ -2229,12 +2248,17 @@ with a throwaway approver key and `APPROVAL_REQUIRED_ENVIRONMENTS=dev,production
   empty.
 - **Archive.** Archiving the application removed its dev copy within the
   sweep.
+- **A service added to a dev copy that holds data.** The worker answered
+  with its database connected, and both items were still there. The copy
+  was revised in place, not reset.
+- **Running production.** Changing its database type was refused (409
+  `database_change_loses_data`). Changing its scaling was revised in
+  place, and it stayed Running.
 - **A bug found on the way and fixed.** The second dev deployment first
   failed ("not in a state this operation can be performed from"). It
   re-saved deployment.yaml onto a running copy, which no deployed
-  application accepts. An unchanged deployment.yaml now goes straight to
-  the build. A changed one gets a clear 409 that says resetting removes
-  the data.
+  application accepted. Deployed applications now revise their
+  deployment.yaml in place (above).
 
 ## How Alerts work (FR-092, DEC-028)
 

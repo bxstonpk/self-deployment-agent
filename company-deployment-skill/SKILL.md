@@ -511,13 +511,17 @@ whether the data in the dev copy is real data to keep.**
 - **Never decide this yourself.** It happens only once: after production
   has run, its data is its own and is never replaced.
 
-If a dev deployment answers that the application's deployment.yaml
-changed since the dev copy first deployed (e.g. you added a service), the
-copy can only take it by being reset, which deletes its data: explain that
-and ask the employee before calling `reset_dev`.
+**Changing deployment.yaml never needs a reset.** Add a service, change
+scaling or resources with `validate_application(application_id,
+deployment_yaml)`, even on a running application. The next dev
+deployment takes it, and the dev copy keeps its data. The one change the
+platform refuses is the database: another type, or none. The data is in
+it. Never work around that by resetting or deleting anything; tell the
+employee.
 
 `reset_dev(application_id)` removes the dev copy, its code and **all its
-data**, only when the employee asks. The next dev deployment makes a new
+data**. Use it only when the employee explicitly asks for that, never to
+fix a problem: data matters. The next dev deployment makes a new
 one at a new address.
 
 ## Handling approval

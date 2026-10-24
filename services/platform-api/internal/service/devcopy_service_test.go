@@ -206,11 +206,17 @@ func TestDevCopy_FirstDevDeployMakesTheCopyTheNextOnesReuseIt(t *testing.T) {
 	if strings.Join(f.calls, "|") != "build dev-1|deploy dev-1 dev" {
 		t.Fatalf("the same running copy (and its database): built and deployed, nothing deleted: %v", f.calls)
 	}
+	// A service added to the application: the running copy takes it in
+	// place, nothing reset (its database and data stay).
 	a := f.apps.apps["app-1"]
-	a.DeploymentYAMLDraft = strings.Replace(devParentYAML, "port: 8080", "port: 9090", 1)
+		a.DeploymentYAMLDraft = strings.Replace(devParentYAML, "database:", "  worker:\n    runtime: go\n    port: 8081\ndatabase:", 1)
 	f.apps.apps["app-1"] = a
-	if _, err := f.svc.Deploy(ctx, devOwner, "app-1", []byte("v3")); !errors.Is(err, domain.ErrDevCopyYAMLChanged) {
-		t.Fatalf("a running copy can't take a changed deployment.yaml: %v", err)
+	f.calls = nil
+	if _, err := f.svc.Deploy(ctx, devOwner, "app-1", []byte("v3")); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(f.calls, "|") != "save-yaml dev-1|build dev-1|deploy dev-1 dev" || !strings.Contains(f.apps.apps["dev-1"].DeploymentYAMLDraft, "worker") {
+		t.Fatalf("the new contract saved on the copy, then built and deployed, nothing deleted: %v", f.calls)
 	}
 	if f.apps.apps["app-1"].LifecycleStatus != domain.StatusRunning {
 		t.Fatal("the application itself is untouched")
