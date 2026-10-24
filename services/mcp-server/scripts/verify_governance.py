@@ -129,7 +129,8 @@ async def main() -> None:
                        "the administrator reads the profile, Thai intact")
 
                 project = Path(tempfile.mkdtemp()) / name
-                sc = await _tool(s, "scaffold_project", {"application_id": app_id, "project_path": str(project)})
+                sc = await _tool(s, "scaffold_project", {"application_id": app_id, "project_path": str(project),
+                                                        "deploy": False})
                 files = sc.get("data", {}).get("files", [])
                 _check(sc["status"] == "success" and "api/main.go" in files and "frontend/src/App.jsx" in files
                        and "REVIEW.md" in files and "deployment.yaml" in files, "scaffold_project lays out the templates")

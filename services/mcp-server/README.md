@@ -64,7 +64,7 @@ works".
 |---|---|---|
 | `get_standards` | `GET /standards` | The allowed stacks (active ones only), the rules, the libraries the company doesn't allow |
 | `start_project` | `GET /standards`, `GET /departments`, `POST /applications`, `PUT .../deployment-yaml`, `PUT .../profile` | Registers with the standard `deployment.yaml` and records the profile. Refuses a stack the standard doesn't allow before registering anything. With `application_id`, records only the profile of an existing application. If the profile fails after registering, the error names the `application_id` to retry with |
-| `scaffold_project` | `GET /applications/{id}` | Local only: copies the templates for the saved stack from `COMPANY_DEPLOY_TEMPLATES` or `~/.claude/skills/company-deployment/templates` (where the installer puts them), writes `deployment.yaml`, `REVIEW.md` and `STANDARD.md`. Only into a new or empty folder |
+| `scaffold_project` | `GET /applications/{id}`, then as `deploy_application` to dev | Copies the templates for the saved stack from `COMPANY_DEPLOY_TEMPLATES` or `~/.claude/skills/company-deployment/templates` (where the installer puts them), writes `deployment.yaml`, `REVIEW.md` and `STANDARD.md`. Only into a new or empty folder |
 | `check_project` | `POST .../standards-check`, `GET /policy`, `GET .../exceptions` | Packs the project like `deploy_application` and runs the build's dependency check without building; also the profile, `REVIEW.md` (missing, or still the template) and pending exceptions. `passed` is false only on an `error` finding |
 | `request_exception` | `POST .../exceptions` | `dependency` (`<ecosystem>:<package>`), `stack` or `other`; an administrator decides |
 | `list_exceptions` | `GET .../exceptions` | |
@@ -72,6 +72,13 @@ works".
 
 | `record_test_data` | `POST .../dev/test-data` | DEC-029 part 3: Claude's record of test data it put in the dev copy itself; see `platform-api/README.md`'s "How dev copies work" |
 | `reset_dev` | `DELETE .../dev` | Removes the dev copy, its code and data |
+
+Like a PaaS, the platform is where an employee sees their application:
+`scaffold_project` deploys the new project to dev straight away
+(`deploy=True`) and returns its `url`, and a dev deployment after each
+change is fast (`run_tests` defaults to off for dev, on for production;
+the build still compiles everything). The results' `tell_the_employee`
+says to give the link at once and to mention production once, not push it.
 
 `deploy_application` to `dev` goes to the application's dev copy (`POST .../dev`: its own application, database and address, no approval, so no REVIEW.md needed). To `production`, if there is a dev copy and production has never run, it stops until Claude asks the employee about the dev data and passes `dev_data` (`copy` or `leave`); `copy` becomes `copy_dev_data` on the deploy request.
 

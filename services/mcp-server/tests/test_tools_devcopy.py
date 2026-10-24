@@ -30,17 +30,51 @@ async def _deploy(client, app_id, env, tmp_path, **kw):
     return await deployment.deploy_application(client, IdempotencyStore(60), app_id, env, project_path=_project(tmp_path, True), **kw)
 
 
-async def test_dev_goes_to_the_dev_copy_tested_without_review_or_approval(tmp_path):
+async def test_dev_goes_to_the_dev_copy_fast_without_review_or_approval(tmp_path):
     client = FakePlatformClient()
     app_id = await _app(client)
     data = (await deployment.deploy_application(client, IdempotencyStore(60), app_id, "dev",
                                                 project_path=_project(tmp_path)))["data"]
     names = [c[0] for c in client.calls]
-    assert names.index("run_tests") < names.index("deploy_dev")
+    assert "deploy_dev" in names and "run_tests" not in names  # dev is fast: tests only when asked
     assert "trigger_build" not in names and "deploy_application" not in names
     assert data["url"].endswith("/leave-dev/") and data["environment"] == "dev"
-    ask = data["you_must_ask_the_employee"]
-    assert "DEV copy" in ask and "production" in ask and "keep changing" in ask and "record_test_data" in ask
+    tell = data["tell_the_employee"]
+    assert "Give the employee the url now" in tell and "not a local file" in tell and "record_test_data" in tell
+    assert "don't push it" in tell
+
+
+async def test_dev_runs_the_tests_when_asked(tmp_path):
+    client = FakePlatformClient()
+    app_id = await _app(client)
+    await deployment.deploy_application(client, IdempotencyStore(60), app_id, "dev",
+                                        project_path=_project(tmp_path), run_tests=True)
+    names = [c[0] for c in client.calls]
+    assert names.index("run_tests") < names.index("deploy_dev")
+
+
+async def test_production_runs_the_tests_by_default(tmp_path):
+    client = FakePlatformClient()
+    app_id = await _app(client)
+    await _deploy(client, app_id, "production", tmp_path)
+    assert any(c[0] == "run_tests" for c in client.calls)
+
+
+async def test_scaffold_puts_the_new_application_up_on_dev_and_returns_the_link(tmp_path):
+    from pathlib import Path
+
+    from mcp_server.tools import governance
+
+    templates = Path(__file__).resolve().parents[3] / "company-deployment-skill" / "templates"
+    client = FakePlatformClient()
+    client.policy = {"approval_required_environments": ["dev", "production"], "dev_copies": True}
+    app = await client.register_application("leave", "d", "dept-eng")
+    await client.save_deployment_yaml(app["id"], YAML.replace("services:\n", "services:\n  frontend:\n    runtime: react\n"))
+    data = (await governance.scaffold_project(client, app["id"], str(tmp_path / "leave"), templates=templates))["data"]
+    assert data["url"].endswith("/leave-dev/") and data["dev"]["deployed"] is True
+    assert "Give the employee the url now" in data["tell_the_employee"]
+    sent = next(c for c in client.calls if c[0] == "deploy_dev")[1][1]
+    assert sent[:2] == b"\x1f\x8b"
 
 
 async def test_production_first_asks_about_the_dev_data_naming_claudes_test_data(tmp_path):

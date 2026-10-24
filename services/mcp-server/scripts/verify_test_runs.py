@@ -131,7 +131,8 @@ async def main() -> None:
                                                            "handles_personal_data": False, "api_runtime": "go"})
                 app_id = started["data"]["application_id"]
                 project = tmp / name
-                await _tool(s, "scaffold_project", {"application_id": app_id, "project_path": str(project)})
+                await _tool(s, "scaffold_project", {"application_id": app_id, "project_path": str(project),
+                                                    "deploy": False})
                 (project / "api" / "main_test.go").write_text(PASSING_TEST, encoding="utf-8")
 
                 t0 = time.time()
@@ -153,7 +154,7 @@ async def main() -> None:
                        "a failing test fails the run, with its output, Thai intact")
                 await _tool(s, "validate_application", {"application_id": app_id})
                 refused = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "dev",
-                                                               "project_path": str(project)})
+                                                               "project_path": str(project), "run_tests": True})
                 _check(refused["status"] == "error" and "nothing was built" in refused["error"]["message"]
                        and "TestLeaveDays" in refused["error"]["message"], "deploy_application refuses, showing the failure")
                 status, _ = call(BASE, "GET", f"/applications/{app_id}/builds/latest", token=owner)
@@ -194,7 +195,7 @@ async def main() -> None:
                 (project / "api" / "leave_test.go").unlink()
                 t0 = time.time()
                 dev = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "dev",
-                                                           "project_path": str(project)})
+                                                           "project_path": str(project), "run_tests": True})
                 passed_id = dev.get("data", {}).get("test_run_id")
                 _check(dev["status"] == "success" and dev["data"]["status"] == "running" and passed_id,
                        f"fixed: tested on the platform, built and running ({time.time() - t0:.0f}s)")

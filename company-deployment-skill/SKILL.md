@@ -108,6 +108,26 @@ request_id, server_time}`. Always read `status` and, on failure,
 `INTERNAL_ERROR`. See `docs/troubleshooting.md` for what each one means in
 practice and what to do about it.
 
+## The platform is the employee's server
+
+Think of the platform as the employee's cloud (a PaaS): **the way an
+employee sees and uses their application is a link to it running on the
+platform.** So:
+
+- **Never show an application by opening its files or running it on this
+  machine.** No opening `index.html` in a browser (a React application
+  doesn't work from a file), no `npm run dev`, `vite`, `go run` or
+  `python app.py` to "let them see it". The machine may not even have
+  those tools, and the employee should never need them.
+- **To show it, deploy it to dev and give the link.** `scaffold_project`
+  does this for a new application. After every change,
+  `deploy_application(target_environment="dev", project_path=...)` and
+  give the url again; it is the same address each time, with the data
+  kept. No approval, no REVIEW.md, no production steps for dev.
+- **Production is a separate step the employee asks for** when they're
+  ready ("ขึ้นใช้งานจริง", "deploy production"). Mention it once; don't
+  push it after every change.
+
 ## Starting a new application — the company standard
 
 The company's development standard applies from the first line of a new
@@ -130,8 +150,12 @@ writing any code:
    application that has no profile.
 3. **`scaffold_project(application_id, project_path)`** into a new, empty
    folder: `frontend/`, `api/`, `deployment.yaml`, `REVIEW.md` to fill
-   in, and `STANDARD.md` with the conventions. Build the application from
-   these; replace the example `/items` endpoints with its own.
+   in, and `STANDARD.md` with the conventions. **It deploys the new
+   application to dev straight away and returns its `url`: give it to the
+   employee at once**, so they can open it while you build. Build the
+   application from these files; replace the example `/items` endpoints
+   with its own, and after each change deploy to dev and give the url
+   again.
 4. **While writing it, `check_project(application_id, project_path)`.**
    It runs the platform's own dependency check (the same one the build
    runs) and checks the profile, `REVIEW.md` and pending exceptions. Fix
@@ -146,8 +170,8 @@ writing any code:
    platform administrator decides. **Don't use it until
    `list_exceptions` shows it `approved`**: a library that isn't allowed
    fails the build until then.
-6. **Done: deploy** with the procedure below, from Step 6 (validate):
-   the application is already registered.
+6. **Production, when the employee asks for it:** the procedure below,
+   from Step 6 (validate): the application is already registered.
 
 An application registered before this standard (or with
 `create_application` alone) has no profile: `deploy_application`'s build
@@ -481,14 +505,13 @@ employee can keep trying the application with what they entered while you
 change it. Its pages carry a DEV banner. `production` is the application
 itself, at `/<name>/`, which waits for approval as before.
 
-**After every dev deployment, ask what next.** Give the `url`, say plainly
-it is the dev copy for trying, not the live application, and ask, then
-wait for the answer. For example, in Thai: *"ขึ้น dev แล้วที่ลิงก์นี้
-(เป็นตัวทดลอง ยังไม่ใช่ระบบจริง) จะส่งขึ้น production ให้ผู้อนุมัติเลยไหม
-หรือจะปรับแก้ต่ออีก?"*
-- **Keep changing:** change it and deploy to dev again; the data stays.
-- **Production:** `deploy_application(target_environment="production")`
-  (Step 8 onwards: REVIEW.md, the tests, approval).
+**After every dev deployment, give the link.** Say plainly it is the dev
+copy, theirs to try (it stays, with its data). For example, in Thai:
+*"แอปขึ้นแล้วที่ลิงก์นี้ (ตัว dev สำหรับลองใช้ ข้อมูลที่กรอกจะอยู่ต่อ
+แก้อะไรเพิ่มบอกได้เลย พอพร้อมใช้งานจริงค่อยบอกให้ขึ้น production)"*
+Then keep going with what they ask. When they ask for production:
+`deploy_application(target_environment="production")` (Step 8 onwards:
+REVIEW.md, the tests, approval).
 
 **Test data you put in the dev copy yourself: record it, every time.** If
 you add data to the dev copy's database yourself (test rows through its

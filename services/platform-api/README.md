@@ -2161,6 +2161,11 @@ application itself through the API still follows
     result is recorded on the deployment (`dev_data_copied_at` /
     `dev_data_copy_error`), and the owners are told if it failed.
 - **The MCP side.**
+  - Like a PaaS, the platform is where an employee sees their
+    application. `scaffold_project` deploys a new project to dev straight
+    away and returns the link. A dev deployment after each change skips
+    the platform test run unless asked; the build still compiles
+    everything.
   - `deploy_application` to dev goes to the copy, with no REVIEW.md
     needed.
   - To production, if there is a copy and production has never run, it
