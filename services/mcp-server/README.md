@@ -68,6 +68,15 @@ works".
 | `check_project` | `POST .../standards-check`, `GET /policy`, `GET .../exceptions` | Packs the project like `deploy_application` and runs the build's dependency check without building; also the profile, `REVIEW.md` (missing, or still the template) and pending exceptions. `passed` is false only on an `error` finding |
 | `request_exception` | `POST .../exceptions` | `dependency` (`<ecosystem>:<package>`), `stack` or `other`; an administrator decides |
 | `list_exceptions` | `GET .../exceptions` | |
+| `run_tests` | `GET /applications/{id}`, `POST .../test-runs` | The platform runs every service's tests on the packed project (DEC-029 part 2); see `platform-api/README.md`'s "How tests run on the platform". Waits up to 900 s, since a run takes as long as its tests |
+
+`deploy_application` with source now runs the tests on the platform first
+(`run_tests=True` by default), on exactly the bytes it then builds, and
+builds nothing if they don't pass; the deployment carries the platform's
+report (`test_run_id`). `test_run_id` can also be given, from an earlier
+`run_tests` of the same files; the platform refuses it for a build of
+different source. A `test_report` given as well is added after the
+platform's report, marked as the requester's.
 
 #### `get_application_inventory` closes a gap older than Module AB
 
@@ -479,6 +488,10 @@ specifically tests the HTTP-error-to-`ErrorCode` mapping logic using
 
 ### Real end-to-end verification
 
+`scripts/verify_test_runs.py` covers `run_tests` and the tested deploy the
+same way; results in `platform-api/README.md`'s "How tests run on the
+platform".
+
 `scripts/verify_governance.py` covers the governance tools the same way,
 through real stdio against a real stack; what it checks and the results
 are in `platform-api/README.md`'s "How development governance works".
@@ -503,9 +516,9 @@ This is what was actually run to verify this server for real, not just
 unit-tested against fakes. What it covers, in order, all through the real
 MCP stdio protocol (not calling Python functions directly):
 
-1. Confirms all 31 tools (13 from Section 13, the eight later-module
-   tools for Modules W/X/AB/E, the four sign-in tools and the six
-   governance tools) are discovered via protocol-level `list_tools()`. Then signs in for real: a fresh
+1. Confirms all 32 tools (13 from Section 13, the eight later-module
+   tools for Modules W/X/AB/E, the four sign-in tools, the six
+   governance tools and `run_tests`) are discovered via protocol-level `list_tools()`. Then signs in for real: a fresh
    machine is refused every platform tool, `login` returns a code, the
    employee approves it with their own session, `complete_login` stores
    the key, and the key appears nowhere in anything the agent saw.

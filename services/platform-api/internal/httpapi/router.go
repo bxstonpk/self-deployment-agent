@@ -31,6 +31,7 @@ type RouterConfig struct {
 	Alerts        *AlertHandler
 	Approvals     *ApprovalHandler
 	Governance    *GovernanceHandler
+	TestRuns      *TestRunHandler
 	// Auth serves /auth/*. Nil under the dev-header mode, which has no
 	// accounts to sign in to.
 	Auth *AuthHandler
@@ -130,6 +131,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{id}/metrics", cfg.Metrics.Query)
 		if cfg.Alerts != nil {
 			r.Get("/{id}/alerts", cfg.Alerts.ForApplication)
+		}
+		if cfg.TestRuns != nil {
+			r.Post("/{id}/test-runs", cfg.TestRuns.Run)
+			r.Get("/{id}/test-runs/{runId}", cfg.TestRuns.Get)
 		}
 		if cfg.Governance != nil {
 			r.Put("/{id}/profile", cfg.Governance.PutProfile)

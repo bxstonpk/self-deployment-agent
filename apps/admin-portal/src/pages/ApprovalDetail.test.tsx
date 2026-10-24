@@ -152,4 +152,15 @@ describe("Approvals", () => {
     await user.click(screen.getByRole("button", { name: "Sign and reject" }));
     expect(await screen.findByText(/Say why you're rejecting it/)).toBeInTheDocument();
   });
+
+  it("says whether the platform ran the tests or the requester only reported them", async () => {
+    mockApi({ test_report: "Tests run by the platform (not reported by the requester)\nresult: passed\n" });
+    const first = renderDetail();
+    expect(await screen.findByText("Run by the platform")).toBeInTheDocument();
+    first.unmount();
+
+    mockApi({ test_report: "--- from the requester (not run by the platform) ---\ngo test: ok\n" });
+    renderDetail();
+    expect(await screen.findByText("Requester's report only")).toBeInTheDocument();
+  });
 });

@@ -328,6 +328,37 @@ async def check_project(client: PlatformClient, application_id: str, project_pat
     })
 
 
+async def run_tests(client: PlatformClient, application_id: str, project_path: str) -> dict[str, Any]:
+    app = await client.get_application(application_id)
+    try:
+        parsed = yaml.safe_load(app.get("deployment_yaml_draft") or "") or {}
+    except yaml.YAMLError as exc:
+        raise ToolError(ErrorCode.VALIDATION_ERROR, f"the saved deployment.yaml doesn't parse: {exc}") from exc
+    services = [str(s) for s in (parsed.get("services") or {})] if isinstance(parsed, dict) else []
+    try:
+        archive, summary = pack_project(str(Path(project_path).expanduser()), services)
+    except PackError as exc:
+        raise ToolError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
+    run = await client.run_tests(application_id, archive)
+    status = run.get("status")
+    return success({
+        "application_id": application_id,
+        "test_run_id": run.get("id"),
+        "status": status,
+        "passed": status == "passed",
+        "services": run.get("services", []),
+        "report": run.get("report", ""),
+        "packed": summary.as_dict(),
+        "next": (
+            "deploy_application with test_run_id (same files) — or just deploy_application with project_path, "
+            "which runs them again on what it builds."
+            if status == "passed" else
+            "Fix what the report shows and run_tests again. 'error' means the platform couldn't run them "
+            "(a time limit, a download), not that a test failed."
+        ),
+    })
+
+
 async def request_exception(
     client: PlatformClient, application_id: str, kind: str, subject: str, reason: str,
 ) -> dict[str, Any]:

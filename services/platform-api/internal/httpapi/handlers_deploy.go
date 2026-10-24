@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -25,7 +26,18 @@ type DeployHandler struct {
 	// address they are actually served on — see service_url.go.
 	apps          ApplicationNamer
 	publicBaseURL string
+	// testRuns resolves a deployment's test_run_id to the platform's own
+	// report (DEC-029 part 2). Nil: test_run_id is refused.
+	testRuns TestRunReports
 }
+
+// TestRunReports is service.TestRunService's part in a deployment.
+type TestRunReports interface {
+	ReportForDeploy(ctx context.Context, applicationID, requesterID, runID string) (string, error)
+}
+
+// SetTestRuns lets a deployment carry a platform test run's report.
+func (h *DeployHandler) SetTestRuns(t TestRunReports) { h.testRuns = t }
 
 func NewDeployHandler(svc *service.DeploymentService, apps ApplicationNamer, publicBaseURL string) *DeployHandler {
 	return &DeployHandler{svc: svc, apps: apps, publicBaseURL: publicBaseURL}
@@ -40,6 +52,10 @@ type deployRequest struct {
 	// paths, what changed — required for an environment that waits for
 	// approval, shown to the approver and bound into what they sign.
 	ReviewDocument string `json:"review_document"`
+	// TestRunID names a passed platform test run of the same source as the
+	// build being deployed; its report becomes the deployment's, with any
+	// test_report given added after it as the requester's own notes.
+	TestRunID string `json:"test_run_id"`
 }
 
 type deploymentResponse struct {
@@ -108,6 +124,38 @@ func (h *DeployHandler) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		environment = domain.EnvironmentDev
 	}
 
+	if req.TestRunID != "" {
+		if h.testRuns == nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "this platform doesn't run tests")
+			return
+		}
+		report, err := h.testRuns.ReportForDeploy(r.Context(), id, caller.ID, req.TestRunID)
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			writeError(w, http.StatusNotFound, "not_found", "no such test run for this application")
+			return
+		case errors.Is(err, domain.ErrUnauthorized):
+			writeError(w, http.StatusForbidden, "forbidden", err.Error())
+			return
+		case errors.Is(err, domain.ErrTestRunNotPassed), errors.Is(err, domain.ErrTestRunSourceMismatch):
+			writeError(w, http.StatusConflict, "test_run_not_usable", err.Error())
+			return
+		case errors.Is(err, domain.ErrNoSuccessfulBuild):
+			writeDeployError(w, err)
+			return
+		case err != nil:
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if notes := strings.TrimSpace(req.TestReport); notes != "" {
+			report += "\n" + domain.RequesterTestReportHeader + "\n" + notes + "\n"
+		}
+		req.TestReport = report
+	} else if notes := strings.TrimSpace(req.TestReport); notes != "" {
+		// Marked as the requester's, so no report can pass itself off as
+		// one the platform ran: only a test run's starts with its header.
+		req.TestReport = domain.RequesterTestReportHeader + "\n" + notes + "\n"
+	}
 	if len(req.TestReport) > domain.MaxTestReportBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, "test_report_too_large", domain.ErrTestReportTooLarge.Error())
 		return

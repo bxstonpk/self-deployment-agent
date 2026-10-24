@@ -398,7 +398,15 @@ func (s *DeploymentService) decide(ctx context.Context, deployment domain.Deploy
 			return domain.Deployment{}, err
 		}
 		if app.LifecycleStatus != domain.StatusRunning {
-			if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, domain.StatusFailed, false); err != nil {
+			// A version that was serving before this deployment still is:
+			// the application is Running, not Failed. Failed left it unable
+			// to be archived (only Running/Suspended can) or deleted
+			// (something is live) — found for real by verify_test_runs.py.
+			target := domain.StatusFailed
+			if _, err := s.deployments.PreviousRunning(ctx, app.ID, deploymentID); err == nil {
+				target = domain.StatusRunning
+			}
+			if _, err := s.apps.UpdateLifecycleStatus(ctx, app.ID, app.LifecycleStatus, target, false); err != nil {
 				return domain.Deployment{}, err
 			}
 		}

@@ -72,6 +72,12 @@ func (e *DockerEngine) Build(ctx context.Context, req service.BuildEngineRequest
 // package doc) into a fresh, uncompressed tar buffer, and injects the
 // generated Dockerfile alongside it as the build context Docker receives.
 func buildServiceContext(sourceArchive []byte, serviceName string, spec service.BuildServiceSpec) (*bytes.Reader, error) {
+	return serviceContext(sourceArchive, serviceName, GenerateDockerfile(spec.Runtime, spec.BaseImage, spec.Port))
+}
+
+// serviceContext is buildServiceContext with the Dockerfile given: the
+// service's subtree, and the Dockerfile beside it.
+func serviceContext(sourceArchive []byte, serviceName, dockerfile string) (*bytes.Reader, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(sourceArchive))
 	if err != nil {
 		return nil, fmt.Errorf("source archive is not valid gzip: %w", err)
@@ -114,7 +120,6 @@ func buildServiceContext(sourceArchive []byte, serviceName string, spec service.
 		return nil, fmt.Errorf("uploaded source archive has no top-level directory %q matching this application's declared service name", serviceName)
 	}
 
-	dockerfile := GenerateDockerfile(spec.Runtime, spec.BaseImage, spec.Port)
 	if err := tw.WriteHeader(&tar.Header{Name: "Dockerfile", Mode: 0o644, Size: int64(len(dockerfile))}); err != nil {
 		return nil, fmt.Errorf("writing generated Dockerfile: %w", err)
 	}
