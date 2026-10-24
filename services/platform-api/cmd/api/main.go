@@ -193,6 +193,21 @@ func main() {
 		dockerEngine, auditService, service.TestLimits{MemoryBytes: int64(cfg.TestRunMemoryMB) << 20, CPUs: cfg.TestRunCPUs},
 		cfg.TestRunTimeout, cfg.TestRunConcurrent)
 	deployHandler.SetTestRuns(testRunService)
+	// Previews (DEC-029 part 3): short-lived copies of an application, each
+	// its own application, made of the same steps an owner's calls go through.
+	governanceRepo := postgres.NewGovernanceRepo(pool)
+	previewService := service.NewPreviewService(applicationRepo, ownerRepo, postgres.NewPreviewRepo(pool), service.PreviewSteps{
+		Register:   applicationService.Register,
+		Validate:   validationService.Validate,
+		Build:      buildService.TriggerBuild,
+		Deploy:     deployService.InitiateDeploy,
+		Archive:    lifecycleService.Archive,
+		Delete:     lifecycleService.Delete,
+		GetProfile: governanceRepo.GetProfile,
+		PutProfile: governanceRepo.PutProfile,
+	}, auditService, cfg.PreviewTTL)
+	deployService.SetPreviews(previewService)
+	governanceService.SetPreviews(previewService)
 	log.Printf("test runs: %d at a time, each service %d MB and %.1f CPUs, at most %s a run",
 		cfg.TestRunConcurrent, cfg.TestRunMemoryMB, cfg.TestRunCPUs, cfg.TestRunTimeout)
 	var approvalHandler *httpapi.ApprovalHandler
@@ -241,6 +256,7 @@ func main() {
 		Approvals:          approvalHandler,
 		Governance:         httpapi.NewGovernanceHandler(governanceService),
 		TestRuns:           httpapi.NewTestRunHandler(testRunService),
+		Previews:           httpapi.NewPreviewHandler(previewService, cfg.PublicBaseURL),
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,
@@ -251,6 +267,7 @@ func main() {
 	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
 	go runHostSampler(ctx, hostSampler, 5*time.Second)
 	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)
+	go runPreviewSweeper(ctx, previewService, time.Minute)
 	if cfg.BackupEnabled {
 		go runBackupScheduler(ctx, backupService, cfg.BackupSweep)
 	} else {
@@ -361,6 +378,26 @@ func runBackupScheduler(ctx context.Context, backups *service.BackupService, int
 // runRetentionSweeper purges application logs past their retention
 // (DEC-027) once at startup and then every interval. Hourly is plenty for
 // a period measured in days.
+// runPreviewSweeper tears down previews that expired, or whose application
+// was archived or deleted.
+func runPreviewSweeper(ctx context.Context, previews *service.PreviewService, interval time.Duration) {
+	log.Printf("previews: checked every %s", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := previews.Sweep(ctx); err != nil {
+				log.Printf("previews: %v", err)
+			} else if n > 0 {
+				log.Printf("previews: removed %d", n)
+			}
+		}
+	}
+}
+
 func runRetentionSweeper(ctx context.Context, retention *service.RetentionService, interval time.Duration) {
 	if retention.Retention() <= 0 {
 		log.Printf("log retention: keeping application logs forever (LOG_RETENTION_DAYS=0)")

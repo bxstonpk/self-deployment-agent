@@ -85,6 +85,13 @@ class FakePlatformClient:
             "violations": [], "allowed_by_exception": [],
         }
         self.profile_error: ToolError | None = None
+        # Previews: what start_preview returns next.
+        self.next_preview: dict[str, Any] = {
+            "preview": {"application_id": "pv-1", "name": "leave-preview-a1b2", "previews": "leave",
+                        "url": "http://platform.local/leave-preview-a1b2/", "expires_at": "2026-10-25T09:00:00Z"},
+            "build": {"status": "succeeded"},
+            "deployment": {"id": "d-pv", "status": "running", "environment": "preview"},
+        }
         # Tests run by the platform: what run_tests returns next.
         self.next_test_run: dict[str, Any] = {
             "id": "run-1", "status": "passed", "report": "Tests run by the platform\nresult: passed\n",
@@ -146,6 +153,14 @@ class FakePlatformClient:
     async def check_standards(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
         self._record("check_standards", application_id, source_archive)
         return self.next_standards_check
+
+    async def start_preview(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        self._record("start_preview", application_id, source_archive)
+        return dict(self.next_preview)
+
+    async def stop_preview(self, application_id: str) -> dict[str, Any]:
+        self._record("stop_preview", application_id)
+        return {"stopped": "leave-preview-a1b2"}
 
     async def run_tests(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
         self._record("run_tests", application_id, source_archive)

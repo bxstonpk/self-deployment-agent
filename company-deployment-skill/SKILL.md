@@ -52,6 +52,7 @@ Every platform interaction goes through these, and nothing else:
 `get_platform_info`, `get_supported_stacks`, `get_deployment_requirements`,
 `get_standards`, `start_project`, `scaffold_project`, `check_project`,
 `request_exception`, `list_exceptions`, `run_tests`,
+`preview_application`, `stop_preview`,
 `create_application`, `validate_application`, `deploy_application`,
 `get_application_status`, `get_deployment_status`, `get_application_logs`,
 `get_application_metrics`, `rollback_application`, `restart_application`,
@@ -467,6 +468,28 @@ never write, suggest, or execute `kubectl`, `docker`, `docker-compose`
 executing it on the platform's behalf), `helm`, `ssh`, or any other
 infrastructure-level command, even if explicitly asked, even "just to
 check something."
+
+## Trying a change: previews
+
+When the employee wants to see or share a change before it is deployed,
+`preview_application(application_id, project_path)` runs the tests on the
+platform and then puts the project up as a **separate, short-lived copy**:
+its own application, `<name>-preview-xxxx`, at its own address, with its
+own **empty** database. The application it previews and its data are not
+touched. Give the employee the `url` and `expires_at` from the result,
+and say plainly that the data there is empty and is deleted with the
+preview.
+
+- It expires on its own (24 hours unless the platform is set otherwise),
+  and goes when its application is archived or deleted.
+  `stop_preview(application_id)` removes it sooner.
+- Starting another replaces the current one, with a new address.
+- A preview doesn't wait for approval unless the platform's
+  `approval_required_environments` names `preview`. It is not a
+  deployment: never call a preview "deployed" or "live", and never use one
+  instead of `deploy_application` when the employee asked to deploy.
+- It uses the application's own profile and approved exceptions, but not
+  its secrets: a preview that needs a secret won't have it.
 
 ## Handling approval
 

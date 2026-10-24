@@ -70,6 +70,9 @@ works".
 | `list_exceptions` | `GET .../exceptions` | |
 | `run_tests` | `GET /applications/{id}`, `POST .../test-runs` | The platform runs every service's tests on the packed project (DEC-029 part 2); see `platform-api/README.md`'s "How tests run on the platform". Waits up to 900 s, since a run takes as long as its tests |
 
+| `preview_application` | `POST .../test-runs`, `POST .../preview` | DEC-029 part 3: tests, then a short-lived copy of the application at its own address with its own empty database; see `platform-api/README.md`'s "How previews work". Waits up to 900 s |
+| `stop_preview` | `DELETE .../preview` | |
+
 `deploy_application` with source now runs the tests on the platform first
 (`run_tests=True` by default), on exactly the bytes it then builds, and
 builds nothing if they don't pass; the deployment carries the platform's
@@ -488,6 +491,9 @@ specifically tests the HTTP-error-to-`ErrorCode` mapping logic using
 
 ### Real end-to-end verification
 
+`scripts/verify_previews.py` covers the preview tools; results in
+`platform-api/README.md`'s "How previews work".
+
 `scripts/verify_test_runs.py` covers `run_tests` and the tested deploy the
 same way; results in `platform-api/README.md`'s "How tests run on the
 platform".
@@ -516,9 +522,9 @@ This is what was actually run to verify this server for real, not just
 unit-tested against fakes. What it covers, in order, all through the real
 MCP stdio protocol (not calling Python functions directly):
 
-1. Confirms all 32 tools (13 from Section 13, the eight later-module
+1. Confirms all 34 tools (13 from Section 13, the eight later-module
    tools for Modules W/X/AB/E, the four sign-in tools, the six
-   governance tools and `run_tests`) are discovered via protocol-level `list_tools()`. Then signs in for real: a fresh
+   governance tools, `run_tests` and the two preview tools) are discovered via protocol-level `list_tools()`. Then signs in for real: a fresh
    machine is refused every platform tool, `login` returns a code, the
    employee approves it with their own session, `complete_login` stores
    the key, and the key appears nowhere in anything the agent saw.

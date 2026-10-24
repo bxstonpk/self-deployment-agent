@@ -39,6 +39,7 @@ from .tools import (
     discovery,
     governance,
     lifecycle,
+    preview,
     notifications,
     observability,
     ownership,
@@ -230,6 +231,25 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             audit("run_tests", params, application_id),
             governance.run_tests(client, application_id, project_path),
         )
+
+    @mcp.tool()
+    async def preview_application(application_id: str, project_path: str, run_tests: bool = True) -> dict[str, Any]:
+        """Try the project on the platform without touching the running
+        application: a short-lived copy, "<name>-preview-xxxx", with its own
+        EMPTY database and its own url, deleted when it expires (24 hours by
+        default). The tests run first (run_tests=True). Never waits for
+        approval unless the platform is set to. Starting another replaces it."""
+        params = {"application_id": application_id, "project_path": project_path, "run_tests": run_tests}
+        return await _run_tool(
+            audit("preview_application", params, application_id),
+            preview.preview_application(client, application_id, project_path, run_tests),
+        )
+
+    @mcp.tool()
+    async def stop_preview(application_id: str) -> dict[str, Any]:
+        """Remove the application's preview now (its database with it)."""
+        params = {"application_id": application_id}
+        return await _run_tool(audit("stop_preview", params, application_id), preview.stop_preview(client, application_id))
 
     @mcp.tool()
     async def request_exception(application_id: str, kind: str, subject: str, reason: str) -> dict[str, Any]:

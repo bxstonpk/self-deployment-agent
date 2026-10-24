@@ -1968,8 +1968,8 @@ administrator decides.
 - **Applications registered before this** have no profile, so their next
   build answers `profile_required` until `start_project` is called with
   their `application_id`.
-- **Not built yet:** a preview environment (DEC-029's part 3). Tests run
-  on the platform: see "How tests run on the platform".
+- Tests run on the platform, and previews: see "How tests run on the
+  platform" and "How previews work" (DEC-029 parts 2 and 3).
 
 ### Verifying it
 
@@ -2103,6 +2103,98 @@ needing approval, and without them at the end. Results (2026-10-24):
     an earlier version still serving. It could then be neither archived
     (only Running or Suspended can be) nor deleted (something is live).
     It now stays `Running` when an earlier version serves.
+
+## How previews work (DEC-029 part 3)
+
+A preview is a short-lived copy of an application, made to try a change
+on the platform, or to show it to someone, before deploying it.
+
+**Why its own application, not a third environment.** One application
+has one live deployment, one database, one address and one lifecycle
+status. Activating a deployment supersedes whatever is running.
+Automatic rollback is application-wide. A "preview" environment inside
+the same application would have replaced the running version and shared
+its data. So a preview is its own application:
+- **Name:** `<name>-preview-<4 hex>`. A deleted application keeps its
+  name, so the suffix is new each time.
+- **Link:** `application_previews` records which application it
+  previews.
+- **What it gets:** its own empty database, its own address, its own
+  lifecycle. The application it previews is never touched.
+
+- **Starting one.** `POST /applications/{id}/preview` (owners) takes the
+  same tar.gz a build does and goes through the ordinary steps, with the
+  ordinary checks: register (as the caller) → validate → build → deploy.
+  The preview gets:
+  - the application's deployment.yaml, with its own name and database
+    backups off;
+  - the application's profile;
+  - for its build, the application's approved dependency exceptions.
+
+  A live preview of the same application is torn down first, so there is
+  one per application. A preview that doesn't build is removed at once.
+  One whose deployment fails stays until it expires, so its logs can be
+  read.
+- **The `preview` environment.** A preview deploys only to `preview`, and
+  only a preview can (400 otherwise). It waits for approval only if
+  `APPROVAL_REQUIRED_ENVIRONMENTS` names `preview`.
+- **Ending.** A sweeper (every minute) tears a preview down: archive,
+  delete (which stops its containers and removes its database), as its
+  creator. It does so:
+  - when it expires (`PREVIEW_TTL_HOURS`, 24 by default);
+  - when the application it previews is archived or deleted.
+
+  `DELETE /applications/{id}/preview` does it now. `GET` shows the live
+  one.
+- **Where it shows.**
+  - MCP: `preview_application` (tests first, on the same bytes) and
+    `stop_preview`.
+  - Portal: a Preview card on the application's page, with the address,
+    the expiry and **Stop preview**.
+
+### Known gaps
+
+- **No secrets, no data.** A preview has neither the application's
+  secrets nor its data: its database starts empty.
+- **Only its creator owns it**, as a separate application. The
+  application's other owners see it through `GET .../preview` and can
+  replace or stop it.
+- **A new address each time.** Every preview has a new address, since
+  application names are never reused.
+- **It counts as an application.** It shows in listings and the admin
+  Dashboard like any other application while it lives.
+
+### Verifying it
+
+```bash
+cd services/mcp-server
+.venv/Scripts/python.exe scripts/verify_previews.py
+```
+
+It runs through the real MCP server over stdio against the local stack,
+with `APPROVAL_REQUIRED_ENVIRONMENTS=dev,production` (as on the LAN
+server). Results (2026-10-24):
+
+- **The original.** It was deployed to dev (which waited for approval)
+  and held an item.
+- **`preview_application`.** It ran the tests, then made
+  `<name>-preview-xxxx` and deployed it to `preview` without waiting
+  (about 2 minutes). The preview had its own address, expired after
+  `PREVIEW_TTL_HOURS` exactly, and its database was empty. The original's
+  item was still there, and its deployment was the same one, still
+  running.
+- **Replacing and refusals.**
+  - Another preview replaced it at a new address. The old one was
+    deleted, and its database container was gone.
+  - A preview of a preview was refused.
+  - A "preview" deploy of an ordinary application was refused.
+- **Ending.**
+  - `stop_preview` removed it and its database.
+  - An expired preview (its `expires_at` moved into the past) was
+    removed by the sweep.
+  - Archiving the application removed its preview.
+
+Also run on this branch: `e2e_verify.py` (59 checks, 34 tools).
 
 ## How Alerts work (FR-092, DEC-028)
 

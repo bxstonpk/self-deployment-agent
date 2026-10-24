@@ -208,6 +208,19 @@ class PlatformClient:
     async def get_test_run(self, application_id: str, test_run_id: str) -> dict[str, Any]:
         return (await self._request("GET", f"/applications/{application_id}/test-runs/{test_run_id}")).get("test_run", {})
 
+    # --- Previews ------------------------------------------------------------
+
+    async def start_preview(self, application_id: str, source_archive: bytes) -> dict[str, Any]:
+        """Registers, builds and deploys the preview: as long as a build and
+        a deploy take together."""
+        return await self._request(
+            "POST", f"/applications/{application_id}/preview",
+            extra_headers={"Content-Type": "application/gzip"}, content=source_archive, timeout=900,
+        )
+
+    async def stop_preview(self, application_id: str) -> dict[str, Any]:
+        return await self._request("DELETE", f"/applications/{application_id}/preview")
+
     # --- Departments -----------------------------------------------------
 
     async def list_departments(self) -> list[dict[str, Any]]:

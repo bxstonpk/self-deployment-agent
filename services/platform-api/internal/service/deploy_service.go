@@ -81,6 +81,7 @@ type ResourceProvisioner interface {
 }
 
 type DeploymentService struct {
+	previews      PreviewParents
 	apps          ApplicationLifecycleRepository
 	owners        ApplicationOwnerRepository
 	builds        BuildRepository
@@ -117,6 +118,14 @@ func (s *DeploymentService) RequireSignedApprovals(notify func(ctx context.Conte
 	s.signedApprovals = true
 	s.notifyApprovers = notify
 }
+
+// PreviewParents says which applications are previews, and of what.
+type PreviewParents interface {
+	ParentOf(ctx context.Context, applicationID string) (string, error)
+}
+
+// SetPreviews lets previews deploy to the "preview" environment.
+func (s *DeploymentService) SetPreviews(p PreviewParents) { s.previews = p }
 
 func (s *DeploymentService) requiresApproval(env domain.Environment) bool {
 	if s.approvalEnvs == nil {
@@ -206,8 +215,21 @@ func isInFlight(status domain.DeploymentStatus) bool {
 // straight through to Deploy/HealthCheck/Activate (FR-042's alternative
 // flow: dev skips the gate entirely).
 func (s *DeploymentService) InitiateDeploy(ctx context.Context, applicationID, requesterID string, environment domain.Environment) (deployment domain.Deployment, err error) {
-	if environment != domain.EnvironmentDev && environment != domain.EnvironmentProduction {
+	if environment != domain.EnvironmentDev && environment != domain.EnvironmentProduction && environment != domain.EnvironmentPreview {
 		return domain.Deployment{}, domain.ErrInvalidEnvironment
+	}
+	// A preview (DEC-029 part 3) deploys only to "preview", and only a
+	// preview does: its own application, so nothing else shares it.
+	if s.previews != nil {
+		parent, err := s.previews.ParentOf(ctx, applicationID)
+		if err != nil {
+			return domain.Deployment{}, err
+		}
+		if (parent != "") != (environment == domain.EnvironmentPreview) {
+			return domain.Deployment{}, domain.ErrPreviewOnlyEnvironment
+		}
+	} else if environment == domain.EnvironmentPreview {
+		return domain.Deployment{}, domain.ErrPreviewOnlyEnvironment
 	}
 
 	app, err := s.apps.GetByID(ctx, applicationID)
