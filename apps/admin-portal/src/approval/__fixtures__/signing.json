@@ -1,0 +1,10 @@
+{
+  "passphrase": "fixture-passphrase-not-a-real-key",
+  "pem": "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIGjMF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBDbet3uqViWiu18m6Lp\nYd2GAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQ7ESSYMnZCSdClmvy\ngZpNVgRADVJTcpp4Qwu7cRwkCZosBOXpLoAUhxBHvzW/B4fOonaOKOdaBcBAdNvG\n/0+GIfu33QDms9izJe3bxuh56pwM6w==\n-----END ENCRYPTED PRIVATE KEY-----\n",
+  "fingerprint": "SHA256:8/WIltonQ2augRhu27FQ9HtpN7CJDz7ThKaZGLLmBcE",
+  "template": "company-platform deployment approval v2\ndeployment: d1\napplication: a1 (leave)\nenvironment: dev\nbuild: b1\nimage: api=img:1\ntest-report-sha256: none\nsource-sha256: abc\nreview-sha256: none\ndecision: {decision}\nreason: {reason}\nsigned-at: {signed_at}\n",
+  "signed_at": "2026-10-24T09:00:00Z",
+  "reason": "  looks   good\n to me ",
+  "python_signature": "skppK+NRmyyp6TtFpUCf8u7ROKOy1+Eb9Hsv8c7l9+reLxWKllsxfUDi3vsQIOZGTvfV65I9V62PE15dWQHZBA==",
+  "archive_b64": "H4sIAMcl3GoC/+2YMU7DMBSGM1fiAkweYUnsNIknBEwwoV7BJG4aKI7luFIQYqjE0hMgNgQTYmNyb+OjkKQSqAGpC4lQ+74htrJ4sL/3+5nJzLthmXDT3OkKXBEFQTNWtEeMSfg9b/5TGoUOwk4PzArNVLWks5tIFl+zlKP6DAwcYNcYq1xoLhKvULF3KqV7VZS9+x+Qdf8JiUgA/vcBL2WuNEr4mM2mGo1nItZZLlB1FA4O0d091ITtxvVc72TEynPOEq66y/9fvP9y3g+Dlv/YJ5GDSvC/cwj1kWR6csSqi2DCufx/n2kuUleXGkpRB/Sx7Zvz31/336c0oJD/vex/Yz+qHeMK6QkTiGCM4glTLNZcFWAd5H/H+Y9D+jP/KeR/HwR0Ff9rfaA179Y82eXCmg+7nFvzas287gyhGGx1/3+84q/fADbm/7Dd//s4GEL+94HnIWuea8/NW2P7gzWP1ryA6btz/5/mae5KkXa1xkb/fdzOfxLC+18vLEYXZ3uD/Ur3y0wwdQtGAAAAAAAAAAAAbCefIgtO7AAoAAA="
+}

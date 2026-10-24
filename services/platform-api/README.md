@@ -1812,6 +1812,22 @@ deleting the application leaves no container behind.
 
 ## How signed approvals work (DEC-017)
 
+### Approving in the Admin Portal
+
+An approver (an account in `PLATFORM_APPROVER_KEYS`; `/auth/me` carries `is_approver`) gets an **Approvals** page with a count of what's waiting. Each deployment opens to:
+- its REVIEW.md, rendered;
+- every file of the build. The archive is downloaded through `GET /approvals/{id}/source` and must match the SHA-256 that will be signed, or it can't be approved from the Portal.
+- the test report and scans;
+- the exact text to be signed.
+
+To sign, the approver picks their `approver_ed25519.pem` and types its passphrase. The browser decrypts the key and signs in the tab's memory: PBES2 with PBKDF2-HMAC-SHA256 and AES-CBC, then Ed25519, in pure JavaScript (`@noble`), because the Portal is served over plain http, where browsers withhold WebCrypto. Only `decision`, `reason`, `signed_at` and `signature` are sent. The key stays on the approver's machine, as with `company-deploy approve`.
+
+Verified:
+- vitest tests decrypt a key made by the CLI's own code and produce a signature identical to the Python one (Ed25519 is deterministic). They read a PAX archive with a Thai and a 150-character path.
+- On the local stack with a throwaway approver key, a real browser:
+  - opened a pending dev deployment and showed its REVIEW.md and its 11 verified files;
+  - signed with the uploaded key file. The platform accepted the signature and the application went running, and the request carried only the four fields.
+
 ### Review before approval (2026-10-24)
 
 The platform owner reviews every file before anything goes up:

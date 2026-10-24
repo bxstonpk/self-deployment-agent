@@ -38,7 +38,7 @@ var reservedApplicationNames = map[string]bool{
 	// The Admin Portal's pages.
 	"sign-in": true, "register": true, "device": true, "access-keys": true,
 	"applications": true, "notifications": true, "reports": true, "audit-log": true,
-	"dashboard": true, "departments": true,
+	"dashboard": true, "departments": true, "approvals": true,
 }
 
 // ReservedApplicationName reports whether name is kept for the platform.

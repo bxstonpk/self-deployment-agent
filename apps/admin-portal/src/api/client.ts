@@ -462,6 +462,9 @@ export interface MeResponse {
   // what decides whether the Portal offers the dashboard. The API checks
   // again on every dashboard request.
   is_admin: boolean;
+  // Whether this account holds an approver key (PLATFORM_APPROVER_KEYS):
+  // what decides whether the Portal offers the Approvals page.
+  is_approver?: boolean;
 }
 
 export function getMe(identity: Identity): Promise<MeResponse> {
@@ -548,4 +551,67 @@ export interface DepartmentSummary {
 
 export function listDepartmentSummaries(identity: Identity): Promise<{ departments: DepartmentSummary[] }> {
   return request(identity, "GET", "/departments/summary");
+}
+
+// --- Signed approvals (DEC-017): reviewing and signing in the Portal ---
+
+export interface ApprovalScan {
+  passed: boolean;
+  critical: number;
+  high: number;
+}
+
+export interface ApprovalRequest {
+  deployment_id: string;
+  application_id: string;
+  application_name: string;
+  environment: string;
+  build_id: string;
+  images: Record<string, string>;
+  requested_by: string;
+  requested_at: string;
+  status: string;
+  decision: string;
+  scans: Record<string, ApprovalScan>;
+  test_report: string;
+  test_report_sha256: string;
+  review_document: string;
+  review_sha256: string;
+  source_sha256: string;
+  source_bytes: number;
+  signing_template: string;
+}
+
+export function listPendingApprovals(identity: Identity): Promise<{ pending: ApprovalRequest[] }> {
+  return request(identity, "GET", "/approvals/pending");
+}
+
+export function getApproval(identity: Identity, deploymentId: string): Promise<ApprovalRequest> {
+  return request(identity, "GET", `/approvals/${encodeURIComponent(deploymentId)}`);
+}
+
+// The exact source archive the deployment's build was made from (binary).
+export async function getApprovalSource(identity: Identity, deploymentId: string): Promise<Uint8Array> {
+  const res = await fetch(`${BASE_URL}/approvals/${encodeURIComponent(deploymentId)}/source`, {
+    headers: identityHeaders(identity),
+  });
+  if (!res.ok) {
+    let message = `Platform API returned HTTP ${res.status}`;
+    try {
+      const parsed = (await res.json()) as { error?: { message?: string } };
+      message = parsed.error?.message ?? message;
+    } catch {
+      // not JSON
+    }
+    throw new ApiError(res.status, "source_unavailable", message);
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+export function decideApproval(
+  identity: Identity,
+  deploymentId: string,
+  body: { decision: "approve" | "reject"; reason: string; signed_at: string; signature: string },
+): Promise<{ deployment: { status: string }; signer_fingerprint: string }> {
+  return request(identity, "POST", `/approvals/${encodeURIComponent(deploymentId)}/decision`, { json: body });
 }

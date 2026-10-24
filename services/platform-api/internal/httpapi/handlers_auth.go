@@ -38,10 +38,13 @@ type AuthHandler struct {
 	// isAdmin says whether an account is a platform administrator, so the
 	// Portal knows whether to offer the dashboard. The API checks again.
 	isAdmin func(email string) bool
+	// isApprover says whether an account holds an approver key
+	// (PLATFORM_APPROVER_KEYS), so the Portal offers the Approvals page.
+	isApprover func(email string) bool
 }
 
-func NewAuthHandler(svc *service.AuthService, portalURL string, isAdmin func(email string) bool) *AuthHandler {
-	return &AuthHandler{svc: svc, portalURL: portalURL, isAdmin: isAdmin}
+func NewAuthHandler(svc *service.AuthService, portalURL string, isAdmin, isApprover func(email string) bool) *AuthHandler {
+	return &AuthHandler{svc: svc, portalURL: portalURL, isAdmin: isAdmin, isApprover: isApprover}
 }
 
 type authUserResponse struct {
@@ -239,7 +242,8 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": toAuthUser(user), "credential": toCredential(cred),
-		"is_admin": h.isAdmin != nil && h.isAdmin(user.Email),
+		"is_admin":    h.isAdmin != nil && h.isAdmin(user.Email),
+		"is_approver": h.isApprover != nil && h.isApprover(user.Email),
 	})
 }
 
