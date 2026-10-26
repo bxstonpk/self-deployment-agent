@@ -45,7 +45,8 @@ def _check(ok: bool, what: str) -> None:
 
 
 def _profile_env(home: Path) -> dict[str, str]:
-    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+           "APPDATA": str(home / "AppData" / "Roaming"), "LOCALAPPDATA": str(home / "AppData" / "Local")}
     env.pop("PLATFORM_API_BASE_URL", None)
     return env
 
