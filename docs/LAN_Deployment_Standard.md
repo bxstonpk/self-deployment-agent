@@ -201,6 +201,15 @@ The installer:
 
 Running it again upgrades in place and keeps the machine signed in.
 
+Machines don't stay behind. Each gateway build publishes one release of the
+MCP server and skill at `/downloads/version.json`. A machine whose server or
+skill is older is refused with `UPDATE_REQUIRED` before any work. Claude
+runs the update command it is given (this installer, without signing in
+again), asks the employee to restart Claude Code (`claude --continue`), and
+carries on. Machines installed before this check existed need the installer
+run once by hand. Details are in `services/mcp-server/README.md`, "Keeping a
+machine up to date".
+
 Verified:
 - **Windows:** `install.ps1` was run for real in a throwaway user profile:
   installed, signed in, and `claude mcp list` reports the server

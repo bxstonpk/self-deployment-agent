@@ -244,7 +244,6 @@ func main() {
 	policyHandler := httpapi.NewPolicyHandler(cfg.ApprovalEnvironments, cfg.ApproverKeys)
 	policyHandler.SetDevCopies(true)
 	proxyHandler := httpapi.NewProxyHandler(scaleService, trafficRecorder)
-	proxyHandler.SetDevCopies(devCopyService)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,

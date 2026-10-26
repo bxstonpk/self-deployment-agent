@@ -142,7 +142,7 @@ async def _deploy_dev_copy(
         "created": res.get("created", False),
         "note": (
             f"Deployed to the dev copy {copy.get('name')}: its own application, database and address, never "
-            "waiting for approval. Its data stays between deployments. Its pages carry a DEV banner. The "
+            "waiting for approval. Its data stays between deployments. The "
             "application itself (production) is untouched."
         ),
         "tell_the_employee": (

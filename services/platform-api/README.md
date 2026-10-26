@@ -2132,8 +2132,9 @@ application itself through the API still follows
 - **Deploying to dev.** `POST /applications/{id}/dev` (owners; `{id}` is
   the application or its copy) takes the same tar.gz a build does.
   - **The first time,** it makes the copy: registered as the caller,
-    named `<name>-dev`, or `-dev2`, `-dev3` (a deleted application keeps
-    its name). It uses the application's deployment.yaml (database
+    named `<name>-dev`. It is `-dev2`, `-dev3` only if another application
+    holds that name; a deleted application frees its name, so a copy made
+    after a reset is `<name>-dev` again, at the same address. It uses the application's deployment.yaml (database
     backups off) and its profile.
   - **Every time,** it follows the application's current deployment.yaml,
     then validate → build → deploy to `dev`.
@@ -2141,8 +2142,6 @@ application itself through the API still follows
     data as they were.
   - **Approved exceptions.** The copy builds with the application's
     approved dependency exceptions.
-- **The DEV banner.** Its pages carry a "DEV — not the live application"
-  banner, added by the proxy to HTML responses.
 - **Test data Claude adds.** `POST .../dev/test-data {"note"}` (MCP
   `record_test_data`) keeps Claude's record of test data it put in the
   copy's database itself, with who and when. This happens every time
@@ -2232,8 +2231,8 @@ with a throwaway approver key and `APPROVAL_REQUIRED_ENVIRONMENTS=dev,production
 
 - **The first dev deployment.** It made `<name>-dev` and was running
   without waiting, though dev is gated (about 2 minutes, tests included).
-  The application itself had no deployment. The copy's page carried the
-  DEV banner.
+  The application itself had no deployment. Its page is the application's
+  own, with nothing added (the DEV banner was removed; re-run 2026-10-26).
 - **Data kept.** An employee's item and Claude's item (recorded with
   `record_test_data`) were still there after the next dev deployment, at
   the same address.
@@ -2244,13 +2243,13 @@ with a throwaway approver key and `APPROVAL_REQUIRED_ENVIRONMENTS=dev,production
   the `dev-data:` line. Signed with a throwaway key, it went live, and the
   copy was recorded as done.
   - Production served both items.
-  - Production's page had no banner.
   - The dev copy kept its own data.
 - **No second copy.** A second production deployment couldn't copy again,
   through the MCP or the API (409).
 - **Reset.** `reset_dev` removed the copy and its database container, and
-  production's data was untouched. The next dev deployment made `-dev2`,
-  empty.
+  production's data was untouched. The next dev deployment made a new,
+  empty copy under the same name, `<name>-dev` (since deleted applications
+  free their names; re-run 2026-10-26).
 - **Archive.** Archiving the application removed its dev copy within the
   sweep.
 - **A service added to a dev copy that holds data.** The worker answered

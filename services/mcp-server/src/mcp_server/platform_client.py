@@ -155,6 +155,20 @@ class PlatformClient:
     async def whoami(self) -> dict[str, Any]:
         return await self._request("GET", "/auth/me")
 
+    # --- Client release (release.py) -------------------------------------
+
+    async def get_client_release(self, version_url: str) -> str | None:
+        """The current MCP server and skill release the gateway publishes, or
+        None if it publishes none or can't be reached."""
+        try:
+            resp = await self._client.get(version_url)
+            if resp.status_code != 200:
+                return None
+            release = resp.json().get("client_version")
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+        return release if isinstance(release, str) and release else None
+
     async def revoke_own_key(self) -> None:
         await self._request("POST", "/auth/logout")
 

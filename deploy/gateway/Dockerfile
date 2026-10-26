@@ -17,6 +17,27 @@ WORKDIR /build
 COPY services/mcp-server/ ./mcp-server/
 COPY company-deployment-skill/ ./company-deployment-skill/
 COPY deploy/gateway/client/ ./client/
+# The client release: one version for the MCP server and the skill, from
+# their content. It goes into the wheel (mcp_server/_release.py), the skill
+# (VERSION) and /downloads/version.json, which every MCP server checks
+# before working: an older one has Claude update the machine first.
+RUN python - <<'PY'
+import hashlib, json, pathlib
+h = hashlib.sha256()
+for root in ("mcp-server/src", "mcp-server/pyproject.toml", "company-deployment-skill"):
+    p = pathlib.Path(root)
+    files = [p] if p.is_file() else sorted(
+        f for f in p.rglob("*") if f.is_file() and not ({"node_modules", "__pycache__"} & set(f.parts)))
+    for f in files:
+        h.update(f.as_posix().encode())
+        h.update(f.read_bytes().replace(b"\r\n", b"\n"))
+release = h.hexdigest()[:12]
+pathlib.Path("mcp-server/src/mcp_server/_release.py").write_text(f'RELEASE = "{release}"\n', encoding="utf-8")
+pathlib.Path("company-deployment-skill/VERSION").write_text(release + "\n", encoding="utf-8")
+pathlib.Path("/downloads").mkdir(exist_ok=True)
+pathlib.Path("/downloads/version.json").write_text(json.dumps({"client_version": release}), encoding="utf-8")
+print("client release", release)
+PY
 RUN pip wheel --no-deps --wheel-dir /downloads ./mcp-server \
  && python - <<'PY'
 import pathlib, zipfile

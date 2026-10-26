@@ -455,6 +455,71 @@ those bits only mark it read-write, and the protection is the user
 profile's own ACL. A key issued by one platform address isn't sent to
 another: change `PLATFORM_API_BASE_URL` and the machine signs in again.
 
+## Keeping a machine up to date
+
+The platform owner asked (2026-10-26) that a machine check its MCP server and
+skill against the platform before any work, and that Claude update an older
+machine first and then carry on.
+
+**How it works.**
+- **One release for both.** The gateway image computes it when it is built:
+  the first 12 hex digits of a SHA-256 over `mcp-server/src`,
+  `mcp-server/pyproject.toml` and `company-deployment-skill/` (paths and
+  contents, line endings normalised). It is written into the wheel
+  (`mcp_server/_release.py`), the skill (`VERSION`) and
+  `/downloads/version.json` (`{"client_version": ...}`, served `no-store`).
+  Any change to the server or the skill, docs and templates included, is a
+  new release.
+- **The check** (`release.py`). Before every tool except `whoami`, `login`,
+  `complete_login` and `logout`, the server compares its own release and the
+  installed skill's (`~/.claude/skills/company-deployment/VERSION`) with the
+  platform's. If either differs, the tool is not run and the answer is
+  `UPDATE_REQUIRED`. Its message gives the one command that updates the
+  machine: the installer, with `-SkipLogin` / `--skip-login`, so the sign-in
+  is kept. A current answer is trusted for five minutes; a refusal asks
+  again on every call.
+- **`whoami`** reports `client_release`, `skill_release`, `latest_release`
+  and `update_required`. If an update is needed, its `next_step` is the
+  update. `get_platform_info` reports the same fields.
+- **After the update**, the running server is still the old code. It sees
+  the new release on disk and asks only for a restart of Claude Code
+  (`claude --continue` keeps the conversation). The skill and the server's
+  instructions tell Claude to run the command, ask for the restart, then
+  carry on with what the employee asked for.
+- **Not checked:**
+  - a source checkout (no `_release.py`: an editable install, the verify
+    scripts);
+  - an API reached directly rather than through the gateway's `/api`;
+  - a platform that publishes no `version.json`, or can't be reached. The
+    platform calls that follow report the problem.
+
+**Known gaps.**
+- A machine installed before this change has no check. Each one needs the
+  installer run once by hand.
+- The update needs a restart of Claude Code. The server can't reload
+  itself.
+- Any difference refuses, even a change that only touched the skill's docs.
+  There is no notion of a compatible older release.
+- While a machine is outdated, read-only tools are refused too.
+
+**Verified.** `scripts/verify_client_update.py` was run against the local
+gateway (rebuilt with this change) on Windows. In a throwaway user profile:
+- `install.ps1` installed a server and skill that carry the gateway's release.
+- Both were wound back to an older release.
+- Over real stdio, `whoami` reported the update and `get_supported_stacks`
+  was refused with `UPDATE_REQUIRED`.
+- The command from that message, run exactly as given while the old server
+  was still running, updated both. The pip reinstall under a running
+  server worked on Windows.
+- The still-running server then asked only for a restart.
+- A restarted server was current and let tools through (`UNAUTHORIZED`, as
+  the throwaway machine is not signed in).
+- The installer registered the server in the throwaway profile only. The
+  real `~/.claude.json` was unchanged.
+
+`install.sh` with `--skip-login` was not run for this change; macOS/Linux
+are covered only by the unit tests (`tests/test_release.py`).
+
 ## Running locally
 
 ```
@@ -499,6 +564,10 @@ specifically tests the HTTP-error-to-`ErrorCode` mapping logic using
 `httpx.MockTransport`, also without a real server.
 
 ### Real end-to-end verification
+
+`scripts/verify_client_update.py` covers the client release check; results
+in "Keeping a machine up to date" above. Set `PLATFORM_GATEWAY_URL` to the
+gateway (not the API's own port).
 
 `scripts/verify_dev_copies.py` covers dev copies and their data; results in
 `platform-api/README.md`'s "How dev copies work".

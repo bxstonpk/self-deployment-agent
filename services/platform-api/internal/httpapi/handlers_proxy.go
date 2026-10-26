@@ -48,8 +48,6 @@ type ProxyHandler struct {
 	// reached from inside platform-api's container. A field only so tests
 	// can point it at a local server.
 	upstreamHost string
-	// devCopies: a dev copy's pages carry a banner (devcopy_banner.go).
-	devCopies DevCopyLabeler
 }
 
 func NewProxyHandler(scale ScaleResolver, traffic TrafficRecorder) *ProxyHandler {
@@ -146,14 +144,6 @@ func (h *ProxyHandler) forward(w http.ResponseWriter, r *http.Request, appName, 
 		return
 	}
 	proxyReq.Header = r.Header.Clone()
-	devLabel, isDevCopy := "", false
-	if h.devCopies != nil && resolved.Environment == domain.EnvironmentDev {
-		devLabel, isDevCopy = h.devCopies.DevCopyLabel(r.Context(), resolved.ApplicationID)
-	}
-	if isDevCopy {
-		// Uncompressed, so the banner can be added to the page.
-		proxyReq.Header.Set("Accept-Encoding", "identity")
-	}
 
 	// Timed around the application's own answer, not the cold start before
 	// it: waiting for a container to start is a scale event (FR-056), not
@@ -168,10 +158,6 @@ func (h *ProxyHandler) forward(w http.ResponseWriter, r *http.Request, appName, 
 	h.traffic.Record(resolved.ApplicationID, resolved.ServiceName, resolved.Environment, resp.StatusCode, time.Since(started))
 	defer resp.Body.Close()
 
-	if isDevCopy && isBannerPage(resp) {
-		copyWithBanner(w, resp, devCopyBanner(devLabel))
-		return
-	}
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
