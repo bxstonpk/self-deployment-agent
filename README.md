@@ -35,6 +35,8 @@ the system most:
 | `DEC-028` | Alert thresholds, and the rhythm: on start, on escalation, at most hourly while ongoing, on clear |
 | `DEC-006` | The platform's encryption key is sealed with the host's TPM |
 | `DEC-007` | No per-application DNS: applications live at `/<app>/` on the platform's address (`/<app>/api/` for the API) |
+| `DEC-029` | The company standard applies from the start of an application, not only at deployment: a profile, allowed libraries, exceptions decided by an administrator, tests run by the platform, and a dev copy per application that deploys without approval |
+| `DEC-030` | A platform administrator can suspend any application, with a reason, and only an administrator can resume it |
 
 ## The application standard
 
@@ -66,13 +68,19 @@ stdio, and a real Claude Code session. Each claim is backed by a script
 | Logs and metrics | Every line an application prints, with secrets redacted, kept 90 days. CPU, memory, requests, errors and latency are measured by the platform itself. | Modules S, T |
 | Alerts | Error rate, latency, CPU, memory and host disk against `DEC-028`'s thresholds. In-app delivery: owners get application alerts, administrators get platform alerts. | platform-api: How Alerts work |
 | Authentication | Passwords, Portal sessions, and per-machine API keys from a device approval. A key can't mint keys or approve devices. Only hashes are stored. | platform-api: How authentication works |
-| Signed approval | Deployments to the gated environments (production; dev too on the company host) wait for the administrator's Ed25519 signature over the exact deployment, images, source archive, test report and the requester's REVIEW.md. `company-deploy review` downloads every file first. | platform-api: How signed approvals work |
+| Signed approval | Production deployments wait for the administrator's Ed25519 signature over the exact deployment, images, source archive, test report and the requester's REVIEW.md. `company-deploy review` downloads every file first. | platform-api: How signed approvals work |
+| Development governance | A new application is registered with a profile (purpose, users, personal data, stack) before any code, and starts from the templates. Libraries the company forbids are refused at build time. Anything outside the standard needs an exception, which an administrator decides in the Portal. | platform-api: How development governance works |
+| Tests on the platform | The platform runs an application's tests (Go, Python, Node) in the build sandbox, so a machine needs no toolchain. A production deployment carries the report only if the run passed on the same source. | platform-api: How tests run on the platform |
+| Dev copies | Each application has one long-lived dev copy, `<app>-dev`, with its own database and address. A new application is deployed there at once with a link, and every change goes there without approval, keeping its data. A changed `deployment.yaml` (a service added, say) is applied in place, keeping the data. The first production deployment can take the dev data if the employee says it is real, as part of what the approver signs. Claude records test data it adds itself. | platform-api: How dev copies work |
+| Database memory | MySQL runs with a small configuration and sleeps with its application, waking on the next request. A failed application that never ran is removed at once, its name freed, and its owners told to deploy again. | platform-api: How databases save memory, and failed applications are removed |
+| Administrator's suspension | An administrator suspends any application from the Dashboard, with a reason the owners are told. The owners can't resume, archive, delete or redeploy it until an administrator resumes it. | platform-api: How an administrator's suspension works |
+| Client updates | Each gateway build publishes one release of the MCP server and skill. A machine that is older is refused until it updates: Claude runs the installer's update and asks for a restart of Claude Code. | mcp-server: Keeping a machine up to date |
 | Audit, notifications, reports | A hash-chained, append-only audit log; an in-app inbox; inventory and deployment-activity reports | Modules W, X, AB |
 | Ownership | Co-owners and contributors; a primary-ownership transfer the new owner must accept | Module E |
-| MCP server | 25 tools: sign-in, discovery, lifecycle, deploy from a project folder (`.env` files and keys never uploaded), status with per-service URLs and active alerts, logs, metrics, audit, ownership | `services/mcp-server` |
-| Skill | How Claude must use the MCP server: sign in first, start from the templates, test before production, never handle secrets or infrastructure | `company-deployment-skill` |
+| MCP server | 34 tools: sign-in, discovery, the standard (start, scaffold, check, exceptions), tests, dev copies, lifecycle, deploy from a project folder (`.env` files and keys never uploaded), status with per-service URLs and active alerts, logs, metrics, audit, ownership | `services/mcp-server` |
+| Skill | How Claude must use the MCP server: update and sign in first, start from the company standard, show every change on dev, test before production, never handle secrets or infrastructure | `company-deployment-skill` |
 | Administrators' dashboard | A task manager for the platform, for `PLATFORM_ADMIN_EMAILS` only: the host's CPU, memory, load and disk with 15-minute charts, traffic across every application, and every application with its owner, instances, CPU, memory, requests, errors and latency, refreshed every 5s | platform-api: How the administrators' dashboard works |
-| Admin Portal | Every owner action above for a person. Also: machine approval, access keys, backups and restore, alerts. | `apps/admin-portal` |
+| Admin Portal | Every owner action above for a person. Also: machine approval, access keys, backups and restore, alerts, departments. For administrators: the Dashboard (with suspend and resume) and the Standards page (dependency rules and exceptions). | `apps/admin-portal` |
 | LAN gateway and installers | One port serves the Portal, API, applications and downloads. A one-line installer per machine (Windows, macOS/Linux) sets up the MCP server, the skill and sign-in. | `deploy/gateway`, `docs/LAN_Deployment_Standard.md` |
 | TPM-sealed key | The encryption key is sealed with the host's TPM, unsealed into RAM at boot, with an offline escrow copy | `deploy/host` |
 
@@ -97,8 +105,12 @@ curl -fsSL http://<platform-host>:8080/downloads/install.sh | sh     # macOS / L
 ```
 
 Then approve the code it shows in the Admin Portal. From then on, ask Claude
-Code to deploy the project. It signs in, follows the standard, validates,
-deploys, and reports the URLs.
+Code to build or deploy an application. A new one starts from the company
+standard and is up on its dev copy (`/<app>-dev/`) with a link straight
+away; every change goes there. Production is deployed when the employee
+asks, after the administrator signs. When the platform is updated, Claude
+updates the machine first (machines installed before 2026-10-26 need the
+installer run once by hand).
 
 **Developers, on a workstation:** Docker, Go 1.25+, Python 3.11+, Node 20+.
 
@@ -148,7 +160,13 @@ afterwards.
 | `services/platform-api/scripts/verify_alerts.py` | The alert rhythm on real traffic and real CPU load; platform alerts to administrators |
 | `services/platform-api/scripts/verify_signed_approval.py` | Production waits for a signature from a real key; forged or replayed signatures are refused; approve and reject both work |
 | `services/platform-api/scripts/verify_host_restart.py` | After the Docker daemon restarts (as on a reboot), the platform and a deployed application come back by themselves, with the application's database and its data intact. Run on the platform host; it needs passwordless sudo. |
-| `services/mcp-server/scripts/e2e_verify.py` | All 25 MCP tools over real stdio, including sign-in, deploy from a folder, rebuild and rollback |
+| `services/platform-api/scripts/verify_admin_hold.py` | An administrator's suspension: only administrators, a reason, owners refused until an administrator resumes, a held dev copy |
+| `services/mcp-server/scripts/e2e_verify.py` | All 34 MCP tools over real stdio, including sign-in, deploy from a folder, rebuild and rollback |
+| `services/mcp-server/scripts/verify_governance.py` | Starting an application, scaffolding, a forbidden library refused, an exception, the real build |
+| `services/mcp-server/scripts/verify_test_runs.py` | Tests run by the platform: pass, fail, busy, the tested deploy, the approver's report (about 10 minutes) |
+| `services/mcp-server/scripts/verify_dev_copies.py` | Dev copies: own database and address without approval, data kept, a service added in place, dev data into the first production as signed, reset, archive |
+| `services/mcp-server/scripts/verify_db_memory.py` | MySQL sized small, asleep with its application and woken on demand; failed applications that never ran removed with their names freed |
+| `services/mcp-server/scripts/verify_client_update.py` | An outdated machine is refused, updates itself with the command it is given, and works after a restart (needs the gateway) |
 | `deploy/host/verify-tpm.sh` | Seal and unseal against a software TPM 2.0: bound to the TPM, escrow recovery, PCR binding |
 | `verify_module_n/o/r/s/t.py`, `verify_stable_url.py`, `verify_fr099_rollback.py` | Databases, secrets, health remediation, logs, metrics, stable URLs, automatic rollback. These older scripts use the self-declared identity, so they need `PLATFORM_AUTH_MODE=dev-header`. |
 
@@ -185,6 +203,14 @@ Unit tests: `go test ./...` (platform-api), `pytest` (mcp-server), and
   reached around the platform's proxy, which bypasses its request metrics.
 - **Machines need PyPI or a mirror** to install the MCP server's
   dependencies.
+- **Updating a machine needs a restart of Claude Code.** The MCP server
+  can't reload itself. Machines installed before the version check
+  (2026-10-26) need the installer run once by hand.
+- **Nothing reconciles orphaned database containers.** One left by a
+  platform restart in the middle of provisioning was found on the company
+  host and removed by hand.
+- **An administrator's suspension covers one application.** Its dev copy
+  is suspended separately.
 - **Smaller gaps:**
   - cross-application connection attempts are blocked but not logged as
     policy violations (Module Q);
