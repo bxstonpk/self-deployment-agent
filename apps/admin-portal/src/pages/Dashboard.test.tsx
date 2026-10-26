@@ -30,12 +30,12 @@ const OVERVIEW = {
   applications: [
     { id: "a1", name: "leave-tracker", status: "running", department: "HR", owner_email: "somchai@sti-th.com",
       environments: "dev", instances: 2, cpu_percent: 3.2, memory_bytes: 210 * 1024 ** 2, requests: 120, errors: 0,
-      latency_ms_avg: 18.4, url: "http://192.168.10.25/leave-tracker/" },
+      latency_ms_avg: 18.4, url: "http://192.168.10.25/leave-tracker/", hold: null },
     { id: "a2", name: "overtime", status: "running", department: "Finance", owner_email: "malee@sti-th.com",
       environments: "dev, production", instances: 2, cpu_percent: 41, memory_bytes: 600 * 1024 ** 2, requests: 900,
-      errors: 90, latency_ms_avg: 250, url: "http://192.168.10.25/overtime/" },
+      errors: 90, latency_ms_avg: 250, url: "http://192.168.10.25/overtime/", hold: null as null | object },
     { id: "a3", name: "draft-app", status: "draft", department: "IT", owner_email: "it@sti-th.com",
-      environments: "", instances: 0, cpu_percent: 0, memory_bytes: 0, requests: 0, errors: 0, latency_ms_avg: 0, url: "" },
+      environments: "", instances: 0, cpu_percent: 0, memory_bytes: 0, requests: 0, errors: 0, latency_ms_avg: 0, url: "", hold: null },
   ],
 };
 
@@ -119,6 +119,67 @@ describe("Dashboard", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Only platform administrators can see the dashboard.");
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("suspends an application with a reason, and shows the hold", async () => {
+    const held = {
+      ...OVERVIEW,
+      applications: OVERVIEW.applications.map((a) =>
+        a.id === "a2"
+          ? { ...a, status: "suspended", instances: 0, hold: { reason: "leaks data", held_by_email: "admin@sti-th.com", held_at: "2026-10-26T02:00:00Z" } }
+          : a,
+      ),
+    };
+    let suspended = false;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/admin/applications/a2/suspend")) {
+        suspended = true;
+        return Promise.resolve(jsonResponse({ reason: "leaks data", held_by_email: "admin@sti-th.com", held_at: "2026-10-26T02:00:00Z" }));
+      }
+      void init;
+      return Promise.resolve(jsonResponse(suspended ? held : OVERVIEW));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithProviders(<Dashboard />, { route: "/dashboard" });
+    await screen.findByText("overtime");
+
+    const row = screen.getByRole("link", { name: "overtime" }).closest("tr")!;
+    await userEvent.click(within(row).getByRole("button", { name: "Suspend" }));
+    const submit = within(row).getByRole("button", { name: "Suspend" });
+    expect(submit).toBeDisabled(); // a reason is required
+    await userEvent.type(within(row).getByRole("textbox", { name: "Why suspend overtime" }), "leaks data");
+    await userEvent.click(submit);
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/admin/applications/a2/suspend"))!;
+    expect(call[1]?.method).toBe("POST");
+    expect(JSON.parse(String(call[1]?.body))).toEqual({ reason: "leaks data" });
+    expect(await screen.findByText("Held by an administrator: leaks data")).toBeInTheDocument();
+    const heldRow = screen.getByRole("link", { name: "overtime" }).closest("tr")!;
+    expect(within(heldRow).getByRole("button", { name: "Resume" })).toBeInTheDocument();
+    // Nothing to suspend on a draft.
+    const draftRow = screen.getByRole("link", { name: "draft-app" }).closest("tr")!;
+    expect(within(draftRow).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("resumes a held application", async () => {
+    const held = {
+      ...OVERVIEW,
+      applications: [{ ...OVERVIEW.applications[1], status: "suspended", instances: 0,
+        hold: { reason: "leaks data", held_by_email: "admin@sti-th.com", held_at: "2026-10-26T02:00:00Z" } }],
+    };
+    const fetchMock = vi.fn((url: string) =>
+      Promise.resolve(
+        String(url).endsWith("/admin/applications/a2/resume")
+          ? jsonResponse({ id: "a2", name: "overtime", lifecycle_status: "running" })
+          : jsonResponse(held),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithProviders(<Dashboard />, { route: "/dashboard" });
+    await screen.findByText("Held by an administrator: leaks data");
+
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/admin/applications/a2/resume"))).toBe(true);
   });
 
   it("says when the host's readings aren't available", async () => {

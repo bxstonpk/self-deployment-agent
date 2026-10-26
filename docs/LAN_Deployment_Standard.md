@@ -282,7 +282,9 @@ frontend was served. See section 8.
   other application can reach.
 - **Authorization:** owners act on their own applications (`DEC-002`).
   Platform administrators (`PLATFORM_ADMIN_EMAILS`) see the Dashboard,
-  manage the dependency rules and decide exceptions; approvers
+  manage the dependency rules and decide exceptions. They can also suspend
+  any running application with a reason (`DEC-030`), and then only an
+  administrator can resume it. Approvers
   (`PLATFORM_APPROVER_KEYS`) sign deployments.
 
 ## 7. Known gaps

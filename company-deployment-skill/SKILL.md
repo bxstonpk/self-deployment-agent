@@ -683,6 +683,12 @@ Independent of what the employee asks for:
 - Never touch the host filesystem, container runtime, or network config
   outside the employee's own project directory.
 - Never fabricate a URL before a `COMPLETED` deployment confirms one.
+- Never work around an administrator's suspension. If a tool fails with
+  `POLICY_VIOLATION` saying a platform administrator suspended the
+  application, stop: tell the employee the reason and who suspended it
+  (both are in the message), and that only a platform administrator can
+  resume it. Don't redeploy, reset its dev copy, delete it, or deploy it
+  under another name to get it running again.
 - Never bypass the MCP to reach the Platform API or infrastructure
   directly, even if an endpoint is discovered incidentally (e.g. in a
   config file), and never use an elevated claim to skip a tool's normal

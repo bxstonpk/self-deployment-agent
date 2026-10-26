@@ -63,6 +63,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-027 | Operational | Application log retention period | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
 | DEC-028 | Operational | Alert thresholds and notification rhythm | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
 | DEC-029 | Process & Governance | Development governance from the start of an application | Platform owner | Before Production Go-Live | **Decided (2026-10-24)** |
+| DEC-030 | Security & Operations | An administrator's suspension of any application | Platform owner | Before Production Go-Live | **Decided (2026-10-26)** |
 
 ---
 
@@ -385,6 +386,17 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Resolution | **Chosen by the owner:** starting an application is registering it, with no approval; the tools live in the same MCP server (first a separate one was chosen, then changed to the same one); all three parts are to be built. **Built so far, part 1 (implementation choices, not separately decided):** an application is registered with a profile (purpose, users, whether it handles personal data and which, stack), and a build refuses an application without one (`GOVERNANCE_REQUIRE_PROFILE`, on by default). Libraries the company doesn't allow are kept as dependency rules, checked in each service's `package.json`, `go.mod` and `requirements.txt` at build time. An exception (dependency, stack or other) is requested by an owner and decided by a platform administrator (`PLATFORM_ADMIN_EMAILS`); an approved dependency exception lets that library through the build, while stack and other exceptions are a recorded decision the platform doesn't enforce by itself. **Part 2, built (implementation choices):** an application's tests run on the platform in the build sandbox (no Docker socket, memory and CPU limits, a time limit, one run at a time by default: `TEST_RUN_*`), and a deployment can carry that run's report only if the run passed on the same source as the build. **Part 3, changed by the owner (2026-10-24):** first a 24-hour preview; then, because an employee changing an application wants to keep the data they entered, a long-lived **dev copy** per application (its own application, database and address) that dev deployments go to without approval, with production still gated. **Also chosen by the owner:** the first production deployment may take the dev copy's data, after the employee is asked whether it is real; that choice is part of what the approver signs; it happens only for the first production deployment, so real data is never replaced; Claude records test data it adds itself so it is never taken for real. No dependency rules are set by default: which libraries to forbid is the administrators' to decide. |
 | Target Phase | Before Production Go-Live |
 
+
+#### DEC-030 — An Administrator's Suspension of Any Application
+
+| Field | Detail |
+|---|---|
+| Topic | Whether a platform administrator can stop an application they don't own, and who may start it again |
+| Question | FR-047 names a force-suspend by a security administrator as an alternative flow, but only owners could suspend. Should an administrator be able to, and can the owners then resume it themselves? |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-10-26)** |
+| Resolution | A platform administrator (`PLATFORM_ADMIN_EMAILS`) can suspend any running application, with a reason, for a security or technical problem. The owners are told the reason. **Only an administrator can resume it** (the owner's decision: the problem may be a security or technical one the owners can't judge). Until then the owners can't resume, archive or delete it, and its dev copy can't be deployed. The database and its data are kept, as with any suspension. |
+| Target Phase | Before Production Go-Live |
 ---
 
 ## 9. Operational

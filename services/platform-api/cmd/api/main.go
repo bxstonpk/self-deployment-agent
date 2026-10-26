@@ -141,6 +141,7 @@ func main() {
 	scaleService := service.NewScaleService(applicationRepo, deploymentRepo, serviceStateRepo, scaleEventRepo, stackRepo, runtime, resources)
 	deployService := service.NewDeploymentService(applicationRepo, ownerRepo, buildRepo, deploymentRepo, approvalRepo, scanner, runtime, scaleService, auditService, notificationService, resources)
 	lifecycleService := service.NewLifecycleService(applicationRepo, ownerRepo, deploymentRepo, serviceStateRepo, runtime, auditService, resources, buildRepo)
+	lifecycleService.SetAdminHolds(postgres.NewAdminHoldRepo(pool), admins, notificationService)
 	rotationService := service.NewRotationService(applicationRepo, ownerRepo, secretService, databaseService, lifecycleService, auditService)
 	reportingService := service.NewReportingService(applicationRepo, ownerRepo, departmentRepo, deploymentRepo, auditRepo)
 	logService := service.NewLogService(applicationRepo, ownerRepo, logRepo, auditService)
@@ -203,17 +204,18 @@ func main() {
 	governanceRepo := postgres.NewGovernanceRepo(pool)
 	devCopyRepo := postgres.NewDevCopyRepo(pool)
 	devCopyService := service.NewDevCopyService(applicationRepo, ownerRepo, devCopyRepo, service.DevCopySteps{
-		Register:     applicationService.Register,
-		SaveYAML:     validationService.SaveDeploymentYAML,
-		Validate:     validationService.Validate,
-		Build:        buildService.TriggerBuild,
-		Deploy:       deployService.InitiateDeploy,
-		Archive:      lifecycleService.Archive,
-		Delete:       lifecycleService.Delete,
-		GetProfile:   governanceRepo.GetProfile,
-		PutProfile:   governanceRepo.PutProfile,
-		HasDatabase:  backupService.HasDatabase,
-		CopyDatabase: backupService.CopyDatabase,
+		Register:      applicationService.Register,
+		SaveYAML:      validationService.SaveDeploymentYAML,
+		Validate:      validationService.Validate,
+		Build:         buildService.TriggerBuild,
+		Deploy:        deployService.InitiateDeploy,
+		Archive:       lifecycleService.Archive,
+		Delete:        lifecycleService.Delete,
+		GetProfile:    governanceRepo.GetProfile,
+		PutProfile:    governanceRepo.PutProfile,
+		HasDatabase:   backupService.HasDatabase,
+		CopyDatabase:  backupService.CopyDatabase,
+		RequireNoHold: lifecycleService.RequireNoHold,
 	}, auditService)
 	deployService.SetDevCopies(devCopyService)
 	governanceService.SetDevCopies(devCopyService)
@@ -240,6 +242,8 @@ func main() {
 	hostSampler := hostinfo.NewSampler("/proc", 180)
 	adminService := service.NewAdminOverviewService(postgres.NewAdminRepo(pool), hostSampler, admins,
 		func() (float64, error) { return hostdisk.UsedPercent(cfg.BackupDir) }, cfg.MetricsSampleInterval)
+	adminHandler := httpapi.NewAdminHandler(adminService, cfg.PublicBaseURL)
+	adminHandler.SetLifecycle(lifecycleService)
 
 	policyHandler := httpapi.NewPolicyHandler(cfg.ApprovalEnvironments, cfg.ApproverKeys)
 	policyHandler.SetDevCopies(true)
@@ -247,7 +251,7 @@ func main() {
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,
-		Admin:              httpapi.NewAdminHandler(adminService, cfg.PublicBaseURL),
+		Admin:              adminHandler,
 		Policy:             policyHandler,
 		Applications:       httpapi.NewApplicationHandler(applicationService),
 		Departments:        httpapi.NewDepartmentHandler(departmentRepo),

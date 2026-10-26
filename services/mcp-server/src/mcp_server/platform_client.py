@@ -47,6 +47,10 @@ _WRONG_STATE_CODES = {
     "dev_data_not_copyable",
 }
 
+# A platform administrator suspended the application (DEC-030): only an
+# administrator can resume it, so it's policy, not a state to wait out.
+_POLICY_CODES = {"admin_hold"}
+
 # Codes that genuinely are Section 8's narrower CONFLICT definition.
 _CONFLICT_CODES = {"build_in_flight", "deployment_in_flight", "name_taken", "in_flight"}
 
@@ -71,7 +75,9 @@ def _map_error(status_code: int, body: dict[str, Any] | None) -> ToolError:
     if status_code == 401 and platform_code == "unauthorized":
         message = NOT_SIGNED_IN
 
-    if platform_code in _WRONG_STATE_CODES:
+    if platform_code in _POLICY_CODES:
+        mcp_code = ErrorCode.POLICY_VIOLATION
+    elif platform_code in _WRONG_STATE_CODES:
         mcp_code = ErrorCode.VALIDATION_ERROR
     elif platform_code in _CONFLICT_CODES:
         mcp_code = ErrorCode.CONFLICT

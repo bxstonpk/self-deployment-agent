@@ -22,7 +22,7 @@ func NewAdminRepo(pool *pgxpool.Pool) *AdminRepo {
 
 // ApplicationsOverview lists every application that isn't deleted, with
 // its department, primary owner, the environments it's running in and how
-// many containers serve it now.
+// many containers serve it now, and an administrator's hold if one is on.
 func (r *AdminRepo) ApplicationsOverview(ctx context.Context) ([]domain.AdminApplication, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT a.id::text, a.name, a.lifecycle_status, COALESCE(d.name, ''), COALESCE(u.email, ''),
@@ -32,8 +32,11 @@ func (r *AdminRepo) ApplicationsOverview(ctx context.Context) ([]domain.AdminApp
 		       (SELECT COUNT(*)
 		        FROM service_runtime_state s
 		        JOIN deployments dep ON dep.id = s.deployment_id
-		        WHERE dep.application_id = a.id AND dep.status = 'running' AND s.container_id IS NOT NULL)
+		        WHERE dep.application_id = a.id AND dep.status = 'running' AND s.container_id IS NOT NULL),
+		       h.reason, h.held_by::text, hu.email, h.held_at
 		FROM applications a
+		LEFT JOIN admin_holds h ON h.application_id = a.id
+		LEFT JOIN users hu ON hu.id = h.held_by
 		LEFT JOIN departments d ON d.id = a.owning_department_id
 		LEFT JOIN application_owners o
 		       ON o.application_id = a.id AND o.ownership_role = 'primary' AND o.status = 'active'
@@ -48,8 +51,14 @@ func (r *AdminRepo) ApplicationsOverview(ctx context.Context) ([]domain.AdminApp
 	var out []domain.AdminApplication
 	for rows.Next() {
 		var a domain.AdminApplication
-		if err := rows.Scan(&a.ID, &a.Name, &a.Status, &a.Department, &a.OwnerEmail, &a.Environments, &a.Instances); err != nil {
+		var reason, heldBy, heldByEmail *string
+		var heldAt *time.Time
+		if err := rows.Scan(&a.ID, &a.Name, &a.Status, &a.Department, &a.OwnerEmail, &a.Environments, &a.Instances,
+			&reason, &heldBy, &heldByEmail, &heldAt); err != nil {
 			return nil, fmt.Errorf("scan dashboard application: %w", err)
+		}
+		if reason != nil && heldBy != nil && heldByEmail != nil && heldAt != nil {
+			a.Hold = &domain.AdminHold{ApplicationID: a.ID, Reason: *reason, HeldBy: *heldBy, HeldByEmail: *heldByEmail, HeldAt: *heldAt}
 		}
 		out = append(out, a)
 	}

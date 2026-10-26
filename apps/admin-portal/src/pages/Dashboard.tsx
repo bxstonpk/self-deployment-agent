@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useIdentity } from "../context/IdentityContext";
-import { getAdminOverview, type AdminApplication, type AdminOverview } from "../api/client";
+import {
+  adminResumeApplication,
+  adminSuspendApplication,
+  getAdminOverview,
+  type AdminApplication,
+  type AdminOverview,
+} from "../api/client";
+import type { Identity } from "../identity";
 import { ApiError } from "../api/types";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatBytes } from "../format";
@@ -273,11 +280,19 @@ export function Dashboard() {
                           </button>
                         </th>
                       ))}
+                      <th aria-label="Actions" />
                     </tr>
                   </thead>
                   <tbody>
                     {apps.map((a) => (
-                      <AppRow key={a.id} app={a} cpuCapacity={cpuCapacity} memTotal={host?.memory_total_bytes ?? 0} />
+                      <AppRow
+                        key={a.id}
+                        app={a}
+                        cpuCapacity={cpuCapacity}
+                        memTotal={host?.memory_total_bytes ?? 0}
+                        identity={identity}
+                        onChanged={load}
+                      />
                     ))}
                   </tbody>
                 </table>
@@ -290,7 +305,19 @@ export function Dashboard() {
   );
 }
 
-function AppRow({ app, cpuCapacity, memTotal }: { app: AdminApplication; cpuCapacity: number; memTotal: number }) {
+function AppRow({
+  app,
+  cpuCapacity,
+  memTotal,
+  identity,
+  onChanged,
+}: {
+  app: AdminApplication;
+  cpuCapacity: number;
+  memTotal: number;
+  identity: Identity | null;
+  onChanged: () => void;
+}) {
   // Shaded like a task manager: how much of the whole host this one uses.
   const cpuShare = cpuCapacity > 0 ? (100 * app.cpu_percent) / cpuCapacity : 0;
   const memShare = memTotal > 0 ? (100 * app.memory_bytes) / memTotal : 0;
@@ -305,6 +332,11 @@ function AppRow({ app, cpuCapacity, memTotal }: { app: AdminApplication; cpuCapa
       </td>
       <td>
         <StatusBadge status={app.status} />
+        {app.hold && (
+          <div className="dash-hold" title={`Suspended by ${app.hold.held_by_email} on ${new Date(app.hold.held_at).toLocaleString()}`}>
+            Held by an administrator: {app.hold.reason}
+          </div>
+        )}
       </td>
       <td className="numeric">
         {app.instances === 0 && app.status === "running" ? (
@@ -322,6 +354,83 @@ function AppRow({ app, cpuCapacity, memTotal }: { app: AdminApplication; cpuCapa
       <td className="numeric">{app.requests.toLocaleString()}</td>
       <td className={`numeric${errorRate >= 5 ? " dash-error-count" : ""}`}>{app.errors.toLocaleString()}</td>
       <td className="numeric">{app.requests > 0 ? `${Math.round(app.latency_ms_avg)} ms` : "—"}</td>
+      <td>
+        <HoldControl app={app} identity={identity} onChanged={onChanged} />
+      </td>
     </tr>
+  );
+}
+
+// An administrator's suspension: any running application, with a reason
+// its owners are told. Only an administrator can resume it.
+function HoldControl({
+  app,
+  identity,
+  onChanged,
+}: {
+  app: AdminApplication;
+  identity: Identity | null;
+  onChanged: () => void;
+}) {
+  const [asking, setAsking] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    action()
+      .then(() => {
+        setAsking(false);
+        setReason("");
+        onChanged();
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false));
+  };
+
+  if (!identity) return null;
+  if (app.hold) {
+    return (
+      <div className="dash-hold-control">
+        <button type="button" disabled={busy} onClick={() => run(() => adminResumeApplication(identity, app.id))}>
+          Resume
+        </button>
+        {error && <div className="error-text" role="alert">{error}</div>}
+      </div>
+    );
+  }
+  if (app.status !== "running" && app.status !== "suspended") return null;
+  if (!asking) {
+    return (
+      <button type="button" onClick={() => setAsking(true)}>
+        Suspend
+      </button>
+    );
+  }
+  return (
+    <form
+      className="dash-hold-control"
+      onSubmit={(e) => {
+        e.preventDefault();
+        run(() => adminSuspendApplication(identity, app.id, reason));
+      }}
+    >
+      <input
+        aria-label={`Why suspend ${app.name}`}
+        placeholder="Reason (the owners are told)"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        required
+      />
+      <button type="submit" disabled={busy || reason.trim() === ""}>
+        Suspend
+      </button>
+      <button type="button" disabled={busy} onClick={() => setAsking(false)}>
+        Cancel
+      </button>
+      {error && <div className="error-text" role="alert">{error}</div>}
+    </form>
   );
 }

@@ -66,6 +66,9 @@ type DevCopySteps struct {
 	// CopyDatabase replaces to's database contents with from's, backing up
 	// what it replaces first.
 	CopyDatabase func(ctx context.Context, fromApplicationID, toApplicationID, actorID string) error
+	// RequireNoHold refuses an application an administrator suspended
+	// (admin_hold.go). Optional.
+	RequireNoHold func(ctx context.Context, applicationID string) error
 }
 
 type DevCopyService struct {
@@ -165,6 +168,9 @@ func (s *DevCopyService) Deploy(ctx context.Context, caller domain.User, applica
 	if parent.LifecycleStatus == domain.StatusArchived {
 		return DevCopyResult{}, domain.ErrDevCopyParentInactive
 	}
+	if err := s.requireNoHold(ctx, applicationID); err != nil {
+		return DevCopyResult{}, err
+	}
 	if len(parent.Name) > domain.MaxDevCopyParentName {
 		return DevCopyResult{}, domain.ErrDevCopyNameTooLong
 	}
@@ -191,6 +197,9 @@ func (s *DevCopyService) Deploy(ctx context.Context, caller domain.User, applica
 	needsValidation := true
 	switch {
 	case err == nil:
+		if err := s.requireNoHold(ctx, c.ApplicationID); err != nil {
+			return DevCopyResult{Copy: c}, err
+		}
 		// The copy follows the application's deployment.yaml as it is now;
 		// its database and data stay either way.
 		draft, err := devCopyYAML(parent.DeploymentYAMLDraft, c.Name)
@@ -329,6 +338,13 @@ func (s *DevCopyService) Reset(ctx context.Context, caller domain.User, applicat
 		return domain.DevCopy{}, err
 	}
 	return c, s.teardown(ctx, c, "reset by "+caller.Email)
+}
+
+func (s *DevCopyService) requireNoHold(ctx context.Context, applicationID string) error {
+	if s.steps.RequireNoHold == nil {
+		return nil
+	}
+	return s.steps.RequireNoHold(ctx, applicationID)
 }
 
 // teardown archives and deletes the copy's application, which stops its

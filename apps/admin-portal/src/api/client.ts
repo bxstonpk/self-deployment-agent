@@ -513,6 +513,15 @@ export interface AdminApplication {
   errors: number;
   latency_ms_avg: number;
   url: string;
+  // Set while an administrator's suspension is on: only an administrator
+  // can resume it.
+  hold: AdminHold | null;
+}
+
+export interface AdminHold {
+  reason: string;
+  held_by_email: string;
+  held_at: string;
 }
 
 export interface AdminOverview {
@@ -527,6 +536,15 @@ export interface AdminOverview {
 
 export function getAdminOverview(identity: Identity): Promise<AdminOverview> {
   return request(identity, "GET", "/admin/overview");
+}
+
+// An administrator suspends an application; its owners can't resume it.
+export function adminSuspendApplication(identity: Identity, id: string, reason: string): Promise<AdminHold> {
+  return request(identity, "POST", `/admin/applications/${id}/suspend`, { json: { reason } });
+}
+
+export function adminResumeApplication(identity: Identity, id: string): Promise<Application> {
+  return request(identity, "POST", `/admin/applications/${id}/resume`);
 }
 
 // --- Departments: adding one, and the summary page ---

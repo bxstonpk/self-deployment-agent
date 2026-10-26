@@ -1697,3 +1697,22 @@ form textarea {
   margin: 8px 0;
   padding-left: 20px;
 }
+
+/* An administrator's suspension on the dashboard */
+.dash-hold {
+  font-size: 0.8rem;
+  color: var(--danger);
+  margin-top: 2px;
+  max-width: 22rem;
+}
+
+.dash-hold-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.dash-hold-control input {
+  min-width: 12rem;
+}
