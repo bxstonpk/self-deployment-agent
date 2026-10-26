@@ -31,6 +31,7 @@ from .config import ConfigError, load_config
 from .envelope import ErrorCode, ToolError, error
 from .idempotency import IdempotencyStore
 from .platform_client import PlatformClient
+from .release import ReleaseCheck
 from .tools import (
     application,
     audit_log,
@@ -47,11 +48,23 @@ from .tools import (
 )
 
 
+# Tools an outdated machine may still use: signing in, and whoami, which
+# reports the update needed. Everything else waits for the update.
+_UNGATED_TOOLS = frozenset({"whoami", "login", "complete_login", "logout"})
+
+
 async def _run_tool(
     event: AuditEvent,
     call: Any,
+    gate: Any = None,
 ) -> dict[str, Any]:
     try:
+        if gate is not None:
+            try:
+                await gate()
+            except BaseException:
+                call.close()  # never started; no "never awaited" warning
+                raise
         result = await call
     except ToolError as exc:
         event.finish("error", {"code": exc.code.value, "message": exc.message})
@@ -73,7 +86,11 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "Every tool call acts as the employee whose API key this machine "
             "holds. Call whoami first: if the machine is not signed in, call "
             "login, have the employee approve the code it returns in the Admin "
-            "Portal, then complete_login — nothing else works until then. Then "
+            "Portal, then complete_login — nothing else works until then. If "
+            "whoami says update_required, or any tool returns UPDATE_REQUIRED, "
+            "this machine is older than the platform: run the update command "
+            "it gives, have the employee restart Claude Code (claude --continue), "
+            "then carry on with their request. Then "
             "call get_platform_info and get_supported_stacks before any "
             "deployment workflow — never assume cached knowledge of what the "
             "platform currently supports. A NEW application starts with the "
@@ -87,6 +104,12 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "record_test_data whenever you put data into it yourself."
         ),
     )
+
+    releases = ReleaseCheck(client)
+
+    async def run(event: AuditEvent, call: Any) -> dict[str, Any]:
+        gate = None if event.tool_name in _UNGATED_TOOLS else releases.require_current
+        return await _run_tool(event, call, gate)
 
     def audit(tool_name: str, params: dict[str, Any], application_id: str | None) -> AuditEvent:
         cred = client.stored_credential()
@@ -102,14 +125,14 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     @mcp.tool()
     async def whoami() -> dict[str, Any]:
         """Whether this machine is signed in to the Company Platform, and as whom."""
-        return await _run_tool(audit("whoami", {}, None), auth.whoami(client))
+        return await run(audit("whoami", {}, None), auth.whoami(client, releases))
 
     @mcp.tool()
     async def login() -> dict[str, Any]:
         """Start signing this machine in. Returns a short code and a URL; the
         employee approves the code in the Admin Portal with their own
         password. Then call complete_login. Never ask for their password."""
-        return await _run_tool(audit("login", {}, None), auth.login(client))
+        return await run(audit("login", {}, None), auth.login(client))
 
     @mcp.tool()
     async def complete_login(wait_seconds: float = 60) -> dict[str, Any]:
@@ -117,27 +140,27 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         code from login, then store this machine's API key. The key itself is
         never returned."""
         params = {"wait_seconds": wait_seconds}
-        return await _run_tool(audit("complete_login", params, None), auth.complete_login(client, wait_seconds))
+        return await run(audit("complete_login", params, None), auth.complete_login(client, wait_seconds))
 
     @mcp.tool()
     async def logout() -> dict[str, Any]:
         """Revoke this machine's API key on the platform and forget it."""
-        return await _run_tool(audit("logout", {}, None), auth.logout(client))
+        return await run(audit("logout", {}, None), auth.logout(client))
 
     # --- 13.1-13.3: discovery ------------------------------------------
 
     @mcp.tool()
     async def get_platform_info(client_skill_version: str | None = None) -> dict[str, Any]:
         params = {"client_skill_version": client_skill_version}
-        return await _run_tool(
+        return await run(
             audit("get_platform_info", params, None),
-            discovery.get_platform_info(client, client_skill_version),
+            discovery.get_platform_info(client, client_skill_version, releases),
         )
 
     @mcp.tool()
     async def get_supported_stacks(category: str | None = None) -> dict[str, Any]:
         params = {"category": category}
-        return await _run_tool(
+        return await run(
             audit("get_supported_stacks", params, None),
             discovery.get_supported_stacks(client, category),
         )
@@ -147,7 +170,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         application_id: str | None = None, proposed_shape: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         params = {"application_id": application_id, "proposed_shape": proposed_shape}
-        return await _run_tool(
+        return await run(
             audit("get_deployment_requirements", params, application_id),
             discovery.get_deployment_requirements(client, application_id, proposed_shape),
         )
@@ -159,7 +182,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         """The company development standard: the stacks it allows, its rules,
         and the libraries it doesn't allow. Read it before starting an
         application, and follow it."""
-        return await _run_tool(audit("get_standards", {}, None), governance.get_standards(client))
+        return await run(audit("get_standards", {}, None), governance.get_standards(client))
 
     @mcp.tool()
     async def start_project(
@@ -189,7 +212,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "database": database, "department": department, "application_id": application_id,
             "idempotency_key": idempotency_key,
         }
-        return await _run_tool(
+        return await run(
             audit("start_project", params, application_id or None),
             governance.start_project(
                 client, idempotency, name, purpose, handles_personal_data, users, data_description,
@@ -207,7 +230,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         it to the employee straight away, it's how they see their
         application (never a local file or a local dev server)."""
         params = {"application_id": application_id, "project_path": project_path, "deploy": deploy}
-        return await _run_tool(
+        return await run(
             audit("scaffold_project", params, application_id),
             governance.scaffold_project(client, application_id, project_path, deploy=deploy, idempotency=idempotency),
         )
@@ -219,7 +242,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         profile, REVIEW.md, and exceptions still waiting for a decision. Run
         it while writing the application and before deploy_application."""
         params = {"application_id": application_id, "project_path": project_path}
-        return await _run_tool(
+        return await run(
             audit("check_project", params, application_id),
             governance.check_project(client, application_id, project_path),
         )
@@ -234,7 +257,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         platform's report. A passed run's test_run_id can go to
         deploy_application for the same files."""
         params = {"application_id": application_id, "project_path": project_path}
-        return await _run_tool(
+        return await run(
             audit("run_tests", params, application_id),
             governance.run_tests(client, application_id, project_path),
         )
@@ -247,7 +270,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         dev copy, so it is never taken for real data when the data goes to
         production."""
         params = {"application_id": application_id, "note": note}
-        return await _run_tool(audit("record_test_data", params, application_id),
+        return await run(audit("record_test_data", params, application_id),
                                devcopy.record_test_data(client, application_id, note))
 
     @mcp.tool()
@@ -258,7 +281,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         it, the copy takes that and keeps its data. The next dev deployment
         makes a new, empty one."""
         params = {"application_id": application_id}
-        return await _run_tool(audit("reset_dev", params, application_id), devcopy.reset_dev(client, application_id))
+        return await run(audit("reset_dev", params, application_id), devcopy.reset_dev(client, application_id))
 
     @mcp.tool()
     async def request_exception(application_id: str, kind: str, subject: str, reason: str) -> dict[str, Any]:
@@ -269,7 +292,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         standard way doesn't work for this application. Don't use it until
         it's approved."""
         params = {"application_id": application_id, "kind": kind, "subject": subject, "reason": reason}
-        return await _run_tool(
+        return await run(
             audit("request_exception", params, application_id),
             governance.request_exception(client, application_id, kind, subject, reason),
         )
@@ -278,7 +301,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     async def list_exceptions(application_id: str) -> dict[str, Any]:
         """The application's exception requests and the administrator's decisions."""
         params = {"application_id": application_id}
-        return await _run_tool(
+        return await run(
             audit("list_exceptions", params, application_id),
             governance.list_exceptions(client, application_id),
         )
@@ -300,7 +323,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "deployment_yaml": deployment_yaml,
             "idempotency_key": idempotency_key,
         }
-        return await _run_tool(
+        return await run(
             audit("create_application", params, None),
             application.create_application(
                 client, idempotency, name, description, department, deployment_yaml, idempotency_key
@@ -312,7 +335,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         application_id: str, deployment_yaml: str | None = None
     ) -> dict[str, Any]:
         params = {"application_id": application_id, "deployment_yaml": deployment_yaml}
-        return await _run_tool(
+        return await run(
             audit("validate_application", params, application_id),
             application.validate_application(client, application_id, deployment_yaml),
         )
@@ -368,7 +391,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "test_run_id": test_run_id,
             "dev_data": dev_data,
         }
-        return await _run_tool(
+        return await run(
             audit("deploy_application", params, application_id),
             deployment.deploy_application(
                 client,
@@ -386,7 +409,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     @mcp.tool()
     async def get_application_status(application_id: str) -> dict[str, Any]:
         params = {"application_id": application_id}
-        return await _run_tool(
+        return await run(
             audit("get_application_status", params, application_id),
             deployment.get_application_status(client, application_id),
         )
@@ -394,7 +417,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     @mcp.tool()
     async def get_deployment_status(deployment_id: str) -> dict[str, Any]:
         params = {"deployment_id": deployment_id}
-        return await _run_tool(
+        return await run(
             audit("get_deployment_status", params, None),
             deployment.get_deployment_status(client, deployment_id),
         )
@@ -412,7 +435,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "environment": environment,
             "idempotency_key": idempotency_key,
         }
-        return await _run_tool(
+        return await run(
             audit("rollback_application", params, application_id),
             deployment.rollback_application(
                 client, idempotency, application_id, target_version, idempotency_key
@@ -428,7 +451,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "environment": environment,
             "idempotency_key": idempotency_key,
         }
-        return await _run_tool(
+        return await run(
             audit("restart_application", params, application_id),
             deployment.restart_application(client, idempotency, application_id, idempotency_key),
         )
@@ -454,7 +477,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "severity": severity,
             "cursor": cursor,
         }
-        return await _run_tool(
+        return await run(
             audit("get_application_logs", params, application_id),
             observability.get_application_logs(
                 client, application_id, environment, tail_lines, time_range, service, severity, cursor
@@ -474,7 +497,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "time_range": time_range,
             "metric_types": metric_types,
         }
-        return await _run_tool(
+        return await run(
             audit("get_application_metrics", params, application_id),
             observability.get_application_metrics(client, application_id, environment, time_range, metric_types),
         )
@@ -490,7 +513,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "confirmation": confirmation,
             "idempotency_key": idempotency_key,
         }
-        return await _run_tool(
+        return await run(
             audit("delete_application", params, application_id),
             lifecycle.delete_application(
                 client, idempotency, application_id, confirmation, idempotency_key
@@ -519,7 +542,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
             "to_time": to_time,
             "limit": limit,
         }
-        return await _run_tool(
+        return await run(
             audit("query_audit_log", params, resource_id if resource_type == "application" else None),
             audit_log.query_audit_log(client, resource_type, resource_id, action, from_time, to_time, limit),
         )
@@ -527,7 +550,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     @mcp.tool()
     async def list_notifications(unread_only: bool = False) -> dict[str, Any]:
         params = {"unread_only": unread_only}
-        return await _run_tool(
+        return await run(
             audit("list_notifications", params, None),
             notifications.list_notifications(client, unread_only),
         )
@@ -535,7 +558,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     @mcp.tool()
     async def mark_notification_read(notification_id: str) -> dict[str, Any]:
         params = {"notification_id": notification_id}
-        return await _run_tool(
+        return await run(
             audit("mark_notification_read", params, None),
             notifications.mark_notification_read(client, notification_id),
         )
@@ -546,7 +569,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
 
     @mcp.tool()
     async def get_application_inventory() -> dict[str, Any]:
-        return await _run_tool(
+        return await run(
             audit("get_application_inventory", {}, None),
             reporting.get_application_inventory(client),
         )
@@ -556,7 +579,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         from_time: str | None = None, to_time: str | None = None
     ) -> dict[str, Any]:
         params = {"from_time": from_time, "to_time": to_time}
-        return await _run_tool(
+        return await run(
             audit("get_deployment_activity", params, None),
             reporting.get_deployment_activity(client, from_time, to_time),
         )
@@ -564,7 +587,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     @mcp.tool()
     async def list_application_owners(application_id: str) -> dict[str, Any]:
         params = {"application_id": application_id}
-        return await _run_tool(
+        return await run(
             audit("list_application_owners", params, application_id),
             ownership.list_application_owners(client, application_id),
         )
@@ -574,7 +597,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
         application_id: str, email: str, access_level: str
     ) -> dict[str, Any]:
         params = {"application_id": application_id, "email": email, "access_level": access_level}
-        return await _run_tool(
+        return await run(
             audit("grant_application_access", params, application_id),
             ownership.grant_application_access(client, application_id, email, access_level),
         )
@@ -582,7 +605,7 @@ def build_server(client: PlatformClient, idempotency: IdempotencyStore) -> MCPSe
     @mcp.tool()
     async def revoke_application_access(application_id: str, user_id: str) -> dict[str, Any]:
         params = {"application_id": application_id, "user_id": user_id}
-        return await _run_tool(
+        return await run(
             audit("revoke_application_access", params, application_id),
             ownership.revoke_application_access(client, application_id, user_id),
         )

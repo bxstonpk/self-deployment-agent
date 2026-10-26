@@ -12,7 +12,8 @@ that restarts platform-api. Checks:
 
   - scaffold_project puts a new application up on dev at once and returns
     the link: "<name>-dev", its own application, without waiting for
-    approval even with dev gated; its pages carry the DEV banner
+    approval even with dev gated; its page is the application's own, with
+    no banner added
   - its data stays across the next dev deployment (same address)
   - record_test_data keeps Claude's note with the copy
   - the first production deployment asks about the dev data (naming
@@ -22,7 +23,8 @@ that restarts platform-api. Checks:
   - a service added to a dev copy that holds data: revised in place, data kept
   - a later production deployment can't copy again (MCP and API)
   - running production: its deployment.yaml revised in place; its database type can't change
-  - reset_dev removes the copy and its database; the next is "-dev2", empty
+  - reset_dev removes the copy and its database; the next is a new, empty
+    copy under the same name and address
   - archiving the application removes its dev copy
 """
 
@@ -168,7 +170,8 @@ async def main() -> None:
                 _check(status == 404, "the application itself has no deployment")
 
                 status, page = _http("GET", f"{GATEWAY}/{name}-dev/", raw=True)
-                _check(status == 200 and "DEV — สำเนาสำหรับทดลองของ" in (page or ""), "its page carries the DEV banner")
+                _check(status == 200 and page is not None and "DEV —" not in page,
+                       "its page is the application's own: no DEV banner")
                 s1, _ = _http("POST", f"{GATEWAY}/{name}-dev/api/items", {"title": REAL_ITEM})
                 s2, _ = _http("POST", f"{GATEWAY}/{name}-dev/api/items", {"title": TEST_ITEM})
                 rec = await _tool(s, "record_test_data", {"application_id": app_id, "note": f"1 item '{TEST_ITEM}'"})
@@ -230,8 +233,6 @@ async def main() -> None:
                        "the copy is recorded as done")
                 _, prod_items = _http("GET", f"{GATEWAY}/{name}/api/items")
                 _check(_titles(prod_items) == sorted([REAL_ITEM, TEST_ITEM]), f"production has the dev copy's data ({_titles(prod_items)})")
-                _, prod_page = _http("GET", f"{GATEWAY}/{name}/", raw=True)
-                _check("DEV —" not in (prod_page or "x DEV —"), "production's page has no DEV banner")
                 _, dev_items = _http("GET", f"{GATEWAY}/{name}-dev/api/items")
                 _check(_titles(dev_items) == sorted([REAL_ITEM, TEST_ITEM]), "the dev copy keeps its own data")
 
@@ -265,9 +266,11 @@ async def main() -> None:
                 _check(len(prod_items or []) == 2, "production's data is untouched")
                 new = await _tool(s, "deploy_application", {"application_id": app_id, "target_environment": "dev",
                                                            "project_path": str(project), "run_tests": False})
-                _, new_items = _http("GET", f"{GATEWAY}/{name}-dev2/api/items")
-                _check(new["data"]["dev_copy"]["name"] == f"{name}-dev2" and new_items == [],
-                       "the next dev deployment makes a new copy, -dev2, empty")
+                _, new_items = _http("GET", f"{GATEWAY}/{name}-dev/api/items")
+                new_copy = new["data"]["dev_copy"]
+                _check(new_copy["name"] == f"{name}-dev" and new_copy["application_id"] != again["data"]["dev_copy"]["application_id"]
+                       and new_items == [],
+                       f"the next dev deployment makes a new, empty copy at the same address ({new_copy['name']}, {new_items})")
 
                 new_copy_id = new["data"]["dev_copy"]["application_id"]
                 status, _ = call(BASE, "POST", f"/applications/{app_id}/archive", {}, token=owner)

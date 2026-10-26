@@ -18,6 +18,7 @@ from typing import Any
 from .. import credentials, login_flow
 from ..envelope import ErrorCode, ToolError, success
 from ..platform_client import PlatformClient
+from ..release import ReleaseCheck
 
 # One pending sign-in per server process: the server serves one Claude
 # Code session on one machine.
@@ -98,15 +99,23 @@ async def complete_login(client: PlatformClient, wait_seconds: float = 60) -> di
         await asyncio.sleep(_pending.interval)
 
 
-async def whoami(client: PlatformClient) -> dict[str, Any]:
+async def whoami(client: PlatformClient, releases: ReleaseCheck | None = None) -> dict[str, Any]:
     current = await _current(client)
     if current is None:
-        return success({
+        data = {
             "signed_in": False,
             "platform": client.base_url,
             "next_step": "Call `login` before using any other tool.",
-        })
-    return success(current)
+        }
+    else:
+        data = dict(current)
+    if releases is not None:
+        status = await releases.status()
+        data.update(status.as_dict())
+        if status.update_required:
+            then = " After that, call `login`." if current is None else ""
+            data["next_step"] = releases.instructions(status) + then
+    return success(data)
 
 
 async def logout(client: PlatformClient) -> dict[str, Any]:

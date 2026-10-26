@@ -1,8 +1,9 @@
 // Dev copies (DEC-029 part 3, the platform owner, 2026-10-24): each
 // application can have one long-lived development copy to try changes on.
 //
-// The copy is its own application, "<name>-dev" (then "-dev2", "-dev3": a
-// deleted application keeps its name), registered by the employee who first
+// The copy is its own application, "<name>-dev" ("-dev2", "-dev3" only if
+// another application holds that name; a deleted one frees it, so a reset
+// copy comes back at the same address), registered by the employee who first
 // deploys to dev, with the original's deployment.yaml (database backups off)
 // and profile. So it has its own database and address, and nothing it runs
 // reaches the application or its data. Deploying to it never waits for
@@ -383,16 +384,6 @@ func (s *DevCopyService) ParentOf(ctx context.Context, applicationID string) (st
 		return "", err
 	}
 	return c.ParentID, nil
-}
-
-// DevCopyLabel is how a dev copy's pages name what it is a copy of (its
-// banner); ok is false for an application that isn't one.
-func (s *DevCopyService) DevCopyLabel(ctx context.Context, applicationID string) (string, bool) {
-	c, err := s.copies.Of(ctx, applicationID)
-	if err != nil {
-		return "", false
-	}
-	return c.ParentName, true
 }
 
 // DataSource is the dev copy a production deployment can take its data

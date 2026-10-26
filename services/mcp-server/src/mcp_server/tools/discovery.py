@@ -14,6 +14,7 @@ from typing import Any
 from .. import __version__
 from ..envelope import ErrorCode, ToolError, success
 from ..platform_client import PlatformClient
+from ..release import ReleaseCheck
 
 # Only for a platform too old to have GET /policy: what it did before
 # approval rules became configurable.
@@ -59,7 +60,9 @@ def _stack_fingerprint(stacks: list[dict[str, Any]]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-async def get_platform_info(client: PlatformClient, client_skill_version: str | None = None) -> dict[str, Any]:
+async def get_platform_info(
+    client: PlatformClient, client_skill_version: str | None = None, releases: ReleaseCheck | None = None
+) -> dict[str, Any]:
     stacks = await client.get_supported_stacks()
     policy = await client.get_policy()
     data = {
@@ -77,6 +80,8 @@ async def get_platform_info(client: PlatformClient, client_skill_version: str | 
         "tool_manifest_version": __version__,
         "client_skill_version_received": client_skill_version,
     }
+    if releases is not None:
+        data.update((await releases.status()).as_dict())
     return success(data)
 
 

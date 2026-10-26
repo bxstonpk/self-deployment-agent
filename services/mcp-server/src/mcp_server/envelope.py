@@ -28,6 +28,9 @@ class ErrorCode(str, Enum):
     RATE_LIMITED = "RATE_LIMITED"
     PENDING_APPROVAL = "PENDING_APPROVAL"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    # Not in Section 8: this machine's MCP server or skill is older than the
+    # platform's current release (release.py). The message says how to update.
+    UPDATE_REQUIRED = "UPDATE_REQUIRED"
 
 
 @dataclass(frozen=True)

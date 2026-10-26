@@ -18,7 +18,27 @@ over anything cached here, and never reach for infrastructure directly.
 live tool result wins.** Treat `docs/`/`schemas/` as a fast offline cache,
 never as the source of truth.
 
-## Before anything else: is this machine signed in?
+## Before anything else: is this machine up to date?
+
+The platform publishes one release of this skill and its MCP server. `whoami`
+reports this machine's (`client_release`, `skill_release`) and the platform's
+(`latest_release`). If it says `update_required: true`, or any tool fails with
+`UPDATE_REQUIRED`, update the machine before anything else, even in the middle
+of a task:
+
+1. Run the command given in `next_step` (or in the error message) yourself,
+   with your shell tool. It is the platform's installer: it replaces the MCP
+   server and this skill and keeps the machine's sign-in.
+2. Tell the employee it is updated and ask them to restart Claude Code
+   (`claude --continue` brings this conversation back), so the new MCP server
+   and skill load.
+3. After the restart, call `whoami` again, then carry on with what the
+   employee asked for, from where you stopped.
+
+Every other tool is refused until the update is done; don't try to work
+around it with an older tool or by calling the Platform API directly.
+
+## Then: is this machine signed in?
 
 Call `whoami` first, every session. Every other tool is refused until this
 machine has fetched its API key, and the platform decides who the machine
@@ -105,7 +125,8 @@ request_id, server_time}`. Always read `status` and, on failure,
 `error.code` is one of: `VALIDATION_ERROR`, `POLICY_VIOLATION`,
 `UNSUPPORTED_STACK`, `QUOTA_EXCEEDED`, `UNAUTHORIZED`, `NOT_FOUND`,
 `CONFLICT`, `RATE_LIMITED`, `PENDING_APPROVAL` (not a failure — see Step 8),
-`INTERNAL_ERROR`. See `docs/troubleshooting.md` for what each one means in
+`INTERNAL_ERROR`, `UPDATE_REQUIRED` (update the machine first — see "Before
+anything else"). See `docs/troubleshooting.md` for what each one means in
 practice and what to do about it.
 
 ## The platform is the employee's server
@@ -502,7 +523,7 @@ application's **dev copy**, `<name>-dev`: its own application at its own
 address (`/<name>-dev/`), with **its own database**. It never waits for
 approval, and its data stays from one deployment to the next, so the
 employee can keep trying the application with what they entered while you
-change it. Its pages carry a DEV banner. `production` is the application
+change it. `production` is the application
 itself, at `/<name>/`, which waits for approval as before.
 
 **After every dev deployment, give the link.** Say plainly it is the dev
