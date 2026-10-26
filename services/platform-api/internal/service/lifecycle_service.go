@@ -30,6 +30,11 @@ type LifecycleService struct {
 	audit       AuditRecorder
 	resources   LifecycleResources
 	builds      BuildLookup
+
+	// Administrators' suspensions (admin_hold.go); nil until SetAdminHolds.
+	holds    AdminHoldRepository
+	admins   AdminChecker
+	notifier GovernanceNotifier
 }
 
 // BuildLookup is all Delete needs to know about builds: whether one is
@@ -95,12 +100,8 @@ func (s *LifecycleService) requireOwner(ctx context.Context, applicationID, user
 // only ever touches eligible services, Suspend is a broader "stop
 // everything" operation covering frontends too.
 //
-// Known gap, documented not hidden: FR-047 names Security Administrator
-// force-suspend (bypassing owner-initiated flow, e.g. on a policy
-// violation) as an alternative flow. There's no distinct Security
-// Administrator role to check yet (blocked on DEC-001/DEC-002, same RBAC
-// gap noted throughout — see docs/17_Decision_Log.md), so only owner-
-// initiated suspend is implemented here.
+// FR-047's force-suspend, bypassing the owners, is a platform
+// administrator's (DEC-030): AdminSuspend in admin_hold.go.
 func (s *LifecycleService) Suspend(ctx context.Context, applicationID, requesterID string) (deployment domain.Deployment, err error) {
 	app, err := s.apps.GetByID(ctx, applicationID)
 	if err != nil {
@@ -125,11 +126,17 @@ func (s *LifecycleService) Suspend(ctx context.Context, applicationID, requester
 	// scope boundary.
 	defer s.auditAction(ctx, domain.AuditActionSuspend, applicationID, requesterID, &err)
 
+	return s.suspend(ctx, app, deployment)
+}
+
+// suspend stops a Running application's deployment: Suspend's work once
+// its checks pass, shared with AdminSuspend.
+func (s *LifecycleService) suspend(ctx context.Context, app domain.Application, deployment domain.Deployment) (domain.Deployment, error) {
 	if err := s.stopAllContainers(ctx, deployment.ID); err != nil {
 		return domain.Deployment{}, err
 	}
 
-	deployment, err = s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentSuspended)
+	deployment, err := s.deployments.SetStatus(ctx, deployment.ID, domain.DeploymentSuspended)
 	if err != nil {
 		return domain.Deployment{}, err
 	}
@@ -161,6 +168,9 @@ func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterI
 	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
 		return domain.Deployment{}, err
 	}
+	if err := s.RequireNoHold(ctx, applicationID); err != nil {
+		return domain.Deployment{}, err
+	}
 	if app.LifecycleStatus != domain.StatusSuspended {
 		return domain.Deployment{}, domain.ErrApplicationNotSuspended
 	}
@@ -177,6 +187,13 @@ func (s *LifecycleService) Resume(ctx context.Context, applicationID, requesterI
 	// scope boundary.
 	defer s.auditAction(ctx, domain.AuditActionResume, applicationID, requesterID, &err)
 
+	return s.resume(ctx, app, deployment)
+}
+
+// resume starts a Suspended application's deployment again: Resume's work
+// once its checks pass, shared with AdminResume.
+func (s *LifecycleService) resume(ctx context.Context, app domain.Application, deployment domain.Deployment) (domain.Deployment, error) {
+	applicationID := app.ID
 	states, err := s.states.ListForDeployment(ctx, deployment.ID)
 	if err != nil {
 		return domain.Deployment{}, err
@@ -339,6 +356,9 @@ func (s *LifecycleService) Archive(ctx context.Context, applicationID, requester
 	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
 		return domain.Application{}, err
 	}
+	if err := s.RequireNoHold(ctx, applicationID); err != nil {
+		return domain.Application{}, err
+	}
 	if app.LifecycleStatus != domain.StatusRunning && app.LifecycleStatus != domain.StatusSuspended {
 		return domain.Application{}, domain.ErrInvalidLifecycleTransition
 	}
@@ -405,6 +425,9 @@ func (s *LifecycleService) Delete(ctx context.Context, applicationID, requesterI
 		return domain.Application{}, err
 	}
 	if err := s.requireOwner(ctx, applicationID, requesterID); err != nil {
+		return domain.Application{}, err
+	}
+	if err := s.RequireNoHold(ctx, applicationID); err != nil {
 		return domain.Application{}, err
 	}
 	if !confirm {

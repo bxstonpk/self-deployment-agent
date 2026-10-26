@@ -95,6 +95,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			useDevGuard(r, cfg)
 			r.Use(RequireAuth(cfg.Authenticator))
 			r.Get("/overview", cfg.Admin.Overview)
+			r.Post("/applications/{id}/suspend", cfg.Admin.Suspend)
+			r.Post("/applications/{id}/resume", cfg.Admin.Resume)
 		})
 	}
 

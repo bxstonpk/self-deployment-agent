@@ -42,6 +42,8 @@ func writeDevCopyError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNoDevCopy):
 		writeError(w, http.StatusNotFound, "no_dev_copy", err.Error())
+	case errors.Is(err, domain.ErrAdminHold):
+		writeError(w, http.StatusConflict, "admin_hold", err.Error())
 	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrApplicationNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "application not found")
 	case errors.Is(err, domain.ErrUnauthorized):

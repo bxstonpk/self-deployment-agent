@@ -86,6 +86,7 @@ async def test_a_rejected_key_says_how_to_sign_in_again():
         (409, "name_taken", ErrorCode.CONFLICT),
         (409, "not_running", ErrorCode.VALIDATION_ERROR),  # wrong-state, not a real conflict
         (409, "invalid_rollback_target", ErrorCode.VALIDATION_ERROR),
+        (409, "admin_hold", ErrorCode.POLICY_VIOLATION),  # an administrator's suspension (DEC-030)
         (413, "source_archive_too_large", ErrorCode.QUOTA_EXCEEDED),
         (500, "internal_error", ErrorCode.INTERNAL_ERROR),
     ],

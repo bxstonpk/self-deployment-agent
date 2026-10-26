@@ -1,19 +1,45 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"platform-api/internal/domain"
 	"platform-api/internal/hostinfo"
 	"platform-api/internal/service"
 )
 
-// AdminHandler serves the platform administrators' dashboard.
+// AdminHandler serves the platform administrators' dashboard, and their
+// suspension of any application (service/admin_hold.go).
 type AdminHandler struct {
 	svc       *service.AdminOverviewService
 	publicURL string
+	lifecycle AdminLifecycle
+}
+
+type AdminLifecycle interface {
+	AdminSuspend(ctx context.Context, applicationID string, admin domain.User, reason string) (domain.AdminHold, error)
+	AdminResume(ctx context.Context, applicationID string, admin domain.User) (domain.Application, error)
+}
+
+func (h *AdminHandler) SetLifecycle(l AdminLifecycle) { h.lifecycle = l }
+
+type adminHoldResponse struct {
+	Reason      string    `json:"reason"`
+	HeldByEmail string    `json:"held_by_email"`
+	HeldAt      time.Time `json:"held_at"`
+}
+
+func toAdminHoldResponse(h *domain.AdminHold) *adminHoldResponse {
+	if h == nil {
+		return nil
+	}
+	return &adminHoldResponse{Reason: h.Reason, HeldByEmail: h.HeldByEmail, HeldAt: h.HeldAt}
 }
 
 func NewAdminHandler(svc *service.AdminOverviewService, publicBaseURL string) *AdminHandler {
@@ -34,6 +60,8 @@ type adminApplicationResponse struct {
 	Errors       int64   `json:"errors"`
 	LatencyMsAvg float64 `json:"latency_ms_avg"`
 	URL          string  `json:"url"`
+	// Hold is set while an administrator's suspension is on.
+	Hold *adminHoldResponse `json:"hold"`
 }
 
 type trafficPointResponse struct {
@@ -89,7 +117,47 @@ func (h *AdminHandler) Overview(w http.ResponseWriter, r *http.Request) {
 			ID: a.ID, Name: a.Name, Status: a.Status, Department: a.Department, OwnerEmail: a.OwnerEmail,
 			Environments: a.Environments, Instances: a.Instances, CPUPercent: a.CPUPercent, MemoryBytes: a.MemoryBytes,
 			Requests: a.Requests, Errors: a.Errors, LatencyMsAvg: a.LatencyMsAvg, URL: url,
+			Hold: toAdminHoldResponse(a.Hold),
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+type adminSuspendRequest struct {
+	Reason string `json:"reason"`
+}
+
+// Suspend is POST /admin/applications/{id}/suspend {"reason": ...}: an
+// administrator suspends an application; only an administrator resumes it.
+func (h *AdminHandler) Suspend(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := caller(w, r)
+	if !ok {
+		return
+	}
+	var req adminSuspendRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON with a reason")
+		return
+	}
+	hold, err := h.lifecycle.AdminSuspend(r.Context(), chi.URLParam(r, "id"), user, req.Reason)
+	if err != nil {
+		writeLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toAdminHoldResponse(&hold))
+}
+
+// Resume is POST /admin/applications/{id}/resume: lifts an administrator's
+// suspension and starts the application again.
+func (h *AdminHandler) Resume(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := caller(w, r)
+	if !ok {
+		return
+	}
+	app, err := h.lifecycle.AdminResume(r.Context(), chi.URLParam(r, "id"), user)
+	if err != nil {
+		writeLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toApplicationResponse(app))
 }

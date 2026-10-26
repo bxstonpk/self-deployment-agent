@@ -90,11 +90,12 @@ type devCopyFixture struct {
 	taken    map[string]bool
 	build    domain.BuildStatus
 	hasDB    bool
+	held     map[string]bool // applications an administrator suspended
 }
 
 func newDevCopies(t *testing.T) *devCopyFixture {
 	t.Helper()
-	f := &devCopyFixture{build: domain.BuildSucceeded, taken: map[string]bool{}, hasDB: true,
+	f := &devCopyFixture{build: domain.BuildSucceeded, taken: map[string]bool{}, hasDB: true, held: map[string]bool{},
 		profiles: map[string]domain.ApplicationProfile{"app-1": {ApplicationID: "app-1", Purpose: "leave requests"}}}
 	f.apps = newFakeLifecycleRepo(domain.Application{ID: "app-1", Name: "leave", LifecycleStatus: domain.StatusRunning,
 		OwningDepartmentID: "hr", DeploymentYAMLDraft: devParentYAML})
@@ -168,6 +169,12 @@ func newDevCopies(t *testing.T) *devCopyFixture {
 			f.calls = append(f.calls, "copy-db "+from+" -> "+to)
 			return nil
 		},
+		RequireNoHold: func(ctx context.Context, id string) error {
+			if f.held[id] {
+				return domain.ErrAdminHold
+			}
+			return nil
+		},
 	}
 	f.svc = service.NewDevCopyService(f.apps, owners, f.repo, steps, newFakeAuditRecorder())
 	return f
@@ -238,6 +245,26 @@ func TestDevCopy_ResetRemovesItAndTheNextIsANewOne(t *testing.T) {
 	res, err := f.svc.Deploy(ctx, devOwner, "app-1", []byte("v2"))
 	if err != nil || !res.Created || res.Copy.Name != "leave-dev2" {
 		t.Fatalf("a name is never reused: %+v %v", res.Copy, err)
+	}
+}
+
+func TestDevCopy_NoDevDeployWhileAnAdministratorHoldsItOrItsApplication(t *testing.T) {
+	f := newDevCopies(t)
+	ctx := context.Background()
+	if _, err := f.svc.Deploy(ctx, devOwner, "app-1", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	f.calls = nil
+	f.held["dev-1"] = true
+	if _, err := f.svc.Deploy(ctx, devOwner, "app-1", []byte("v2")); !errors.Is(err, domain.ErrAdminHold) {
+		t.Errorf("held copy: %v", err)
+	}
+	f.held = map[string]bool{"app-1": true}
+	if _, err := f.svc.Deploy(ctx, devOwner, "app-1", []byte("v2")); !errors.Is(err, domain.ErrAdminHold) {
+		t.Errorf("held application: %v", err)
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("nothing should have run: %v", f.calls)
 	}
 }
 

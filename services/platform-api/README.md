@@ -416,12 +416,85 @@ app returns a 404, it does not cold-start.
    which no longer existed. Fixed by adding `UpdateContainers` and calling
    it from all three operations.
 
-**By decision, not a gap awaiting one:** FR-047 names a Security
-Administrator force-suspend path (bypassing the owner-initiated flow, e.g.
-on a policy violation) as an alternative flow. There is no distinct
-Security Administrator role, by the same `DEC-001`/`DEC-002` decision
-(Decided 2026-09-11) as the production approval gate above — this
-platform will not have one. Only owner-initiated suspend is implemented.
+**FR-047's force-suspend** (bypassing the owner, e.g. on a policy
+violation) is done by a platform administrator rather than a separate
+Security Administrator role, which `DEC-002` rules out. See "How an
+administrator's suspension works" below (`DEC-030`).
+
+## How an administrator's suspension works (DEC-030)
+
+The platform owner decided (2026-10-26) that a platform administrator can
+stop any application, for a security or technical problem, and that only an
+administrator can start it again.
+
+- **Who.** Accounts in `PLATFORM_ADMIN_EMAILS`. `POST
+  /admin/applications/{id}/suspend {"reason": ...}` and `POST
+  /admin/applications/{id}/resume`. The Admin Portal's Dashboard has a
+  **Suspend** button on every running or suspended application, which asks
+  for the reason, and **Resume** on a held one, which shows the reason.
+- **What it does.** The ordinary Suspend: every container stops, the proxy
+  stops serving it, and the database and its data stay. A reason is
+  required. The owners get a notification with the reason and the
+  administrator to contact. An application its owners already suspended
+  can be held the same way.
+- **The hold** (`admin_holds`, migration `0029`). While it is on, the owners
+  are refused (409 `admin_hold`, the message giving who, when and why):
+  - resume, archive and delete;
+  - deploying its dev copy, or the application's dev copy if the
+    application is held;
+  - resetting a held dev copy.
+
+  A suspended application can't be built, deployed, rolled back or
+  restarted anyway: those need Running, Validated or Failed. The MCP maps
+  `admin_hold` to `POLICY_VIOLATION`, and the skill tells Claude to tell
+  the employee and not work around it.
+- **Resume.** Only an administrator's resume lifts it: the application
+  starts again, the hold is removed and the owners are told. If it fails to
+  start, the hold stays and it can be tried again. An administrator's
+  resume of an owner's own suspension is refused (409 `not_admin_held`).
+- **Audit.** `application.admin_suspend` and `application.admin_resume`,
+  with the administrator as actor.
+
+### Known gaps
+- Only a running (or already suspended) application can be held. A
+  production that was never deployed, an application mid-build, or one in
+  `failed` can't be held, though none of those is serving.
+- A hold covers one application. Holding an application doesn't suspend its
+  running dev copy; the administrator suspends the copy too (it is listed
+  on the Dashboard as `<name>-dev`). Holding the application does stop new
+  dev deployments.
+- A deployment already waiting for approval when its application is held
+  isn't cancelled. It was not tested what an approval does to a held
+  application.
+- The owners see the reason in their notification and in the refusal. The
+  application's own page in the Portal doesn't show the hold yet, and its
+  Resume button is still offered there (and refused).
+
+### Verifying it
+`scripts/verify_admin_hold.py`, against the local stack (2026-10-26), all 28
+checks passed. It deployed a real Go application to dev with a dev copy, and:
+- an owner can't use the administrator's endpoints (403), and a blank
+  reason is refused (400);
+- the administrator's suspension stopped its container, it stopped being
+  served (404), the owner was told the reason and whom to contact, and the
+  Dashboard showed the hold;
+- the owner's resume, archive, delete and dev deployment were refused
+  (409 `admin_hold`, with the reason);
+- the administrator's resume served it again (200), told the owner, lifted
+  the hold, and the owner could suspend and resume it again;
+- the administrator's resume of the owner's own suspension was refused, and
+  an owner-suspended application could be held;
+- a held dev copy couldn't be deployed or reset, and the application itself
+  stayed up.
+
+After the script deleted its application, the dev-copy sweeper removed the
+copy within its one-minute cycle.
+
+The Dashboard's buttons were also driven in a real browser (Playwright,
+through the gateway): signed in as the administrator, Suspend with a reason,
+the row showed the hold and Resume; Resume brought the application back
+(served 200) and the owner had both notifications. That browser check is a
+one-off, not a committed script.
 
 ## How Rollback works (Module V)
 
@@ -2612,10 +2685,9 @@ Each will land as its own feature branch/PR, per the Application Lifecycle:
   mentions "potentially tunable per resource tier") — today it's one
   platform-wide constant; real tuning needs Module M (Resource Manager),
   not built yet.
-- Security Administrator force-suspend, bypassing owner-initiated Suspend
-  — not a gap, a decision: `DEC-002` means there is no Security
-  Administrator role to perform it. Only owner-initiated Suspend exists,
-  and that's the permanent model.
+- Force-suspend, bypassing the owners: done by platform administrators
+  (`DEC-030`, 2026-10-26), not a Security Administrator role (`DEC-002`).
+  See "How an administrator's suspension works".
 - Real deprovisioning on Archive/Delete for domains (Module P) — not a
   gap, a decision: `DEC-007` (Deferred 2026-09-11) is that Module P isn't
   needed for this LAN-only deployment at all (see **Self-declared

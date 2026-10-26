@@ -127,6 +127,13 @@ func writeLifecycleError(w http.ResponseWriter, err error) {
 	// platform key) — never a value.
 	case errors.Is(err, domain.ErrSecretUnreadable), errors.Is(err, domain.ErrSecretNotFound):
 		writeError(w, http.StatusInternalServerError, "secret_unavailable", err.Error())
+	// An administrator's suspension: the message says who, when and why.
+	case errors.Is(err, domain.ErrAdminHold):
+		writeError(w, http.StatusConflict, "admin_hold", err.Error())
+	case errors.Is(err, domain.ErrNotAdminHeld):
+		writeError(w, http.StatusConflict, "not_admin_held", err.Error())
+	case errors.Is(err, domain.ErrHoldReasonRequired):
+		writeError(w, http.StatusBadRequest, "reason_required", err.Error())
 	case errors.Is(err, domain.ErrApplicationStillLive):
 		writeError(w, http.StatusConflict, "application_still_live", err.Error())
 	case errors.Is(err, domain.ErrNotFound):
