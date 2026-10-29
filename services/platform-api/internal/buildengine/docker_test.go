@@ -196,6 +196,19 @@ func TestGenerateDockerfile_PerRuntimeConventions(t *testing.T) {
 	}
 }
 
+// A static frontend's nginx stage takes Alpine's published fixes: a
+// CRITICAL in nginx:1.30-alpine's brotli-libs blocked every React and Vue
+// build until it did.
+func TestGenerateDockerfile_StaticFrontendsUpgradeAlpinePackages(t *testing.T) {
+	for _, runtime := range []string{"react", "vue"} {
+		out := GenerateDockerfile(runtime, "base:image", 8080)
+		stage := out[strings.Index(out, "FROM "+staticRuntimeStageImage):]
+		if !strings.HasPrefix(stage, "FROM "+staticRuntimeStageImage+"\nRUN apk upgrade --no-cache\n") {
+			t.Errorf("runtime %s: expected the nginx stage to upgrade its packages first, got:\n%s", runtime, stage)
+		}
+	}
+}
+
 func TestSanitizeTag(t *testing.T) {
 	if got := sanitizeTag("My App!!"); got != "my-app" {
 		t.Errorf("expected sanitized tag 'my-app', got %q", got)
