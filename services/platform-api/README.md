@@ -134,6 +134,24 @@ of upstream support since April 2026) to `node:22-alpine` (migration
 pulls a newer one automatically, so keeping them patched (`docker pull`
 on the platform host) is part of IT's FR-022 governance.
 
+**Static frontends take Alpine's fixes at build time.** On 2026-10-29
+every React and Vue build on the company host was refused. Their nginx
+stage, `nginx:1.30-alpine` (built 2026-10-21), carried `brotli-libs`
+1.2.0-r1. Once Trivy's database listed CVE-2026-111497 (CRITICAL, fixed
+in Alpine's 1.2.1-r0), the scan refused it, and Docker Hub had no newer
+nginx image yet, so `docker pull` couldn't help. The nginx stage now runs
+`apk upgrade --no-cache` first.
+- **Verified:** built the same way here, the old stage scanned 1 CRITICAL
+  and 2 HIGH (`curl`/`libcurl`, CVE-2026-92392), and the upgraded one 0 and
+  0, on the same Trivy database. `verify_lan_stack.py` (`RUNTIMES=go`, with
+  the browser check) then built, scanned, deployed and used React + Go +
+  MySQL from the templates, and all checks passed.
+- **Not done:** the Go (`alpine:3.21`), Node and Python runtime images
+  don't upgrade their packages this way yet.
+- **Needs Alpine's mirror:** a static frontend's build now needs Alpine's
+  package mirror (`dl-cdn.alpinelinux.org`), as Node and Python builds need
+  npm and PyPI.
+
 **Why `go` needed fixing to multi-stage — found for real, not assumed:**
 a single-stage `golang:*-alpine` build leaves the entire Go SDK/toolchain in
 the final runtime image. When the Image Scan gate (below) was exercised for

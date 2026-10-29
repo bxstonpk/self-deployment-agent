@@ -62,12 +62,21 @@ CMD ["sh", "/app/.platform-start.sh"]
 `, baseImage, removeNodePackageManagers, port)
 }
 
+// upgradeAlpinePackages brings an Alpine image's OS packages up to the
+// fixes Alpine has already published. Found for real on 2026-10-29:
+// nginx:1.30-alpine (built 2026-10-21) carried brotli-libs 1.2.0-r1, and
+// once Trivy's database listed CVE-2026-111497 (CRITICAL, fixed in
+// 1.2.1-r0) every React and Vue build was refused, with no newer nginx
+// image on Docker Hub yet. The build needs Alpine's package mirror.
+const upgradeAlpinePackages = `RUN apk upgrade --no-cache`
+
 // staticRuntimeStage serves a frontend's build output from nginx, falling
 // back to index.html for client-side routes. The application is served
 // under /run/{app}/{service}/, which the proxy strips, so nginx sees
 // ordinary root-relative paths.
 func staticRuntimeStage(outputDir string, port int) string {
 	return fmt.Sprintf(`FROM %s
+`+upgradeAlpinePackages+`
 COPY --from=build /app/%s /usr/share/nginx/html
 RUN printf 'server {\n  listen %d;\n  root /usr/share/nginx/html;\n  location / {\n    try_files $uri $uri/ /index.html;\n  }\n}\n' > /etc/nginx/conf.d/default.conf
 EXPOSE %d
