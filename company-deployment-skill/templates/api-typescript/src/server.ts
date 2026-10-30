@@ -45,10 +45,36 @@ app.get('/', (_req: Request, res: Response) => {
   res.json({ status: 'ok', runtime: 'typescript', database: ready ? 'connected' : 'unavailable' })
 })
 
-app.get('/items', async (_req: Request, res: Response, next: NextFunction) => {
+// Matches q anywhere, with LIKE's own wildcards taken literally.
+const likePattern = (q: string): string => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+
+// RESTful: the collection is /items, one item /items/:id, and a search is a
+// query parameter on the collection (GET /items?q=...).
+app.get('/items', async (req: Request, res: Response, next: NextFunction) => {
+  const q = String(req.query.q ?? '').trim()
   try {
-    const [rows] = await pool.query<RowDataPacket[]>('SELECT id, title, created_at FROM items ORDER BY id')
+    const [rows] = q
+      ? await pool.query<RowDataPacket[]>('SELECT id, title, created_at FROM items WHERE title LIKE ? ORDER BY id', [likePattern(q)])
+      : await pool.query<RowDataPacket[]>('SELECT id, title, created_at FROM items ORDER BY id')
     res.json(rows)
+  } catch (err) {
+    next(err)
+  }
+})
+
+app.get('/items/:id', async (req: Request, res: Response, next: NextFunction) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id)) {
+    res.status(404).json({ error: 'item not found' })
+    return
+  }
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT id, title, created_at FROM items WHERE id = ?', [id])
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'item not found' })
+      return
+    }
+    res.json(rows[0])
   } catch (err) {
     next(err)
   }

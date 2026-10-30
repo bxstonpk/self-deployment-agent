@@ -130,6 +130,22 @@ async def test_check_project_reports_a_library_the_company_doesnt_allow(tmp_path
     assert sent[1][0] == app_id and sent[1][1][:2] == b"\x1f\x8b"
 
 
+async def test_check_project_reports_hash_routing(tmp_path):
+    client = FakePlatformClient()
+    app_id, project = await _scaffolded(client, tmp_path)
+    client.next_standards_check = {
+        "passed": False, "has_profile": True, "profile_required": True, "dependencies_found": 3,
+        "violations": [], "allowed_by_exception": [],
+        "hash_routing": [{"service": "frontend", "file": "frontend/src/main.jsx", "line": 4, "api": "HashRouter",
+                          "exception_subject": "hash-routing"}],
+    }
+    data = (await governance.check_project(client, app_id, str(project)))["data"]
+    assert data["passed"] is False
+    routing = [f for f in data["findings"] if f["check"] == "routing"]
+    assert len(routing) == 1 and routing[0]["severity"] == "error"
+    assert "frontend/src/main.jsx:4" in routing[0]["message"] and "?q=" in routing[0]["message"]
+
+
 async def test_check_project_flags_an_unfilled_review_and_pending_exceptions(tmp_path):
     client = FakePlatformClient()
     app_id, project = await _scaffolded(client, tmp_path)

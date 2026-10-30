@@ -121,6 +121,13 @@ func DependencySubject(ecosystem, pkg string) string {
 // CompanyStandardRules is the standard in words, for whoever starts an
 // application (GET /standards). The catalog and the dependency rules are
 // the enforced parts; these say what they enforce, and the rest.
+// HashRoutingSubject is the exception subject (kind "other") that lets an
+// application use hash routing (service/routecheck.go).
+const HashRoutingSubject = "hash-routing"
+
+// ErrHashRouting: the frontend routes on the address's # (/#/page).
+var ErrHashRouting = errors.New("hash routing (/#/ addresses) isn't allowed")
+
 var CompanyStandardRules = []string{
 	"Start every application with start_project, and its code from the company templates (scaffold_project).",
 	"A React frontend, one API in Python, JavaScript (Node.js), TypeScript or Go, and a MySQL database: the supported stacks list is enforced at validation.",
@@ -130,4 +137,6 @@ var CompanyStandardRules = []string{
 	"Anything outside the standard needs an exception (request_exception), decided by the administrator, before it is used.",
 	"Every deployment that waits for approval carries a REVIEW.md: workflow, structure and the path of every file, data, what changed.",
 	"Tests run before every deployment, and their results go to the approver.",
+	"The API is RESTful: resources are nouns (/items, /items/{id}), the method says what happens (GET reads, POST creates, PUT/PATCH change, DELETE removes), bodies are JSON, status codes mean what they say (201 created, 400 bad input, 404 not found), and searching, filtering, sorting and paging are query parameters on the collection (GET /items?q=pen&status=open&page=2).",
+	"Frontend pages are paths (/{app}/items/7), never hash routes (/#/items/7): the build refuses HashRouter, createHashRouter, createWebHashHistory and createHashHistory. What a page shows (search, filters, sort, page, the open tab) is in the address's query (?q=pen&status=open), read from it when the page opens, so Back, a refresh or a shared link shows the same thing.",
 }

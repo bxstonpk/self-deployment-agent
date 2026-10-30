@@ -44,10 +44,30 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', runtime: 'nodejs', database: ready ? 'connected' : 'unavailable' })
 })
 
+// Matches q anywhere, with LIKE's own wildcards taken literally.
+const likePattern = (q) => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+
+// RESTful: the collection is /items, one item /items/:id, and a search is a
+// query parameter on the collection (GET /items?q=...).
 app.get('/items', async (req, res, next) => {
+  const q = String(req.query.q ?? '').trim()
   try {
-    const [rows] = await pool.query('SELECT id, title, created_at FROM items ORDER BY id')
+    const [rows] = q
+      ? await pool.query('SELECT id, title, created_at FROM items WHERE title LIKE ? ORDER BY id', [likePattern(q)])
+      : await pool.query('SELECT id, title, created_at FROM items ORDER BY id')
     res.json(rows)
+  } catch (err) {
+    next(err)
+  }
+})
+
+app.get('/items/:id', async (req, res, next) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id)) return res.status(404).json({ error: 'item not found' })
+  try {
+    const [rows] = await pool.query('SELECT id, title, created_at FROM items WHERE id = ?', [id])
+    if (rows.length === 0) return res.status(404).json({ error: 'item not found' })
+    res.json(rows[0])
   } catch (err) {
     next(err)
   }

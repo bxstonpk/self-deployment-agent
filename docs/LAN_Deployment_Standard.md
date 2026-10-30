@@ -64,6 +64,14 @@ my-app/
   Portal's **Secrets** section.
 - **Images.** Runtime images carry no package manager, and every image
   must pass the CRITICAL-severity scan before it runs.
+- **RESTful APIs, state in the address** (`DEC-032`).
+  - APIs use resources as nouns and the method for the action. Search,
+    filters, sort and paging are query parameters.
+  - Pages are paths, never `/#/`; the build refuses hash routing. What a
+    page shows is in the address's query, so Back, a refresh or a shared
+    link shows the same thing.
+  - The template's `index.html` sets `<base>` to the app's root, so a deep
+    link such as `/<app>/items/7?q=pen` opens directly.
 
 Verified: `services/platform-api/scripts/verify_lan_stack.py` deploys all
 four combinations from the templates and checks each end to end (67

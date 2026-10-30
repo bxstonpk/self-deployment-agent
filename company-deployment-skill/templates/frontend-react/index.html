@@ -2,6 +2,25 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // The platform serves this app at /{application}/ (or, in the long
+      // form, /run/{application}/frontend/), a prefix the build can't know.
+      // This sets <base> to it before any asset loads, so the relative asset
+      // paths and the router work at any depth: /{application}/items/7 and
+      // /{application}/?q=pen open directly. Locally (`npm run dev`) the app
+      // is at /.
+      ;(function () {
+        var root = '/'
+        if ('%MODE%' !== 'development') {
+          var p = window.location.pathname
+          var m = p.match(/^\/run\/[^/]+\/[^/]+\//) || p.match(/^\/[^/]+\//)
+          if (m) root = m[0]
+        }
+        var base = document.createElement('base')
+        base.href = root
+        document.head.prepend(base)
+      })()
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Starter App</title>
   </head>

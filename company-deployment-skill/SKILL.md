@@ -176,7 +176,17 @@ writing any code:
    employee at once**, so they can open it while you build. Build the
    application from these files; replace the example `/items` endpoints
    with its own, and after each change deploy to dev and give the url
-   again.
+   again. Follow `STANDARD.md`'s **"The API is RESTful"** and **"Pages and
+   the address"**:
+   - API resources are nouns, and the method says what happens.
+   - Searching, filtering, sorting and paging are query parameters on the
+     collection (`GET /orders?status=open&page=2`).
+   - Every page is a path (`/orders/7`), never `/#/`. Keep the
+     template's `BrowserRouter` and `<base>`.
+   - What a page shows (search, filters, sort, page, the open tab) is in
+     the address's query, read with `useSearchParams` when it opens.
+     Back, a refresh or a shared link must show the same thing.
+   - The build refuses hash routing.
 4. **While writing it, `check_project(application_id, project_path)`.**
    It runs the platform's own dependency check (the same one the build
    runs) and checks the profile, `REVIEW.md` and pending exceptions. Fix

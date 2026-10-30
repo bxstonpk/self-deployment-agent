@@ -14,6 +14,10 @@ templates as its source, builds, deploys to dev, and then checks:
     runtime, and reaches its database (it creates its table at start-up)
   - data really goes through MySQL: an item POSTed through the proxy comes
     back from GET /items
+  - the API is RESTful: GET /items?q= searches (LIKE's wildcards taken
+    literally), GET /items/{id} reads one item, and a missing one is a 404
+  - a page deeper than the frontend's root (/{app}/items/{id}) is served
+    the frontend, whose relative bundle loads under <base>
   - the React frontend is served at /run/{app}/frontend/, the bare address
     redirects there, and its relatively-addressed JavaScript bundle loads
   - the database container is MySQL, publishes no host port and sits only
@@ -26,7 +30,9 @@ templates as its source, builds, deploys to dev, and then checks:
 Optionally, with PLAYWRIGHT_MODULE set to a Node Playwright install
 (the path to its package directory), one frontend is also driven in a real
 headless browser: the page renders, shows the API connected, and an item
-typed into its form appears in the list.
+typed into its form appears in the list. Then the address carries the
+state: opening ?q= directly shows only the matches, an item opens at a
+path (no /#/) that a reload keeps, and Back returns to the same search.
 
 It deploys the way a Claude Code machine does: with an API key fetched
 through a device approval (see platform_auth.py), not a self-declared
@@ -228,6 +234,24 @@ def _verify_app(app_name: str, runtime: str) -> None:
     titles = [i.get("title") for i in json.loads(body)] if status == 200 else []
     _check(title in titles, f"{runtime}: the item comes back from MySQL via GET /items")
 
+    # RESTful: search as a query parameter, one item at its own path.
+    marker = f"needle-{uuid.uuid4().hex[:6]}"
+    status, _, body = _run(f"/run/{app_name}/api/items", "POST", {"title": f"a {marker} item"})
+    created = json.loads(body) if status == 201 else {}
+    status, _, body = _run(f"/run/{app_name}/api/items?q={marker}")
+    found = json.loads(body) if status == 200 else []
+    _check([i.get("title") for i in found] == [f"a {marker} item"],
+           f"{runtime}: GET /items?q= returns only the matching item ({[i.get('title') for i in found]})")
+    status, _, body = _run(f"/run/{app_name}/api/items?q=%25")
+    _check(status == 200 and json.loads(body) == [],
+           f"{runtime}: a search for a literal '%' matches nothing, not everything ({status}, {body[:80]!r})")
+    status, _, body = _run(f"/run/{app_name}/api/items/{created.get('id')}")
+    one = json.loads(body) if status == 200 else {}
+    _check(one.get("id") == created.get("id") and one.get("title") == f"a {marker} item",
+           f"{runtime}: GET /items/{{id}} returns that item ({status})")
+    status, _, _ = _run(f"/run/{app_name}/api/items/999999999")
+    _check(status == 404, f"{runtime}: a missing item is a 404 ({status})")
+
     status, headers, _ = _run(f"/run/{app_name}/frontend", follow=False)
     location = headers.get("Location") or headers.get("location")
     _check(status == 308 and location == f"/run/{app_name}/frontend/",
@@ -278,6 +302,11 @@ def _verify_short_address(app_name: str, runtime: str, base: str, prefix: str) -
     if script:
         status, _, js = _run(f"{prefix}/{app_name}/{script}", base=base)
         _check(status == 200 and len(js) > 10_000, f"{runtime}: [{where}] its bundle loads at /{app_name}/{script} ({status})")
+    # A deep link is the frontend's page too, with its <base> script.
+    status, _, html = _run(f"{prefix}/{app_name}/items/1?q=x", base=base)
+    page = html.decode(errors="replace")
+    _check(status == 200 and "document.head.prepend(base)" in page and 'src="./assets/' in page,
+           f"{runtime}: [{where}] a deep link, /{app_name}/items/1?q=x, is served the frontend ({status})")
     if not prefix:
         status, _, portal = _run("/applications", base=base)
         _check(status == 200 and b'id="root"' in portal,
@@ -313,23 +342,45 @@ def _verify_in_browser(app_name: str) -> None:
         print("SKIP: browser check (set PLAYWRIGHT_MODULE to a Node Playwright package directory)")
         return
     item = f"from the browser {uuid.uuid4().hex[:6]}"
+    root = f"{GATEWAY_URL}/{app_name}/" if GATEWAY_URL else f"{BASE_URL}/run/{app_name}/frontend/"
     script = f"""
 const {{ chromium }} = require({json.dumps(module)});
 (async () => {{
   const browser = await chromium.launch({{ args: ['--no-sandbox'] }});
   const page = await browser.newPage();
-  await page.goto({json.dumps(f"{BASE_URL}/run/{app_name}/frontend")});
+  await page.goto({json.dumps(root)});
   await page.getByTestId('status').filter({{ hasText: 'database connected' }}).waitFor({{ timeout: 30000 }});
   await page.getByLabel('New item').fill({json.dumps(item)});
   await page.getByRole('button', {{ name: 'Add' }}).click();
   await page.getByText({json.dumps(item)}).waitFor({{ timeout: 15000 }});
-  console.log(JSON.stringify({{ url: page.url(), status: await page.getByTestId('status').textContent() }}));
+  const added = page.url();
+
+  // The address carries the state. Opened directly with ?q=, only the match.
+  const q = {json.dumps(item.split()[-1])};
+  await page.goto({json.dumps(root)} + '?q=' + q);
+  await page.getByRole('link', {{ name: {json.dumps(item)} }}).waitFor({{ timeout: 15000 }});
+  const listed = await page.getByRole('listitem').count();
+  if (listed !== 1) throw new Error('?q= should list only the match, listed ' + listed);
+  if ((await page.getByLabel('Search').inputValue()) !== q) throw new Error('the search box should show ?q=');
+  // An item opens at a path, never /#/, and a reload keeps it.
+  await page.getByRole('link', {{ name: {json.dumps(item)} }}).click();
+  await page.getByTestId('item-title').filter({{ hasText: {json.dumps(item)} }}).waitFor({{ timeout: 15000 }});
+  const itemUrl = page.url();
+  if (itemUrl.includes('#') || !/\\/items\\/\\d+$/.test(new URL(itemUrl).pathname)) throw new Error('item URL ' + itemUrl);
+  await page.reload();
+  await page.getByTestId('item-title').filter({{ hasText: {json.dumps(item)} }}).waitFor({{ timeout: 15000 }});
+  // Back returns to the same search.
+  await page.goBack();
+  await page.getByRole('link', {{ name: {json.dumps(item)} }}).waitFor({{ timeout: 15000 }});
+  const back = page.url();
+  if (!back.endsWith('?q=' + q)) throw new Error('Back should return to ?q=, got ' + back);
+  console.log(JSON.stringify({{ added, itemUrl, back, status: await page.getByTestId('status').textContent() }}));
   await browser.close();
 }})().catch((e) => {{ console.error(e.message); process.exit(1); }});
 """
     r = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=120)
     _check(r.returncode == 0,
-           f"a real browser renders the React app, sees the API connected and adds an item ({(r.stdout or r.stderr).strip()[:300]})")
+           f"a real browser: the React app renders, adds an item, and ?q=, an item's path, a reload and Back all keep their state ({(r.stdout or r.stderr).strip()[:400]})")
 
 
 def _exists(kind: str, name: str) -> bool:
