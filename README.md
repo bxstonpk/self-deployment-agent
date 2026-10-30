@@ -38,6 +38,7 @@ the system most:
 | `DEC-029` | The company standard applies from the start of an application, not only at deployment: a profile, allowed libraries, exceptions decided by an administrator, tests run by the platform, and a dev copy per application that deploys without approval |
 | `DEC-030` | A platform administrator can suspend any application, with a reason, and only an administrator can resume it |
 | `DEC-031` | The platform's address also serves HTTPS, with a self-signed company CA; HTTP stays for Claude Code machines |
+| `DEC-032` | Applications' APIs are RESTful, pages are paths (the build refuses `/#/` routing), and searches and filters live in the URL's query |
 
 ## The application standard
 

@@ -2034,6 +2034,21 @@ administrator decides.
   parse fails it the same way. `POST /applications/{id}/standards-check`
   runs the same check on an uploaded archive without building (the MCP's
   `check_project`).
+- **Hash routing** (`DEC-032`, `routecheck.go`). The same check reads the
+  frontend sources: `.js`, `.jsx`, `.ts`, `.tsx`, `.vue`, `.svelte` and
+  `.html`, outside `node_modules`, `build` and `dist`. These fail the
+  build with category `source`, naming the file and line and saying what
+  to use instead:
+  - the routers' hash modes: `HashRouter`, `createHashRouter`,
+    `createWebHashHistory`, `createHashHistory`;
+  - the same done by hand: a `hashchange` listener, assigning
+    `location.hash`, or a `"#/…"` address in code or a link.
+
+  Reading `location.hash` is allowed. Commented-out lines don't count.
+  The applications on the company host (2026-10-30) all routed by hand.
+  Matching the router APIs alone would have passed them. The standards check returns them as `hash_routing`. An approved
+  exception of kind `other` for subject `hash-routing` lets them through.
+  It is a text match: a router set up some other way isn't caught.
 - **Exceptions.** `POST /applications/{id}/exceptions` (owners): kind
   `dependency` (subject `<ecosystem>:<package>`, normalized like the
   rules), `stack` or `other`, with a reason. Asking again for what is

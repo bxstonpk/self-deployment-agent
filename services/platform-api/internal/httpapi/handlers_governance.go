@@ -322,8 +322,14 @@ func (h *GovernanceHandler) CheckSource(w http.ResponseWriter, r *http.Request) 
 	for _, d := range res.Excepted {
 		excepted = append(excepted, dep(d))
 	}
+	routing := make([]map[string]any, 0, len(res.HashRouting))
+	for _, f := range res.HashRouting {
+		routing = append(routing, map[string]any{"service": f.Service, "file": f.File, "line": f.Line, "api": f.API,
+			"exception_subject": domain.HashRoutingSubject})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"passed":               len(res.Violations) == 0 && (res.HasProfile || !res.ProfileRequired),
+		"passed":               len(res.Violations) == 0 && len(res.HashRouting) == 0 && (res.HasProfile || !res.ProfileRequired),
+		"hash_routing":         routing,
 		"has_profile":          res.HasProfile,
 		"profile_required":     res.ProfileRequired,
 		"dependencies_found":   len(res.Dependencies),

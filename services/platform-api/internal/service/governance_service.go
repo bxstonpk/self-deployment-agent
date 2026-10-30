@@ -317,6 +317,9 @@ type SourceCheck struct {
 	Dependencies []domain.Dependency
 	Violations   []DependencyViolation
 	Excepted     []domain.Dependency
+	// HashRouting is every use of hash routing the build would refuse
+	// (routecheck.go): empty when there is none, or an exception allows it.
+	HashRouting []RoutingFinding
 	HasProfile   bool
 	// ProfileRequired is whether a build would refuse it without one.
 	ProfileRequired bool
@@ -336,11 +339,57 @@ func (s *GovernanceService) CheckSource(ctx context.Context, caller domain.User,
 	if err != nil {
 		return SourceCheck{}, err
 	}
+	routing, err := s.hashRouting(ctx, applicationID, archive)
+	if err != nil {
+		return SourceCheck{}, err
+	}
 	_, perr := s.repo.GetProfile(ctx, applicationID)
 	if perr != nil && !errors.Is(perr, domain.ErrNotFound) {
 		return SourceCheck{}, perr
 	}
-	return SourceCheck{Dependencies: deps, Violations: violations, Excepted: excepted, HasProfile: perr == nil, ProfileRequired: s.requireProfile}, nil
+	return SourceCheck{Dependencies: deps, Violations: violations, Excepted: excepted, HashRouting: routing,
+		HasProfile: perr == nil, ProfileRequired: s.requireProfile}, nil
+}
+
+// hashRouting is the source's hash routing, unless the application has an
+// approved exception for it.
+func (s *GovernanceService) hashRouting(ctx context.Context, applicationID string, archive []byte) ([]RoutingFinding, error) {
+	found, err := ScanHashRouting(archive)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", domain.ErrUnreadableSource, err)
+	}
+	if len(found) == 0 {
+		return nil, nil
+	}
+	appID, err := s.governedApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	exceptions, err := s.repo.ListExceptionsForApplication(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range exceptions {
+		if e.Kind == "other" && e.Subject == domain.HashRoutingSubject && e.Status == domain.ExceptionApproved {
+			return nil, nil
+		}
+	}
+	return found, nil
+}
+
+// governedApplication is whose exceptions apply: a dev copy builds what its
+// application would.
+func (s *GovernanceService) governedApplication(ctx context.Context, applicationID string) (string, error) {
+	if s.devCopies != nil {
+		parent, err := s.devCopies.ParentOf(ctx, applicationID)
+		if err != nil {
+			return "", err
+		}
+		if parent != "" {
+			return parent, nil
+		}
+	}
+	return applicationID, nil
 }
 
 func (s *GovernanceService) check(ctx context.Context, applicationID string, deps []domain.Dependency) ([]DependencyViolation, []domain.Dependency, error) {
@@ -349,12 +398,9 @@ func (s *GovernanceService) check(ctx context.Context, applicationID string, dep
 		return nil, nil, err
 	}
 	// A dev copy builds what its application would: the same exceptions.
-	if s.devCopies != nil {
-		if parent, err := s.devCopies.ParentOf(ctx, applicationID); err != nil {
-			return nil, nil, err
-		} else if parent != "" {
-			applicationID = parent
-		}
+	applicationID, err = s.governedApplication(ctx, applicationID)
+	if err != nil {
+		return nil, nil, err
 	}
 	exceptions, err := s.repo.ListExceptionsForApplication(ctx, applicationID)
 	if err != nil {
@@ -398,6 +444,16 @@ func (s *GovernanceService) SourceFailure(ctx context.Context, applicationID str
 	}
 	if len(violations) > 0 {
 		return &domain.BuildFailure{Category: domain.ErrorCategorySource, Detail: DescribeViolations(violations)}
+	}
+	routing, err := s.hashRouting(ctx, applicationID, archive)
+	if errors.Is(err, domain.ErrUnreadableSource) {
+		return &domain.BuildFailure{Category: domain.ErrorCategorySource, Detail: "the routing check couldn't read the source: " + err.Error()}
+	}
+	if err != nil {
+		return err
+	}
+	if len(routing) > 0 {
+		return &domain.BuildFailure{Category: domain.ErrorCategorySource, Detail: DescribeRoutingFindings(routing)}
 	}
 	return nil
 }

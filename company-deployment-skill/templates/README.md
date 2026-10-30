@@ -49,11 +49,63 @@ changes:
 - **Addresses.** Deployed, the frontend is served at `/<app>/` and the
   API at `/<app>/api/` (the long form, `/run/<app>/frontend/` and
   `/run/<app>/api/`, works too).
-  `frontend-react/src/api.js` derives the API address from the page's own,
-  and Vite builds with relative asset paths (`base: './'`), so nothing is
-  configured per environment.
-- **Example endpoints.** `GET /items` and `POST /items {"title": …}` —
-  replace them with the application's own.
+  `frontend-react/index.html` sets `<base>` to the app's own root before
+  anything loads, `src/base.js` exposes it, and `src/api.js` derives the
+  API address from it. Vite builds with relative asset paths
+  (`base: './'`), so nothing is configured per environment and a page at
+  any depth (`/<app>/items/7`) loads.
+- **Example endpoints.** `GET /items` (`?q=` searches), `GET /items/{id}`
+  and `POST /items {"title": …}`. Replace them with the application's own,
+  in the same RESTful shape.
+
+## The API is RESTful
+
+The company standard (`DEC-032`):
+
+- **Resources are nouns.** `/items` is the collection and `/items/{id}`
+  one item. Name them for what they are (`/leave-requests`,
+  `/leave-requests/{id}/approvals`), not for an action (`/getLeave`,
+  `/doApprove`).
+- **The method says what happens.**
+  - `GET` reads and never changes anything.
+  - `POST` creates.
+  - `PUT` replaces; `PATCH` changes part.
+  - `DELETE` removes.
+- **JSON in and out.** Status codes mean what they say: `200` ok, `201`
+  created, `204` nothing to return, `400` bad input, `404` not found,
+  `409` conflict, `500` a fault.
+- **Searching, filtering, sorting and paging are query parameters on the
+  collection.** For example: `GET /items?q=pen&status=open&sort=-created_at&page=2`.
+
+## Pages and the address
+
+Every page has its own address, and what a page shows is in that address,
+so **Back, a refresh or a link someone shares opens exactly the same
+thing**:
+
+- **Pages are paths.** Use `/<app>/items/7`, never hash routes like
+  `/<app>/#/items/7`.
+  - The template uses React Router's `BrowserRouter`, with
+    `basename={ROUTER_BASENAME}` from `src/base.js`.
+  - The platform refuses hash routing at build time, and `check_project`
+    reports it too. Refused: the routers' hash modes (`HashRouter`,
+    `createHashRouter`, Vue's `createWebHashHistory`, `createHashHistory`)
+    and the same done by hand (a `hashchange` listener, assigning
+    `location.hash`, a `'#/…'` address in code or a link).
+  - An old `/<app>/#/page` link (one already posted in Google Chat, say)
+    still works: `index.html` turns it into `/<app>/page` before the app
+    starts. Links the app writes from now on are paths.
+- **The page's state is in the query.** Search, filters, sort, page and
+  the open tab go in the query (`?q=pen&status=open&page=2`).
+  - Read them with `useSearchParams` when the page opens, as `Items` in
+    `src/App.jsx` does, and pass them to the API as the same query
+    parameters.
+  - Changing a search or a filter changes the address
+    (`setSearchParams`). Don't keep it only in component state.
+- **Links are router links.** Use `<Link to="/items/7">`, relative to the
+  app, never a hard-coded `/<app>/` prefix: the same build serves the
+  app's `-dev` copy and its long-form address.
+
 
 ## Running locally
 
@@ -83,4 +135,10 @@ platform. For each, it checks that the API reaches MySQL, that data
 written through the platform's address comes back, and that the frontend
 and its bundle load. It also checks that the database is isolated on the
 application's own network, and that rotating the database password keeps
-the API working. A real browser then drives one frontend end to end.
+the API working. Each API's `?q=` search, `GET /items/{id}` and its 404
+are checked, and a deep link (`/<app>/items/1?q=x`) is served the
+frontend. A real browser then drives one frontend end to end:
+- it adds an item;
+- opening `?q=` directly lists only the match;
+- an item opens at a path with no `#`, and a reload keeps it;
+- Back returns to the same search.

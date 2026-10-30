@@ -54,14 +54,36 @@ def health():
     return jsonify(status="ok", runtime="python", database="connected" if _ready.is_set() else "unavailable")
 
 
+def like_pattern(q):
+    """Matches q anywhere, with LIKE's own wildcards taken literally."""
+    return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+# RESTful: the collection is /items, one item /items/<id>, and a search is a
+# query parameter on the collection (GET /items?q=...).
 @app.get("/items")
 def list_items():
+    q = request.args.get("q", "").strip()
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, title, created_at FROM items ORDER BY id")
+        if q:
+            cur.execute("SELECT id, title, created_at FROM items WHERE title LIKE %s ORDER BY id", (like_pattern(q),))
+        else:
+            cur.execute("SELECT id, title, created_at FROM items ORDER BY id")
         rows = cur.fetchall()
     for row in rows:
         row["created_at"] = row["created_at"].isoformat()
     return jsonify(rows)
+
+
+@app.get("/items/<int:item_id>")
+def get_item(item_id):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, title, created_at FROM items WHERE id = %s", (item_id,))
+        row = cur.fetchone()
+    if row is None:
+        return jsonify(error="item not found"), 404
+    row["created_at"] = row["created_at"].isoformat()
+    return jsonify(row)
 
 
 @app.post("/items")

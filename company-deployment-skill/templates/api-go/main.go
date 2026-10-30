@@ -10,9 +10,11 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -69,6 +71,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// likePattern matches q anywhere in a column, with LIKE's own wildcards
+// taken literally.
+func likePattern(q string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(q) + "%"
+}
+
 func main() {
 	db, err := openDB()
 	if err != nil {
@@ -84,8 +93,14 @@ func main() {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "runtime": "go", "database": state})
 	})
+	// RESTful: the collection is /items, one item /items/{id}, and a search
+	// is a query parameter on the collection (GET /items?q=...).
 	mux.HandleFunc("GET /items", func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.QueryContext(r.Context(), "SELECT id, title, created_at FROM items ORDER BY id")
+		query, args := "SELECT id, title, created_at FROM items ORDER BY id", []any{}
+		if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+			query, args = "SELECT id, title, created_at FROM items WHERE title LIKE ? ORDER BY id", []any{likePattern(q)}
+		}
+		rows, err := db.QueryContext(r.Context(), query, args...)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -101,6 +116,25 @@ func main() {
 			items = append(items, it)
 		}
 		writeJSON(w, http.StatusOK, items)
+	})
+	mux.HandleFunc("GET /items/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "item not found"})
+			return
+		}
+		var it item
+		err = db.QueryRowContext(r.Context(), "SELECT id, title, created_at FROM items WHERE id = ?", id).
+			Scan(&it.ID, &it.Title, &it.CreatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "item not found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, it)
 	})
 	mux.HandleFunc("POST /items", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

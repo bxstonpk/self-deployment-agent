@@ -65,6 +65,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-029 | Process & Governance | Development governance from the start of an application | Platform owner | Before Production Go-Live | **Decided (2026-10-24)** |
 | DEC-030 | Security & Operations | An administrator's suspension of any application | Platform owner | Before Production Go-Live | **Decided (2026-10-26)** |
 | DEC-031 | Security & Operations | HTTPS on the platform's address | Platform owner | Before Production Go-Live | **Decided (2026-10-30)** |
+| DEC-032 | Process & Governance | RESTful APIs, and state in the address | Platform owner | Before Production Go-Live | **Decided (2026-10-30)** |
 
 ---
 
@@ -409,6 +410,17 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Status | **Decided (2026-10-30)** |
 | Resolution | **Chosen by the owner:** HTTPS with a certificate the company makes itself (self-signed). **Implementation choices, not separately decided:** a company CA signs the gateway's certificate, so machines trust the CA once and later certificates need nothing new. HTTP stays alongside HTTPS, because Claude Code machines and the MCP server use it: the MCP server trusts only public certificate authorities. A self-signed certificate is trusted only where it has been imported, so a service outside the company (Google's servers among them) can't verify it. |
 | Target Phase | Before Production Go-Live |
+
+#### DEC-032 — RESTful APIs, and State in the Address
+
+| Field | Detail |
+|---|---|
+| Topic | How the applications built on the platform expose their APIs and pages |
+| Question | Applications were appearing with `/#/` addresses, and searches that were lost on Back or on opening a link. What is the standard? |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-10-30)** |
+| Resolution | **Chosen by the owner:** every application's API is RESTful, and anything a page connects to or searches for goes through parameters in the URL, so going Back or opening the address directly shows the same thing without setting it again. No `/#/` addresses. **Implementation choices, not separately decided:** the build refuses routing on the `#`, both the routers' hash modes (`HashRouter`, `createHashRouter`, `createWebHashHistory`, `createHashHistory`) and the same done by hand (a `hashchange` listener, assigning `location.hash`, a `#/` address in code), like a forbidden library, and `check_project` reports them; an approved exception (kind `other`, subject `hash-routing`) lets them through. Whether an API is RESTful can't be checked reliably from its source, so that part is a published rule (`GET /standards`, the templates' `STANDARD.md`, the skill) that the approver checks in REVIEW.md. The templates show both: path routes with the app's base, `?q=` search, `GET /items/{id}`. |
+
 ---
 
 ## 9. Operational

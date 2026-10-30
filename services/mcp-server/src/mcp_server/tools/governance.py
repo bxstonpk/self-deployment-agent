@@ -312,6 +312,15 @@ async def check_project(client: PlatformClient, application_id: str, project_pat
                 f"or request_exception kind 'dependency' subject {v['exception_subject']!r} and wait for the decision."
             ),
         })
+    for f in result.get("hash_routing", []):
+        findings.append({
+            "check": "routing", "severity": "error",
+            "message": (
+                f"{f['api']} in {f['file']}:{f['line']} routes on /#/ addresses, which the build refuses. Use path routes "
+                "(BrowserRouter with the app's base, as the company template's frontend does) and keep searches and "
+                "filters in the address's query (?q=...)."
+            ),
+        })
     if result and not result.get("has_profile"):
         findings.append({
             "check": "profile", "severity": "error" if result.get("profile_required") else "warning",
