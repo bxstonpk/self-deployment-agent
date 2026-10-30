@@ -64,6 +64,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-028 | Operational | Alert thresholds and notification rhythm | Platform owner | Before Production Go-Live | **Decided (2026-10-23)** |
 | DEC-029 | Process & Governance | Development governance from the start of an application | Platform owner | Before Production Go-Live | **Decided (2026-10-24)** |
 | DEC-030 | Security & Operations | An administrator's suspension of any application | Platform owner | Before Production Go-Live | **Decided (2026-10-26)** |
+| DEC-031 | Security & Operations | HTTPS on the platform's address | Platform owner | Before Production Go-Live | **Decided (2026-10-30)** |
 | DEC-032 | Process & Governance | RESTful APIs, and state in the address | Platform owner | Before Production Go-Live | **Decided (2026-10-30)** |
 
 ---
@@ -399,6 +400,17 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Resolution | A platform administrator (`PLATFORM_ADMIN_EMAILS`) can suspend any running application, with a reason, for a security or technical problem. The owners are told the reason. **Only an administrator can resume it** (the owner's decision: the problem may be a security or technical one the owners can't judge). Until then the owners can't resume, archive or delete it, and its dev copy can't be deployed. The database and its data are kept, as with any suspension. |
 | Target Phase | Before Production Go-Live |
 
+#### DEC-031 — HTTPS on the Platform's Address
+
+| Field | Detail |
+|---|---|
+| Topic | Serving the platform's single address over HTTPS |
+| Question | Someone connected the platform to Google Chat, which needs HTTPS. `DEC-007` ruled out per-application DNS and TLS. Should the platform's own address serve HTTPS, and with what certificate? |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-10-30)** |
+| Resolution | **Chosen by the owner:** HTTPS with a certificate the company makes itself (self-signed). **Implementation choices, not separately decided:** a company CA signs the gateway's certificate, so machines trust the CA once and later certificates need nothing new. HTTP stays alongside HTTPS, because Claude Code machines and the MCP server use it: the MCP server trusts only public certificate authorities. A self-signed certificate is trusted only where it has been imported, so a service outside the company (Google's servers among them) can't verify it. |
+| Target Phase | Before Production Go-Live |
+
 #### DEC-032 — RESTful APIs, and State in the Address
 
 | Field | Detail |
@@ -408,7 +420,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Decision Owner | Platform owner |
 | Status | **Decided (2026-10-30)** |
 | Resolution | **Chosen by the owner:** every application's API is RESTful, and anything a page connects to or searches for goes through parameters in the URL, so going Back or opening the address directly shows the same thing without setting it again. No `/#/` addresses. **Implementation choices, not separately decided:** the build refuses routing on the `#`, both the routers' hash modes (`HashRouter`, `createHashRouter`, `createWebHashHistory`, `createHashHistory`) and the same done by hand (a `hashchange` listener, assigning `location.hash`, a `#/` address in code), like a forbidden library, and `check_project` reports them; an approved exception (kind `other`, subject `hash-routing`) lets them through. Whether an API is RESTful can't be checked reliably from its source, so that part is a published rule (`GET /standards`, the templates' `STANDARD.md`, the skill) that the approver checks in REVIEW.md. The templates show both: path routes with the app's base, `?q=` search, `GET /items/{id}`. |
-| Target Phase | Before Production Go-Live |
+
 ---
 
 ## 9. Operational

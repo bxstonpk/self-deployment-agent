@@ -1,0 +1,35 @@
+# HTTPS on the platform's address, with the self-signed company certificate
+# (deploy/gateway/make-cert.sh). 40-platform-https.sh copies this into
+# conf.d only when /etc/nginx/tls holds server.crt and server.key, filling
+# in __INSTALL_URL__. HTTP on port 80 keeps working alongside it.
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    include /etc/nginx/platform-locations.conf;
+
+    location ^~ /downloads/ {
+        root /usr/share/nginx;
+        types {
+            text/plain      ps1 sh txt;
+            application/zip zip;
+            application/json json;
+        }
+        default_type application/octet-stream;
+        # The installers set the machine's MCP server to the platform's HTTP
+        # address even when downloaded over HTTPS: the MCP server trusts
+        # only public certificate authorities, so it can't use a
+        # self-signed one.
+        sub_filter_types text/plain;
+        sub_filter '__PLATFORM_URL__' '__INSTALL_URL__';
+        sub_filter_once off;
+        add_header Cache-Control "no-store";
+    }
+}

@@ -157,6 +157,15 @@ services:
     restart: unless-stopped
     ports:
       - "${GATEWAY_HOST_PORT:-8080}:80"
+      # HTTPS, once deploy/gateway/make-cert.sh has made a certificate.
+      - "${GATEWAY_HTTPS_PORT:-8443}:443"
+    environment:
+      # The address installers point the MCP server at, even when they are
+      # downloaded over HTTPS (40-platform-https.sh).
+      PLATFORM_PUBLIC_BASE_URL: ${PLATFORM_PUBLIC_BASE_URL:-}
+    volumes:
+      # The certificate, its key and the CA certificate; never the CA's key.
+      - ${GATEWAY_TLS_DIR:-./tls}:/etc/nginx/tls:ro
     depends_on:
       - platform-api
 

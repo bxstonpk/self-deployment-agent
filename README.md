@@ -37,6 +37,7 @@ the system most:
 | `DEC-007` | No per-application DNS: applications live at `/<app>/` on the platform's address (`/<app>/api/` for the API) |
 | `DEC-029` | The company standard applies from the start of an application, not only at deployment: a profile, allowed libraries, exceptions decided by an administrator, tests run by the platform, and a dev copy per application that deploys without approval |
 | `DEC-030` | A platform administrator can suspend any application, with a reason, and only an administrator can resume it |
+| `DEC-031` | The platform's address also serves HTTPS, with a self-signed company CA; HTTP stays for Claude Code machines |
 | `DEC-032` | Applications' APIs are RESTful, pages are paths (the build refuses `/#/` routing), and searches and filters live in the URL's query |
 
 ## The application standard
@@ -82,7 +83,7 @@ stdio, and a real Claude Code session. Each claim is backed by a script
 | Skill | How Claude must use the MCP server: update and sign in first, start from the company standard, show every change on dev, test before production, never handle secrets or infrastructure | `company-deployment-skill` |
 | Administrators' dashboard | A task manager for the platform, for `PLATFORM_ADMIN_EMAILS` only: the host's CPU, memory, load and disk with 15-minute charts, traffic across every application, and every application with its owner, instances, CPU, memory, requests, errors and latency, refreshed every 5s | platform-api: How the administrators' dashboard works |
 | Admin Portal | Every owner action above for a person. Also: machine approval, access keys, backups and restore, alerts, departments. For administrators: the Dashboard (with suspend and resume) and the Standards page (dependency rules and exceptions). | `apps/admin-portal` |
-| LAN gateway and installers | One port serves the Portal, API, applications and downloads. A one-line installer per machine (Windows, macOS/Linux) sets up the MCP server, the skill and sign-in. | `deploy/gateway`, `docs/LAN_Deployment_Standard.md` |
+| LAN gateway and installers | One address serves the Portal, API, applications and downloads, over HTTP and (with `make-cert.sh`'s self-signed company certificate) HTTPS. A one-line installer per machine (Windows, macOS/Linux) sets up the MCP server, the skill and sign-in. | `deploy/gateway`, `docs/LAN_Deployment_Standard.md` |
 | TPM-sealed key | The encryption key is sealed with the host's TPM, unsealed into RAM at boot, with an offline escrow copy | `deploy/host` |
 
 ## Getting started
@@ -179,7 +180,8 @@ Unit tests: `go test ./...` (platform-api), `pytest` (mcp-server), and
 **Decided against for this deployment** (not pending work):
 - corporate SSO and MFA;
 - roles beyond ownership plus the approver;
-- per-application DNS/TLS (`DEC-007`);
+- per-application DNS/TLS (`DEC-007`), and a publicly trusted certificate:
+  HTTPS uses a self-signed company CA (`DEC-031`);
 - a container registry (`DEC-005`);
 - Kubernetes (`DEC-004`);
 - resource quotas (`DEC-014`).
