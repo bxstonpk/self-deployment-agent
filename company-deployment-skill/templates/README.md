@@ -88,8 +88,13 @@ thing**:
   - The template uses React Router's `BrowserRouter`, with
     `basename={ROUTER_BASENAME}` from `src/base.js`.
   - The platform refuses hash routing at build time, and `check_project`
-    reports it too. The refused APIs are `HashRouter`, `createHashRouter`,
-    Vue's `createWebHashHistory` and `createHashHistory`.
+    reports it too. Refused: the routers' hash modes (`HashRouter`,
+    `createHashRouter`, Vue's `createWebHashHistory`, `createHashHistory`)
+    and the same done by hand (a `hashchange` listener, assigning
+    `location.hash`, a `'#/…'` address in code or a link).
+  - An old `/<app>/#/page` link (one already posted in Google Chat, say)
+    still works: `index.html` turns it into `/<app>/page` before the app
+    starts. Links the app writes from now on are paths.
 - **The page's state is in the query.** Search, filters, sort, page and
   the open tab go in the query (`?q=pen&status=open&page=2`).
   - Read them with `useSearchParams` when the page opens, as `Items` in

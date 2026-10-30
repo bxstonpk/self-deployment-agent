@@ -19,6 +19,12 @@
         var base = document.createElement('base')
         base.href = root
         document.head.prepend(base)
+        // An old /#/ address (a link from before path routes, such as one
+        // posted in Google Chat) opens as the same page's path.
+        var h = window.location.hash
+        if (h.charAt(1) === '/') {
+          window.history.replaceState(null, '', root + h.slice(2))
+        }
       })()
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

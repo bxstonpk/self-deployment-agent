@@ -2,6 +2,9 @@ package service_test
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -50,6 +53,37 @@ func TestScanHashRouting_FindsTheHashModesInTheApplicationsOwnSource(t *testing.
 		if f.File == "frontend/src/main.jsx" && f.Line == 2 {
 			t.Error("a commented-out line counted")
 		}
+	}
+}
+
+// Routing on the # by hand, as the applications on the company host did.
+func TestScanHashRouting_FindsHashRoutingDoneByHand(t *testing.T) {
+	archive := tarGz(t, map[string]string{
+		"frontend/src/App.jsx": "  const id = window.location.hash.replace(/^#\\/?/, '')\n" + // reading: allowed
+			"    window.location.hash = `#/f-${req.form}`\n" +
+			"    window.addEventListener('hashchange', onHash)\n" +
+			"    if (location.hash === '') return\n", // comparing: allowed
+		"frontend/src/Sheets.jsx": `<a href="#/plan">see what changed</a>` + "\n",
+		"frontend/src/lib/route.js": "export const routeOfHash = (h) => h\n" +
+			"const home = '#/planadj'\n",
+	})
+	found, err := service.ScanHashRouting(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range found {
+		got = append(got, fmt.Sprintf("%s:%d %s", f.File, f.Line, f.API))
+	}
+	want := []string{
+		"frontend/src/App.jsx:2 assigning location.hash",
+		"frontend/src/App.jsx:3 a hashchange listener",
+		"frontend/src/Sheets.jsx:1 a #/ address",
+		"frontend/src/lib/route.js:2 a #/ address",
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("found\n %v\nwant\n %v", got, want)
 	}
 }
 

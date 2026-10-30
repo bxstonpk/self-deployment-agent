@@ -374,13 +374,19 @@ const {{ chromium }} = require({json.dumps(module)});
   await page.getByRole('link', {{ name: {json.dumps(item)} }}).waitFor({{ timeout: 15000 }});
   const back = page.url();
   if (!back.endsWith('?q=' + q)) throw new Error('Back should return to ?q=, got ' + back);
-  console.log(JSON.stringify({{ added, itemUrl, back, status: await page.getByTestId('status').textContent() }}));
+  // An old /#/ link (from before path routes) opens the same page at its path.
+  const itemPath = new URL(itemUrl).pathname.split('/items/')[1];
+  await page.goto({json.dumps(root)} + '#/items/' + itemPath);
+  await page.getByTestId('item-title').filter({{ hasText: {json.dumps(item)} }}).waitFor({{ timeout: 15000 }});
+  const fromHash = page.url();
+  if (fromHash.includes('#') || !fromHash.endsWith('/items/' + itemPath)) throw new Error('old #/ link became ' + fromHash);
+  console.log(JSON.stringify({{ added, itemUrl, back, fromHash }}));
   await browser.close();
 }})().catch((e) => {{ console.error(e.message); process.exit(1); }});
 """
     r = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=120)
     _check(r.returncode == 0,
-           f"a real browser: the React app renders, adds an item, and ?q=, an item's path, a reload and Back all keep their state ({(r.stdout or r.stderr).strip()[:400]})")
+           f"a real browser: the React app renders, adds an item, and ?q=, an item's path, a reload, Back and an old #/ link all keep their state ({(r.stdout or r.stderr).strip()[:400]})")
 
 
 def _exists(kind: str, name: str) -> bool:

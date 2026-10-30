@@ -19,12 +19,30 @@ import (
 // frontend's pages are paths (/{app}/items/7) and what a page shows —
 // search, filters, paging — is in the address's query (?q=pen), so Back, a
 // refresh or a shared link opens the same thing. /#/ addresses do neither
-// well, so the routers' hash modes are refused at build time, like a
-// forbidden library. An approved exception of kind "other" for subject
-// domain.HashRoutingSubject lets them through.
+// well, so routing on the # is refused at build time, like a forbidden
+// library. An approved exception of kind "other" for subject
+// domain.HashRoutingSubject lets it through.
 
-// hashRoutingAPI is every router API that routes on the address's #.
-var hashRoutingAPI = regexp.MustCompile(`\b(HashRouter|createHashRouter|createWebHashHistory|createHashHistory)\b`)
+// hashRoutingAPI is routing on the address's #: the routers' hash modes, and
+// the same done by hand — a hashchange listener, assigning location.hash, or
+// a "#/..." address in code or a link. Found for real on the company host
+// (2026-10-30): the applications there routed by hand, which matching the
+// router APIs alone missed. Reading location.hash isn't routing (the
+// template reads it to turn an old #/ link into a path).
+var hashRoutingAPI = regexp.MustCompile("\\b(HashRouter|createHashRouter|createWebHashHistory|createHashHistory|hashchange)\\b|location\\.hash\\s*=[^=]|[\"'`]#/")
+
+// routingAPIName is how a match is named in the build's message.
+func routingAPIName(m string) string {
+	switch {
+	case strings.HasSuffix(m, "#/"):
+		return "a #/ address"
+	case strings.HasPrefix(m, "location.hash"):
+		return "assigning location.hash"
+	case m == "hashchange":
+		return "a hashchange listener"
+	}
+	return m
+}
 
 // routedSourceExt are the frontend sources a router is set up in.
 var routedSourceExt = map[string]bool{
@@ -87,7 +105,7 @@ func ScanHashRouting(archive []byte) ([]RoutingFinding, error) {
 				continue
 			}
 			if m := hashRoutingAPI.FindString(line); m != "" {
-				out = append(out, RoutingFinding{Service: parts[0], File: name, Line: n, API: m})
+				out = append(out, RoutingFinding{Service: parts[0], File: name, Line: n, API: routingAPIName(m)})
 			}
 		}
 		if err := sc.Err(); err != nil {
