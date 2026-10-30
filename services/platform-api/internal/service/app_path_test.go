@@ -76,9 +76,14 @@ func TestServiceForPath_UnknownApplication(t *testing.T) {
 // the applications. An application named after one of those would be
 // registered and deployed, then never reached — so each must be reserved.
 func TestReservedNames_CoverEveryGatewayPath(t *testing.T) {
-	conf, err := os.ReadFile("../../../../deploy/gateway/nginx.conf")
-	if err != nil {
-		t.Fatalf("read the gateway's nginx.conf: %v", err)
+	// The HTTP and HTTPS servers share locations.conf.
+	var conf []byte
+	for _, f := range []string{"nginx.conf", "locations.conf", "https.conf.template"} {
+		b, err := os.ReadFile("../../../../deploy/gateway/" + f)
+		if err != nil {
+			t.Fatalf("read the gateway's %s: %v", f, err)
+		}
+		conf = append(conf, b...)
 	}
 	var names []string
 	for _, m := range regexp.MustCompile(`location \^~ /([a-z-]+)/`).FindAllStringSubmatch(string(conf), -1) {

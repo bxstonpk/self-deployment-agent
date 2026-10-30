@@ -54,5 +54,9 @@ PY
 
 FROM nginx:1.30-alpine
 COPY deploy/gateway/nginx.conf /etc/nginx/conf.d/default.conf
+COPY deploy/gateway/locations.conf /etc/nginx/platform-locations.conf
+COPY deploy/gateway/https.conf.template /etc/nginx/https.conf.template
+COPY deploy/gateway/40-platform-https.sh /docker-entrypoint.d/40-platform-https.sh
+RUN chmod 755 /docker-entrypoint.d/40-platform-https.sh
 COPY --from=portal /portal/dist /usr/share/nginx/html
 COPY --from=client /downloads /usr/share/nginx/downloads

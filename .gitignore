@@ -27,6 +27,9 @@ apps/*/.env.local
 .env
 .env.*
 !.env.example
+# The gateway's HTTPS certificate and the company CA's key (deploy/gateway/make-cert.sh)
+/tls/
+/tls-ca/
 
 # Local DB data
 db/data/
