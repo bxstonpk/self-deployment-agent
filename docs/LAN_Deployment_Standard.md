@@ -105,6 +105,43 @@ loopback. The Platform API's own port only needs to be reachable from the
 host itself. Bind it to loopback with `PLATFORM_API_HOST_PORT=127.0.0.1:8090`.
 A host firewall such as ufw won't stop it: Docker-published ports bypass it.
 
+**HTTPS** (`DEC-031`). The gateway also serves HTTPS, on
+`GATEWAY_HTTPS_PORT` (443 on the company host), with a self-signed
+certificate from a company CA. HTTP keeps working alongside it.
+1. On the host, from the repository root, make the certificate for every
+   address people use:
+
+   ```bash
+   deploy/gateway/make-cert.sh 192.168.10.25        # add host names too, if any
+   docker compose up -d gateway                     # its log says "platform https: on"
+   ```
+
+   It writes `tls/ca.crt`, `tls/server.crt` and `tls/server.key`, which
+   are mounted into the gateway, and the CA's private key to
+   `tls-ca/ca.key`. That key is never mounted or served. Keep it, with a
+   copy offline, to issue the next certificate.
+2. Each machine or browser that should trust HTTPS imports the CA once.
+   It is at `/downloads/company-platform-ca.crt`; check its SHA-256
+   fingerprint against the one the script printed.
+   - Windows, current user, no admin rights:
+     `certutil -user -addstore Root company-platform-ca.crt`.
+   - For the whole company: a Group Policy that adds it to Trusted Root
+     Certification Authorities.
+   - Chrome and Edge use the Windows store. Firefox needs
+     `security.enterprise_roots.enabled`.
+3. The server certificate lasts 825 days. Run the script again before
+   then, or for a new address. It reuses the CA, so machines need nothing
+   new. `--new-ca` replaces the CA, and every machine must then trust the
+   new one.
+
+Without a certificate in `tls/`, the gateway serves HTTP only, as before.
+
+The Claude Code machines stay on HTTP:
+- The MCP server trusts only public certificate authorities, so the
+  installers point it at the HTTP address even when downloaded over HTTPS.
+- Windows `curl` (Schannel) also insists on a revocation check, which a
+  private CA can't answer. Use `--ssl-no-revoke` with it.
+
 **Reboots.** The platform's services, and every application's database,
 start again by themselves when the host reboots. Applications' own
 containers are replaced by the health sweeper within about a minute.
@@ -280,6 +317,9 @@ frontend was served. See section 8.
   tokens. `verify_auth.py` checks a full database dump.
 - **What a deployment can reach:** its own MySQL, on a private network no
   other application can reach.
+- **HTTPS:** a self-signed company CA (`DEC-031`). It is trusted only where
+  someone has imported it. Services outside the LAN can't verify it, and
+  can't reach the platform anyway.
 - **Authorization:** owners act on their own applications (`DEC-002`).
   Platform administrators (`PLATFORM_ADMIN_EMAILS`) see the Dashboard,
   manage the dependency rules and decide exceptions. They can also suspend
