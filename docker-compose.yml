@@ -163,6 +163,9 @@ services:
       # The address installers point the MCP server at, even when they are
       # downloaded over HTTPS (40-platform-https.sh).
       PLATFORM_PUBLIC_BASE_URL: ${PLATFORM_PUBLIC_BASE_URL:-}
+      # serve (default): HTTP serves everything. redirect: HTTP is closed,
+      # every address moves to HTTPS but the installers and the CA.
+      GATEWAY_HTTP_MODE: ${GATEWAY_HTTP_MODE:-serve}
     volumes:
       # The certificate, its key and the CA certificate; never the CA's key.
       - ${GATEWAY_TLS_DIR:-./tls}:/etc/nginx/tls:ro

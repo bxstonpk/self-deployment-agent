@@ -136,3 +136,14 @@ async def test_a_revoked_key_reads_as_signed_out(setup):
     platform.revoked = True  # e.g. the employee revoked it in the Portal
     me = await auth.whoami(client)
     assert me["data"]["signed_in"] is False
+
+
+def test_a_key_follows_its_platform_from_http_to_https_never_back():
+    same = credentials.same_platform
+    assert same("http://192.168.10.25/api", "http://192.168.10.25/api/")
+    assert same("http://192.168.10.25/api", "https://192.168.10.25/api")
+    assert same("http://localhost:8098/api", "https://localhost:8443/api")  # ports differ off the company host
+    assert not same("https://192.168.10.25/api", "http://192.168.10.25/api")
+    assert not same("http://192.168.10.25/api", "https://other-host/api")
+    assert not same("http://192.168.10.25/api", "https://192.168.10.25/other")
+    assert not same("http://192.168.10.25.evil.example/api", "https://192.168.10.25/api")

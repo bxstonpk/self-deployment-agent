@@ -16,6 +16,7 @@ can't fetch it: the platform calls that follow say what is wrong.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -72,7 +73,10 @@ def downloads_url(api_base_url: str) -> str | None:
 
 
 def update_command(api_base_url: str) -> str:
-    downloads = downloads_url(api_base_url) or "<platform>/downloads"
+    # Where the installer came from (it records it): over HTTP even when the
+    # platform's API is HTTPS, since PowerShell and curl may not trust the
+    # company CA yet.
+    downloads = os.environ.get("COMPANY_DOWNLOADS_URL", "").rstrip("/") or downloads_url(api_base_url) or "<platform>/downloads"
     if sys.platform == "win32":
         return (
             'powershell -NoProfile -ExecutionPolicy Bypass -Command '

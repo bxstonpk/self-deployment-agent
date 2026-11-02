@@ -20,6 +20,7 @@ import stat
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -55,9 +56,23 @@ def for_platform(platform_url: str, path: Path | None = None) -> StoredCredentia
     """The stored key, if it was issued by this platform — a key for a
     different platform address is as good as none."""
     cred = load(path)
-    if cred is None or cred.platform_url.rstrip("/") != platform_url.rstrip("/"):
+    if cred is None or not same_platform(cred.platform_url, platform_url):
         return None
     return cred
+
+
+def same_platform(issued_by: str, asked: str) -> bool:
+    """Whether a key issued by issued_by may be sent to asked: the same
+    address, or the same host and path moved from HTTP to HTTPS (DEC-031,
+    whatever the ports: 80 -> 443 on the company host), so a machine stays
+    signed in when the platform closes HTTP. Never the other way: a key
+    isn't sent over plain HTTP to an address that issued it over HTTPS."""
+    issued_by, asked = issued_by.rstrip("/"), asked.rstrip("/")
+    if issued_by == asked:
+        return True
+    old, new = urlsplit(issued_by), urlsplit(asked)
+    return (old.scheme == "http" and new.scheme == "https" and bool(old.hostname)
+            and old.hostname == new.hostname and old.path == new.path)
 
 
 def save(cred: StoredCredential, path: Path | None = None) -> Path:

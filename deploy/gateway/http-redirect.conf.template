@@ -1,0 +1,35 @@
+# HTTP closed (GATEWAY_HTTP_MODE=redirect, DEC-031): every address moves to
+# HTTPS, except what a machine needs before it trusts the company CA — the
+# CA itself and the installers, which point the machine at HTTPS.
+# 40-platform-https.sh writes this as conf.d/default.conf, filling in
+# __HTTPS_URL__. A temporary redirect (302), so browsers don't keep it if
+# HTTP is opened again.
+server {
+    listen 80;
+    server_name _;
+
+    location = /downloads/company-platform-ca.crt {
+        alias /etc/nginx/tls/ca.crt;
+        default_type application/x-x509-ca-cert;
+        add_header Cache-Control "no-store";
+    }
+
+    location ^~ /downloads/ {
+        root /usr/share/nginx;
+        types {
+            text/plain      ps1 sh txt;
+            application/zip zip;
+            application/json json;
+        }
+        default_type application/octet-stream;
+        sub_filter_types text/plain;
+        sub_filter '__PLATFORM_URL__' '__HTTPS_URL__';
+        sub_filter '__DOWNLOADS_URL__' '$scheme://$http_host/downloads';
+        sub_filter_once off;
+        add_header Cache-Control "no-store";
+    }
+
+    location / {
+        return 302 __HTTPS_URL__$request_uri;
+    }
+}

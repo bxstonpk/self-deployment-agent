@@ -54,6 +54,8 @@ PY
 
 FROM nginx:1.30-alpine
 COPY deploy/gateway/nginx.conf /etc/nginx/conf.d/default.conf
+COPY deploy/gateway/nginx.conf /etc/nginx/platform-http.conf
+COPY deploy/gateway/http-redirect.conf.template /etc/nginx/http-redirect.conf.template
 COPY deploy/gateway/locations.conf /etc/nginx/platform-locations.conf
 COPY deploy/gateway/https.conf.template /etc/nginx/https.conf.template
 COPY deploy/gateway/40-platform-https.sh /docker-entrypoint.d/40-platform-https.sh

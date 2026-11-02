@@ -100,6 +100,15 @@ async def complete_login(client: PlatformClient, wait_seconds: float = 60) -> di
 
 
 async def whoami(client: PlatformClient, releases: ReleaseCheck | None = None) -> dict[str, Any]:
+    status = await releases.status() if releases is not None else None
+    if status is not None and status.update_required:
+        # The update comes first, and before asking the platform anything:
+        # an outdated machine may point at an address that has moved (HTTP
+        # closed, DEC-031), and the update is what fixes that.
+        return success({
+            "signed_in": None, "platform": client.base_url, **status.as_dict(),
+            "next_step": releases.instructions(status) + " After that, call `whoami` again.",
+        })
     current = await _current(client)
     if current is None:
         data = {
@@ -109,12 +118,8 @@ async def whoami(client: PlatformClient, releases: ReleaseCheck | None = None) -
         }
     else:
         data = dict(current)
-    if releases is not None:
-        status = await releases.status()
+    if status is not None:
         data.update(status.as_dict())
-        if status.update_required:
-            then = " After that, call `login`." if current is None else ""
-            data["next_step"] = releases.instructions(status) + then
     return success(data)
 
 

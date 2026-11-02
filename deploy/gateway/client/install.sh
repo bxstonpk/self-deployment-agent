@@ -18,7 +18,14 @@ set -eu
 PLATFORM_URL="${COMPANY_PLATFORM_URL:-__PLATFORM_URL__}"
 PLATFORM_URL="${PLATFORM_URL%/}"
 API="$PLATFORM_URL/api"
-DOWNLOADS="$PLATFORM_URL/downloads"
+# Where this script came from. The files are fetched from there too, over
+# HTTP when the platform's HTTPS uses the company CA this machine doesn't
+# trust yet.
+DOWNLOADS="${COMPANY_DOWNLOADS_URL:-__DOWNLOADS_URL__}"
+DOWNLOADS="${DOWNLOADS%/}"
+# Still the placeholder (a copy not served by the platform)? The pattern
+# is split, or the gateway's substitution would replace this check too.
+case "$DOWNLOADS" in *__DOWNLOADS*_URL__*) DOWNLOADS="$PLATFORM_URL/downloads" ;; esac
 WHEEL="__WHEEL__"
 ROOT="$HOME/.company-deploy"
 VENV="$ROOT/venv"
@@ -35,8 +42,8 @@ step() { printf '==> %s\n' "$1"; }
 fail() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
 step "Checking the platform at $PLATFORM_URL"
-curl -fsS --max-time 10 "$API/healthz" >/dev/null \
-  || fail "can't reach the platform at $API — check the address and that you're on the company network"
+curl -fsS --max-time 10 "$DOWNLOADS/version.json" >/dev/null \
+  || fail "can't reach the platform at $DOWNLOADS — check the address and that you're on the company network"
 
 step "Finding Python 3.11 or newer"
 PYTHON=""
@@ -69,13 +76,27 @@ mkdir -p "$SKILL_DIR"
 "$VENV/bin/python" -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$ROOT/skill.zip" "$SKILL_DIR"
 rm -f "$ROOT/skill.zip"
 
+step "Trusting the platform's HTTPS certificate"
+# The company CA that signed it (DEC-031). The MCP server and company-deploy
+# trust it alongside the public authorities; nothing else on this machine
+# changes. A platform without HTTPS has none, which is fine.
+CA_FILE="$ROOT/company-platform-ca.crt"
+if curl -fsS "$DOWNLOADS/company-platform-ca.crt" -o "$CA_FILE.tmp" 2>/dev/null; then
+  mv -f "$CA_FILE.tmp" "$CA_FILE"
+  "$VENV/bin/python" -c 'import hashlib, ssl, sys; d = ssl.PEM_cert_to_DER_cert(open(sys.argv[1]).read()); h = hashlib.sha256(d).hexdigest().upper(); print("    company CA, SHA-256 " + ":".join(h[i:i+2] for i in range(0, len(h), 2)))' "$CA_FILE"
+else
+  rm -f "$CA_FILE.tmp"
+  case "$PLATFORM_URL" in https://*) fail "couldn't fetch the company CA from $DOWNLOADS" ;; esac
+  echo "    none published; the platform is HTTP only"
+fi
+
 step "Registering the MCP server with Claude Code"
 if command -v claude >/dev/null 2>&1; then
   claude mcp remove company-deployment -s user >/dev/null 2>&1 || true
-  claude mcp add company-deployment -s user -e "PLATFORM_API_BASE_URL=$API" -- "$VENV/bin/python" -m mcp_server.server
+  claude mcp add company-deployment -s user -e "PLATFORM_API_BASE_URL=$API" -e "COMPANY_DOWNLOADS_URL=$DOWNLOADS" -- "$VENV/bin/python" -m mcp_server.server
 else
   echo "warning: Claude Code (the 'claude' command) isn't installed or not on PATH. Once it is, run:" >&2
-  echo "  claude mcp add company-deployment -s user -e PLATFORM_API_BASE_URL=$API -- \"$VENV/bin/python\" -m mcp_server.server" >&2
+  echo "  claude mcp add company-deployment -s user -e PLATFORM_API_BASE_URL=$API -e COMPANY_DOWNLOADS_URL=$DOWNLOADS -- \"$VENV/bin/python\" -m mcp_server.server" >&2
 fi
 
 if [ "$SKIP_LOGIN" = 1 ]; then

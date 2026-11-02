@@ -15,12 +15,20 @@
 #      the machine stores its own API key. The key is never shown.
 param(
     [string]$PlatformUrl = "__PLATFORM_URL__",
+    # Where this script came from. The files are fetched from there too,
+    # over HTTP when the platform's HTTPS uses the company CA this machine
+    # doesn't trust yet.
+    [string]$DownloadsUrl = "__DOWNLOADS_URL__",
     [switch]$SkipLogin
 )
 $ErrorActionPreference = "Stop"
 $PlatformUrl = $PlatformUrl.TrimEnd("/")
 $Api = "$PlatformUrl/api"
-$Downloads = "$PlatformUrl/downloads"
+$Downloads = $DownloadsUrl.TrimEnd("/")
+# Still the placeholder (a copy not served by the platform)? The marker is
+# split here, or the gateway's substitution would replace this check too.
+if ($Downloads -like ("*__DOWNLOADS" + "_URL__*")) { $Downloads = "$PlatformUrl/downloads" }
+$CaFile = Join-Path (Join-Path $env:USERPROFILE ".company-deploy") "company-platform-ca.crt"
 $Wheel = "__WHEEL__"
 $Root = Join-Path $env:USERPROFILE ".company-deploy"
 $Venv = Join-Path $Root "venv"
@@ -46,9 +54,9 @@ function Invoke-Native([string]$Exe, [string[]]$Arguments) {
 
 Step "Checking the platform at $PlatformUrl"
 try {
-    $null = Invoke-RestMethod "$Api/healthz" -TimeoutSec 10
+    $null = Invoke-RestMethod "$Downloads/version.json" -TimeoutSec 10
 } catch {
-    throw "Can't reach the platform at $Api ($($_.Exception.Message)). Check the address and that you're on the company network."
+    throw "Can't reach the platform at $Downloads ($($_.Exception.Message)). Check the address and that you're on the company network."
 }
 
 Step "Finding Python 3.11 or newer"
@@ -90,16 +98,32 @@ New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
 Expand-Archive -Path $Zip -DestinationPath $SkillDir -Force
 Remove-Item $Zip -Force
 
+Step "Trusting the platform's HTTPS certificate"
+# The company CA that signed it (DEC-031). The MCP server and company-deploy
+# trust it alongside the public authorities; nothing else on this machine
+# changes. A platform without HTTPS has none, which is fine.
+try {
+    Invoke-WebRequest "$Downloads/company-platform-ca.crt" -OutFile "$CaFile.tmp" -UseBasicParsing
+    Move-Item -Force "$CaFile.tmp" $CaFile
+    $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $CaFile
+    $fp = [BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($ca.RawData)).Replace("-", ":")
+    Write-Host "    company CA, SHA-256 $fp"
+} catch {
+    Remove-Item -Force "$CaFile.tmp" -ErrorAction SilentlyContinue
+    if ($PlatformUrl -like "https://*") { throw "Couldn't fetch the company CA from $Downloads ($($_.Exception.Message))." }
+    Write-Host "    none published; the platform is HTTP only"
+}
+
 Step "Registering the MCP server with Claude Code"
 if (Get-Command claude -ErrorAction SilentlyContinue) {
     # Replaces an earlier registration; failing because there was none is fine.
     $null = Invoke-Native "claude" @("mcp", "remove", "company-deployment", "-s", "user")
-    if ((Invoke-Native "claude" @("mcp", "add", "company-deployment", "-s", "user", "-e", "PLATFORM_API_BASE_URL=$Api", "--", $VenvPython, "-m", "mcp_server.server")) -ne 0) {
+    if ((Invoke-Native "claude" @("mcp", "add", "company-deployment", "-s", "user", "-e", "PLATFORM_API_BASE_URL=$Api", "-e", "COMPANY_DOWNLOADS_URL=$Downloads", "--", $VenvPython, "-m", "mcp_server.server")) -ne 0) {
         throw "claude mcp add failed."
     }
 } else {
     Write-Warning "Claude Code (the 'claude' command) isn't installed or not on PATH. Once it is, run:"
-    Write-Host "  claude mcp add company-deployment -s user -e PLATFORM_API_BASE_URL=$Api -- `"$VenvPython`" -m mcp_server.server"
+    Write-Host "  claude mcp add company-deployment -s user -e PLATFORM_API_BASE_URL=$Api -e COMPANY_DOWNLOADS_URL=$Downloads -- `"$VenvPython`" -m mcp_server.server"
 }
 
 $CompanyDeploy = Join-Path $Venv "Scripts\company-deploy.exe"
