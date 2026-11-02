@@ -90,6 +90,10 @@ type ScaleService struct {
 	coldStart singleflight.Group
 }
 
+// coldStartTimeout bounds one cold start: the container, its health check
+// (15 s) and recording it. Generous, since an image can be slow to start.
+const coldStartTimeout = 2 * time.Minute
+
 func NewScaleService(
 	apps ApplicationByNameRepository, deployments RunningDeploymentLookup,
 	states ServiceRuntimeStateRepository, events ScaleEventRepository,
@@ -219,6 +223,15 @@ func (s *ScaleService) EnsureRunningByName(ctx context.Context, appName, service
 func (s *ScaleService) EnsureRunning(ctx context.Context, deploymentID, serviceName string) (int, error) {
 	key := deploymentID + ":" + serviceName
 	v, err, _ := s.coldStart.Do(key, func() (any, error) {
+		// The start is the service's, not one request's: it runs to the end
+		// even when the request that triggered it goes away, and every
+		// request coalesced onto it shares the outcome. Cut off on the first
+		// request's context, a browser that left mid-start (0.03 s in, as
+		// reproduced) left a container created but never started, and every
+		// later cold start collided with its name: sti-production-report's
+		// API was down for three days (2026-10-30).
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldStartTimeout)
+		defer cancel()
 		state, err := s.states.Get(ctx, deploymentID, serviceName)
 		if err != nil {
 			return nil, err

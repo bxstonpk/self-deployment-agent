@@ -91,8 +91,17 @@ func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.Containe
 		},
 	}
 
+	// A container left under this name that isn't running is a start that
+	// never finished, never one in use: the platform removes every
+	// container it stops. Left there, every later start collides with its
+	// name ("Conflict ... already in use") — sti-production-report's API,
+	// 2026-10-30, down until it was removed by hand.
+	r.removeLeftover(ctx, spec.Name)
 	created, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, spec.Name)
 	if err != nil {
+		// The daemon may have made it even so (the call failed on the way
+		// back): don't leave that one either.
+		r.removeLeftover(context.Background(), spec.Name)
 		return domain.RunningContainer{}, fmt.Errorf("create container: %w", err)
 	}
 	// From here on, a failure must not leave the container behind. The
@@ -140,6 +149,24 @@ func (r *DockerRuntime) StartContainer(ctx context.Context, spec domain.Containe
 		HostPort:    hostPort,
 		URL:         fmt.Sprintf("http://localhost:%d", hostPort),
 	}, nil
+}
+
+// removeLeftover removes an application container named name that exists
+// but isn't running. A running one is left alone (creating over it fails,
+// and says so). Only StartContainer's application containers: a stopped
+// database container is an asleep database, holding its data.
+func (r *DockerRuntime) removeLeftover(ctx context.Context, name string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	c, err := r.cli.ContainerInspect(ctx, name)
+	if err != nil || c.State == nil || c.State.Running {
+		return // none (or can't tell), or in use
+	}
+	if err := r.cli.ContainerRemove(ctx, c.ID, types.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+		log.Printf("runtime: could not remove the leftover container %s (%s): %v", name, c.State.Status, err)
+		return
+	}
+	log.Printf("runtime: removed the leftover container %s (%s, never started or already stopped)", name, c.State.Status)
 }
 
 // discard gets rid of a container StartContainer created but can't hand

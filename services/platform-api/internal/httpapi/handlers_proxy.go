@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -208,6 +209,9 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrApplicationNotFound), errors.Is(err, domain.ErrNoRunningDeployment), errors.Is(err, domain.ErrServiceStateNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "no running application/service at this address")
 	default:
+		// Logged: the reason a start failed was otherwise only in the
+		// response, which nobody keeps.
+		log.Printf("proxy: failed to start the application: %v", err)
 		writeError(w, http.StatusBadGateway, "cold_start_failed", "failed to start the application: "+err.Error())
 	}
 }

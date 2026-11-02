@@ -317,6 +317,35 @@ traffic path, not a platform management endpoint.
    `golang.org/x/sync/singleflight` — verified for real (see Test plan):
    5 simultaneous requests during one cold start produced exactly one
    `cold_start` scale event, not five.
+
+   **A cold start runs to the end even when its request goes away.**
+   - **The outage.** It used to run on the first request's context.
+     `sti-production-report`'s production API was down from 2026-10-30
+     12:56 UTC until someone removed a container by hand on 2026-11-02.
+     A browser had left mid-start, and Docker had created the container
+     but the platform never got its ID. The container was left in
+     `created` state, and every later cold start failed with
+     `Conflict ... container name already in use` (502).
+   - **Reproduced** on the local stack: a request abandoned 0.03 s into a
+     cold start left the same `created` container, and the next request
+     got the same 502.
+   - **The fix.**
+     - The start now runs on its own context (`context.WithoutCancel`,
+       at most 2 minutes), shared by every request coalesced onto it.
+     - Before creating an application container, `StartContainer` removes
+       a leftover under the same name that isn't running. A running one is
+       left alone. Database containers are excluded, because a stopped one
+       is an asleep database holding its data.
+     - If the create call itself fails, whatever Docker did make is
+       removed.
+     - The proxy now logs why a start failed; until now that was only in
+       the 502 response.
+   - **Verified.**
+     - Against the reproduction's own leftover, the first ordinary request
+       removed it (logged) and answered 200.
+     - Requests abandoned 0.03, 0.06, 0.1, 0.2 and 0.5 s into a cold start
+       each left the API running, and the next request answered 200.
+     - `verify_lan_stack.py` (`RUNTIMES=go`) passed.
 4. **Scale events (FR-056)** — every transition (`initial_activation`,
    `cold_start`, `idle_timeout`) is recorded and queryable via
    `GET /applications/{id}/scale-events`.
