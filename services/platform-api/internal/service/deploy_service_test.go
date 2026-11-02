@@ -219,7 +219,9 @@ func (f *fakeScanner) Scan(ctx context.Context, imageRef string) (domain.ScanRep
 }
 
 type fakeRuntime struct {
-	startedSpecs   []domain.ContainerSpec
+	startedSpecs []domain.ContainerSpec
+	// startCtxErrs is each start's context error as the start ran.
+	startCtxErrs   []error
 	started        []string
 	stopped        []string
 	healthCheckErr error
@@ -241,6 +243,7 @@ func (f *fakeRuntime) StartContainer(ctx context.Context, spec domain.ContainerS
 	if f.startFailsAfter > 0 && len(f.started) >= f.startFailsAfter {
 		return domain.RunningContainer{}, errors.New("container exited as it started")
 	}
+	f.startCtxErrs = append(f.startCtxErrs, ctx.Err())
 	f.started = append(f.started, spec.Name)
 	// Recorded so tests can assert Module N actually handed the database
 	// wiring to every start path, not just the deploy one.

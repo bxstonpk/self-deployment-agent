@@ -303,6 +303,29 @@ func TestEnsureRunning_ScaledToZero_ColdStartsAndRecordsEvent(t *testing.T) {
 	}
 }
 
+// A request that goes away mid-start must not cut the start off: on the
+// first request's context it left a container created but never started,
+// and every later start collided with its name (2026-10-30).
+func TestEnsureRunning_ColdStartOutlivesTheRequestThatTriggeredIt(t *testing.T) {
+	svc, states, _, runtime := newScaleService()
+	_ = states.Upsert(context.Background(), domain.ServiceRuntimeState{
+		DeploymentID: "dep-1", ServiceName: "api", ImageRef: "img-api", ContainerPort: 8080, Eligible: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the browser left
+
+	port, err := svc.EnsureRunning(ctx, "dep-1", "api")
+	if err != nil || port == 0 {
+		t.Fatalf("the start should finish anyway: port %d, %v", port, err)
+	}
+	if len(runtime.startCtxErrs) != 1 || runtime.startCtxErrs[0] != nil {
+		t.Fatalf("the container was started on a cancelled context: %v", runtime.startCtxErrs)
+	}
+	if state, _ := states.Get(context.Background(), "dep-1", "api"); state.ScaledToZero() {
+		t.Error("the started container should be recorded")
+	}
+}
+
 func TestEnsureRunning_ColdStartHealthCheckFails_StopsContainerAndReturnsError(t *testing.T) {
 	svc, states, _, runtime := newScaleService()
 	runtime.healthCheckErr = errors.New("connection refused")
