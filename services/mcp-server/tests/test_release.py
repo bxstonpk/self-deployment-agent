@@ -158,16 +158,22 @@ def test_sign_in_and_whoami_are_never_gated():
 async def test_whoami_says_to_update_first(machine):
     machine("old111")
 
-    class SignedOut(FakeClient):
-        def stored_credential(self):
-            return None
+    class NoPlatformCalls(FakeClient):
+        """An outdated machine may point at an address that moved (HTTP
+        closed): whoami must not ask the platform before the update."""
 
-    client = SignedOut("new222")
+        def stored_credential(self):
+            raise AssertionError("whoami asked the platform before the update")
+
+        async def whoami(self):
+            raise AssertionError("whoami asked the platform before the update")
+
+    client = NoPlatformCalls("new222")
     result = await auth.whoami(client, release.ReleaseCheck(client))
     data = result["data"]
-    assert data["update_required"] is True
+    assert data["update_required"] is True and data["signed_in"] is None
     assert data["client_release"] == "old111" and data["latest_release"] == "new222"
-    assert "install" in data["next_step"] and data["next_step"].endswith("call `login`.")
+    assert "install" in data["next_step"] and data["next_step"].endswith("call `whoami` again.")
 
 
 async def test_platform_client_reads_version_json():
@@ -217,3 +223,12 @@ async def test_the_served_tools_go_through_the_check(machine):
     current = build_server(ServedClient("new222"), IdempotencyStore(60))
     stacks = await _served(current, "get_supported_stacks")
     assert stacks["status"] == "success"
+
+
+def test_the_update_command_downloads_from_where_the_installer_came_from(monkeypatch):
+    monkeypatch.setattr(release.sys, "platform", "win32")
+    monkeypatch.setenv("COMPANY_DOWNLOADS_URL", "http://host/downloads/")
+    cmd = release.update_command("https://host/api")
+    assert "irm http://host/downloads/install.ps1" in cmd
+    monkeypatch.delenv("COMPANY_DOWNLOADS_URL")
+    assert "irm https://host/downloads/install.ps1" in release.update_command("https://host/api")

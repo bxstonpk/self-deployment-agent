@@ -144,11 +144,53 @@ certificate from a company CA. HTTP keeps working alongside it.
 
 Without a certificate in `tls/`, the gateway serves HTTP only, as before.
 
-The Claude Code machines stay on HTTP:
-- The MCP server trusts only public certificate authorities, so the
-  installers point it at the HTTP address even when downloaded over HTTPS.
-- Windows `curl` (Schannel) also insists on a revocation check, which a
-  private CA can't answer. Use `--ssl-no-revoke` with it.
+**Claude Code machines over HTTPS.**
+- The installers fetch the company CA into
+  `~/.company-deploy/company-platform-ca.crt`. The MCP server and
+  `company-deploy` trust it as well as the public authorities. Nothing else
+  on the machine changes.
+- An installer fetched over HTTPS points the machine at HTTPS. One fetched
+  over HTTP points it at HTTP, unless HTTP is closed (below).
+- Windows `curl` (Schannel) insists on a revocation check, which a private
+  CA can't answer. Use `--ssl-no-revoke` with it.
+
+**Closing HTTP.** Once HTTPS works:
+1. In the host's `.env`, set:
+
+   ```
+   GATEWAY_HTTP_MODE=redirect
+   PLATFORM_PUBLIC_BASE_URL=https://<address>
+   PLATFORM_PORTAL_URL=https://<address>
+   ```
+
+   Then run `docker compose up -d`. The gateway logs `platform http: closed`.
+2. Every HTTP address then redirects to HTTPS (302, so that it can be
+   undone), except:
+   - the installers, under `/downloads/`;
+   - the company CA.
+
+   A new machine still runs `irm http://<address>/downloads/install.ps1 |
+   iex`. The installer fetches the CA, points the machine at HTTPS, and
+   downloads over HTTP.
+3. **Machines already set up.**
+   - A machine on a release with the version check (installed or updated
+     since 2026-10-26) is refused with `UPDATE_REQUIRED` at its next tool.
+     It updates itself with the command it is given, over HTTP, and moves
+     to HTTPS.
+   - Its key carries over: a key issued for `http://<address>` is used on
+     `https://<address>`, same host and path. Never the other way. So it
+     stays signed in.
+   - Until it updates, its `whoami` fails, because the old code can't read
+     the redirect. Its other tools ask for the update.
+   - A machine installed before 2026-10-26 needs the installer run again by
+     hand.
+4. **Browsers** warn about the certificate until the CA is trusted. See
+   step 2 of HTTPS above (Group Policy for the whole company).
+5. Verify scripts that go through the gateway need its `https://` address;
+   the API's own port (`127.0.0.1:8090`) is unchanged.
+
+`services/mcp-server/scripts/verify_https_only.py` checks all of this
+against a gateway with HTTP closed.
 
 **Reboots.** The platform's services, and every application's database,
 start again by themselves when the host reboots. Applications' own

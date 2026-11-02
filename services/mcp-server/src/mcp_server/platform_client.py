@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from . import credentials
+from . import credentials, tls
 from .config import Config
 from .envelope import ErrorCode, ToolError
 
@@ -97,8 +97,10 @@ class PlatformClient:
     def __init__(self, config: Config, http_client: httpx.AsyncClient | None = None):
         self._base_url = config.platform_api_base_url
         self._credentials_path = config.credentials_path
+        # Trusts the company CA as well as the public ones (tls.py): the
+        # platform's HTTPS certificate is the company's own (DEC-031).
         self._client = http_client or httpx.AsyncClient(
-            base_url=self._base_url, timeout=config.platform_api_timeout_seconds
+            base_url=self._base_url, timeout=config.platform_api_timeout_seconds, verify=tls.ssl_context()
         )
 
     async def aclose(self) -> None:
@@ -127,9 +129,22 @@ class PlatformClient:
         try:
             resp = await self._client.request(method, path, headers=headers, **kwargs)
         except httpx.RequestError as exc:
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                raise ToolError(ErrorCode.INTERNAL_ERROR, (
+                    f"this machine doesn't trust the platform's HTTPS certificate ({exc}). Run the platform's "
+                    f"installer again: it installs the company CA ({tls.ca_path()})."
+                )) from exc
             raise ToolError(
                 ErrorCode.INTERNAL_ERROR, f"could not reach the Platform API: {exc}"
             ) from exc
+
+        # The platform moved (its HTTP address now redirects to HTTPS). A
+        # redirect is never followed: the request carries this machine's key.
+        if 300 <= resp.status_code < 400:
+            raise ToolError(ErrorCode.INTERNAL_ERROR, (
+                f"the Platform API moved to {resp.headers.get('location', 'another address')}. Run the platform's "
+                "installer again to point this machine at it (it keeps the sign-in)."
+            ))
 
         if resp.status_code >= 400:
             body: dict[str, Any] | None

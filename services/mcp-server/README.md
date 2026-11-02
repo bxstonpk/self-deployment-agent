@@ -455,6 +455,58 @@ those bits only mark it read-write, and the protection is the user
 profile's own ACL. A key issued by one platform address isn't sent to
 another: change `PLATFORM_API_BASE_URL` and the machine signs in again.
 
+## HTTPS and the company CA (DEC-031)
+
+The platform's HTTPS certificate is signed by the company's own CA, which
+no public trust store knows.
+- **Trust.** `tls.py` trusts it as well as the public authorities (certifi)
+  for every request to the platform. It is the file
+  `~/.company-deploy/company-platform-ca.crt`, or `COMPANY_PLATFORM_CA`.
+  The installers put it there.
+- **Redirects.** A redirect from the platform isn't followed, because the
+  request carries the machine's key. It is reported as "the Platform API
+  moved: run the installer again".
+- **A key moves to HTTPS.** A key issued for `http://host/api` is sent to
+  `https://host/api`: the same host and path, whatever the ports. It is
+  never sent the other way. So a machine stays signed in when HTTP is
+  closed.
+- **Updates come over HTTP.** The installers record where they were
+  downloaded from (`COMPANY_DOWNLOADS_URL`). The update command uses that
+  address over HTTP, since PowerShell and curl may not trust the company CA.
+- **`whoami` asks for an update first,** before calling the platform: an
+  outdated machine's address may have moved.
+
+**Verified.** `scripts/verify_https_only.py` was run against the local
+gateway with HTTP closed (`GATEWAY_HTTP_MODE=redirect`), on Windows, in
+throwaway user profiles. All 21 checks passed:
+- **HTTP closed.**
+  - Every HTTP address redirected to HTTPS.
+  - The CA and the installers were served over HTTP.
+  - An installer fetched over HTTP pointed the MCP at HTTPS and downloaded
+    over HTTP.
+- **A new machine.**
+  - The installer, fetched over HTTP, installed the CA.
+  - Its MCP server signed in through a real device approval, over real
+    stdio and HTTPS, and a tool worked.
+- **A machine from before.** It was on an older release, registered with
+  the HTTP address and signed in there.
+  - `whoami` asked for the update.
+  - A tool was refused with `UPDATE_REQUIRED`.
+  - The update command, run as given over HTTP, moved it to HTTPS.
+  - Restarted, it was still signed in as the same employee, and its tools
+    worked.
+
+Found while verifying: the gateway's `__DOWNLOADS_URL__` substitution also
+replaced the installers' own check for the unsubstituted marker, so every
+installer took its fallback, HTTPS downloads, which Windows didn't trust.
+The check now splits the marker.
+
+**Not verified.**
+- `install.sh` with HTTP closed (macOS/Linux); only its syntax was checked.
+- A machine still running the code from before this change. Its `whoami`
+  fails on the redirect, and its tools ask for the update. The test wound
+  a current install back to an older release number instead.
+
 ## Keeping a machine up to date
 
 The platform owner asked (2026-10-26) that a machine check its MCP server and
