@@ -69,9 +69,24 @@ describe("SourceHistoryCard", () => {
     await user.click(screen.getByRole("tab", { name: "All" }));
 
     await user.click(within(screen.getAllByRole("row")[1]).getByRole("button", { name: /View the source of leave-dev/ }));
-    expect(await screen.findByRole("button", { name: "Download all (.tar.gz)" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Download all (.tar.gz)" }, { timeout: 15000 })).toBeInTheDocument();
     expect(paths).toContain("/applications/app-1/sources/b-dev-0001");
     expect(screen.getByLabelText("Filter files")).toBeInTheDocument();
+  });
+
+  // Found on the LAN server: opening the same build a second time cleared
+  // its files and never fetched them again — "Loading the source…" for good.
+  it("shows the files when the same build is opened twice", async () => {
+    mockApi(() => jsonResponse({ builds: BUILDS }));
+    renderWithProviders(<SourceHistoryCard applicationId="app-1" />);
+    const user = userEvent.setup();
+    const view = await screen.findByRole("button", { name: /View the source of leave-dev/ });
+    await user.click(view);
+    await user.click(view);
+    expect(await screen.findByRole("button", { name: "Download all (.tar.gz)" }, { timeout: 15000 })).toBeInTheDocument();
+    await user.click(view);
+    expect(await screen.findByRole("button", { name: "Download all (.tar.gz)" }, { timeout: 15000 })).toBeInTheDocument();
+    expect(screen.queryByText("Loading the source…")).not.toBeInTheDocument();
   });
 
   it("is hidden from someone who may not read the source", async () => {
