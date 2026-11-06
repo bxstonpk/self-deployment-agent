@@ -16,6 +16,9 @@ const STATUS_CLASS: Record<string, string> = {
   superseded: "badge-neutral",
   success: "badge-success",
   failure: "badge-danger",
+  queued: "badge-info",
+  in_progress: "badge-info",
+  succeeded: "badge-success",
 };
 
 export function StatusBadge({ status }: { status: string }) {

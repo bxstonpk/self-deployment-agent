@@ -1716,3 +1716,12 @@ form textarea {
 .dash-hold-control input {
   min-width: 12rem;
 }
+
+/* An application's source history: the build being read, and its files. */
+.data-table tr.selected td {
+  background: var(--info-soft);
+}
+
+.source-viewer {
+  margin-top: var(--space-4);
+}

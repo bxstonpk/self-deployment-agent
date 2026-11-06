@@ -64,13 +64,39 @@ func (r *BuildRepo) LatestForApplication(ctx context.Context, applicationID stri
 	`, applicationID)
 }
 
+// ListForApplication is every build of the application, newest first.
+func (r *BuildRepo) ListForApplication(ctx context.Context, applicationID string) ([]domain.Build, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+buildColumns+`
+		FROM builds WHERE application_id = $1
+		ORDER BY started_at DESC
+	`, applicationID)
+	if err != nil {
+		return nil, fmt.Errorf("list builds: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.Build{}
+	for rows.Next() {
+		b, err := scanBuildRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 func (r *BuildRepo) scanOne(ctx context.Context, query string, args ...any) (domain.Build, error) {
+	return scanBuildRow(r.pool.QueryRow(ctx, query, args...))
+}
+
+func scanBuildRow(row rowScanner) (domain.Build, error) {
 	var b domain.Build
 	var status string
 	var errorCategory, errorDetail *string
 	var imageRefsJSON []byte
 
-	err := r.pool.QueryRow(ctx, query, args...).Scan(
+	err := row.Scan(
 		&b.ID, &b.ApplicationID, &b.TriggeredBy, &status, &errorCategory, &errorDetail,
 		&imageRefsJSON, &b.StartedAt, &b.CompletedAt,
 	)

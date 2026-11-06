@@ -98,6 +98,13 @@ app doesn't pretend to offer anything they can't actually deliver.
     (`[REDACTED:NAME]`): this app never has one to show. A non-owner is
     told the logs are owners-only — see **Logs UI** below for why that is
     what a `404` means on this page.
+  - **Source** — every build of the application and of its dev copy
+    (`GET /applications/{id}/sources`), newest first, with an All /
+    Application / Dev copy filter. **View files** downloads that build's
+    archive (`GET /applications/{id}/sources/{buildId}`) and opens it in the
+    same file viewer as the approval page (`components/SourceFileBrowser.tsx`),
+    with **Download all**. Hidden from anyone the API refuses (not an
+    owner, administrator or approver).
   - **Audit log** — this application's own entries (`GET /audit-log?resource_type=application&resource_id=...`),
     fetched unconditionally (unlike Build/Deploy/Scale events above, a
     `draft`/`validated` application already has real audit entries —

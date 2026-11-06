@@ -1963,6 +1963,18 @@ Verified on the local stack, with dev gated and a throwaway approver key, using 
 - `approve` signed, and the application answered at `/<app>/api/`;
 - deleting the application left nothing in its source folder.
 
+### Source history (2026-11-06)
+
+The approval page only lists deployments still waiting, so once one was approved its files could no longer be found from the Portal, and a dev copy's builds (which never wait for approval) had no page at all. The kept sources were never deleted; nothing showed them.
+
+- `GET /applications/{id}/sources` lists every build of the application **and of its dev copy**, newest first: who built it, its status, whether its source was kept and its size, and the deployments made from it. `{id}` can be the application or its dev copy; the answer is the same.
+- `GET /applications/{id}/sources/{buildId}` serves one build's archive exactly as uploaded. A build of any other application is `404`.
+- Who may read them: the application's (or its dev copy's) active owners, platform administrators (`PLATFORM_ADMIN_EMAILS`) and approvers (`PLATFORM_APPROVER_KEYS`). Anyone else gets `403`.
+- The Portal shows it on the application's page (**Source**), with the same file viewer as the approval page.
+- What still deletes a source: deleting the application, and so also **resetting a dev copy** (its application is deleted) and the clean-up of failed applications that never ran. A dev copy's builds from before a reset are therefore gone; the history shows only the current copy's.
+
+Verified on the local stack: `scripts/verify_source_history.py` built a real Go application, deployed it, deployed two versions to its dev copy, and checked that all three builds are listed newest first (dev copy marked) from both the application and the copy, that each archive downloads exactly as uploaded, that another employee gets `403` for the list and a download, and that another application's build is `404` through this one. In a real browser (Playwright, through the gateway), the Portal's **Source** section listed both builds, filtered by Application / Dev copy, and showed `api/main.go` of each with its own content. Unit tests: `internal/service/source_history_service_test.go`. Not verified: the administrator and approver paths against the live stack (unit tests only), and the LAN server (not deployed).
+
 The platform owner decided that deployments needing approval (production)
 are approved by the platform administrator, who holds the private key. The
 platform only ever has the public key:

@@ -610,11 +610,9 @@ export function getApproval(identity: Identity, deploymentId: string): Promise<A
   return request(identity, "GET", `/approvals/${encodeURIComponent(deploymentId)}`);
 }
 
-// The exact source archive the deployment's build was made from (binary).
-export async function getApprovalSource(identity: Identity, deploymentId: string): Promise<Uint8Array> {
-  const res = await fetch(`${BASE_URL}/approvals/${encodeURIComponent(deploymentId)}/source`, {
-    headers: identityHeaders(identity),
-  });
+// A binary download (a source archive), with the API's error message.
+async function requestBytes(identity: Identity, path: string): Promise<Uint8Array> {
+  const res = await fetch(`${BASE_URL}${path}`, { headers: identityHeaders(identity) });
   if (!res.ok) {
     let message = `Platform API returned HTTP ${res.status}`;
     try {
@@ -626,6 +624,39 @@ export async function getApprovalSource(identity: Identity, deploymentId: string
     throw new ApiError(res.status, "source_unavailable", message);
   }
   return new Uint8Array(await res.arrayBuffer());
+}
+
+// The exact source archive the deployment's build was made from (binary).
+export function getApprovalSource(identity: Identity, deploymentId: string): Promise<Uint8Array> {
+  return requestBytes(identity, `/approvals/${encodeURIComponent(deploymentId)}/source`);
+}
+
+// One build of an application or of its dev copy, and its kept source.
+export interface SourceBuild {
+  build_id: string;
+  application_id: string;
+  application_name: string;
+  dev_copy: boolean;
+  status: string;
+  started_at: string;
+  completed_at?: string;
+  triggered_by: string;
+  kept: boolean;
+  source_bytes: number;
+  deployments: { id: string; environment: string; status: string }[];
+}
+
+// Every build of the application and its dev copy, newest first.
+export function listSources(identity: Identity, applicationId: string): Promise<{ builds: SourceBuild[] }> {
+  return request(identity, "GET", `/applications/${encodeURIComponent(applicationId)}/sources`);
+}
+
+// One build's source archive, exactly as uploaded (binary).
+export function getBuildSource(identity: Identity, applicationId: string, buildId: string): Promise<Uint8Array> {
+  return requestBytes(
+    identity,
+    `/applications/${encodeURIComponent(applicationId)}/sources/${encodeURIComponent(buildId)}`,
+  );
 }
 
 export function decideApproval(
