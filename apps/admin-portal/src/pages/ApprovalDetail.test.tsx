@@ -94,7 +94,7 @@ describe("Approvals", () => {
     await user.click(screen.getByRole("button", { name: "frontend/src/หน้าแรก.jsx" }));
     expect(screen.getByLabelText("Contents of frontend/src/หน้าแรก.jsx")).toHaveTextContent("// ภาษาไทย");
     await user.click(screen.getByRole("button", { name: "api/logo.png" }));
-    expect(screen.getByText("Binary file — not shown.")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "api/logo.png" })).toBeInTheDocument();
   });
 
   it("won't approve a source that doesn't match what would be signed", async () => {

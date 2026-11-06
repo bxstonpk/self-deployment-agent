@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useIdentity } from "../context/IdentityContext";
 import { getBuildSource, listSources, type SourceBuild } from "../api/client";
 import { ApiError } from "../api/types";
 import { readTarGz, type SourceFile } from "../approval/tarball";
 import { StatusBadge } from "./StatusBadge";
-import { SourceFileBrowser } from "./SourceFileBrowser";
+
+// The viewer (with its syntax highlighting) loads only when a build is opened.
+const SourceFileBrowser = lazy(() => import("./SourceFileBrowser").then((m) => ({ default: m.SourceFileBrowser })));
 
 type Show = "all" | "production" | "dev";
 
@@ -42,27 +44,36 @@ export function SourceHistoryCard({ applicationId }: { applicationId: string }) 
     };
   }, [identity, applicationId]);
 
-  useEffect(() => {
-    if (!identity || !open) return;
-    let cancelled = false;
-    getBuildSource(identity, applicationId, open.build_id)
-      .then((bytes) => {
-        if (cancelled) return;
-        setArchive(bytes);
-        setFiles(readTarGz(bytes));
-        setFileState("ready");
-      })
-      .catch(() => !cancelled && setFileState("error"));
-    return () => {
-      cancelled = true;
-    };
-  }, [identity, applicationId, open]);
+  // Each opening is its own download; an answer to an earlier one (another
+  // build, or the same one opened again) is dropped. Opening the same build
+  // twice used to clear its files and never fetch them again, leaving
+  // "Loading the source…" for good (found on the LAN server, 2026-11-06).
+  const request = useRef(0);
+  const viewer = useRef<HTMLDivElement>(null);
 
-  function openBuild(b: SourceBuild) {
+  async function openBuild(b: SourceBuild) {
+    if (!identity) return;
+    const n = ++request.current;
+    setOpen(b);
     setFiles(null);
     setArchive(null);
     setFileState("loading");
-    setOpen(b);
+    requestAnimationFrame(() => viewer.current?.scrollIntoView?.({ behavior: "smooth", block: "start" }));
+    try {
+      const bytes = await getBuildSource(identity, applicationId, b.build_id);
+      if (n !== request.current) return;
+      const read = readTarGz(bytes);
+      setArchive(bytes);
+      setFiles(read);
+      setFileState("ready");
+    } catch {
+      if (n === request.current) setFileState("error");
+    }
+  }
+
+  function closeBuild() {
+    request.current++;
+    setOpen(null);
   }
 
   if (hidden) return null;
@@ -102,7 +113,7 @@ export function SourceHistoryCard({ applicationId }: { applicationId: string }) 
               ))}
             </div>
           )}
-          <div className="table-wrap">
+          <div className="table-wrap source-history-table">
             <table className="data-table">
               <thead>
                 <tr>
@@ -155,10 +166,10 @@ export function SourceHistoryCard({ applicationId }: { applicationId: string }) 
         </>
       )}
       {open && (
-        <div className="source-viewer">
+        <div className="source-viewer" ref={viewer}>
           <h3>
             {open.application_name} · {new Date(open.started_at).toLocaleString()} · <code>{open.build_id.slice(0, 8)}</code>{" "}
-            <button type="button" onClick={() => setOpen(null)}>
+            <button type="button" onClick={closeBuild}>
               Close
             </button>
           </h3>
@@ -167,12 +178,14 @@ export function SourceHistoryCard({ applicationId }: { applicationId: string }) 
               Couldn't download this build's source.
             </div>
           ) : (
-            <SourceFileBrowser
-              files={files}
-              state={fileState}
-              archive={archive}
-              name={`${open.application_name}-${open.build_id.slice(0, 8)}`}
-            />
+            <Suspense fallback={<p className="hint">Loading the source…</p>}>
+              <SourceFileBrowser
+                files={files}
+                state={fileState}
+                archive={archive}
+                name={`${open.application_name}-${open.build_id.slice(0, 8)}`}
+              />
+            </Suspense>
           )}
         </div>
       )}

@@ -101,10 +101,21 @@ app doesn't pretend to offer anything they can't actually deliver.
   - **Source** — every build of the application and of its dev copy
     (`GET /applications/{id}/sources`), newest first, with an All /
     Application / Dev copy filter. **View files** downloads that build's
-    archive (`GET /applications/{id}/sources/{buildId}`) and opens it in the
-    same file viewer as the approval page (`components/SourceFileBrowser.tsx`),
-    with **Download all**. Hidden from anyone the API refuses (not an
-    owner, administrator or approver).
+    archive (`GET /applications/{id}/sources/{buildId}`) when clicked and
+    opens it in the same file viewer as the approval page
+    (`components/SourceFileBrowser.tsx`, loaded as its own chunk on first
+    use). The viewer is laid out like a code host: a collapsible folder
+    tree with **Go to file**, a breadcrumb, line numbers (click one to mark
+    the line), syntax highlighting (`approval/highlight.ts`: highlight.js
+    core with the stack's languages, files over 300 KB shown plain),
+    Markdown with **Preview / Code**, images previewed, **Copy** and
+    **Download** per file, **Download all**. It opens on the README or
+    REVIEW.md nearest the top, else the first file. Hidden from anyone the
+    API refuses (not an owner, administrator or approver).
+    Fixed 2026-11-06 (found on the LAN server): opening the same build a
+    second time cleared its files and never fetched them again, leaving
+    "Loading the source…" for good. Each opening is now its own download;
+    a test opens the same build three times.
   - **Audit log** — this application's own entries (`GET /audit-log?resource_type=application&resource_id=...`),
     fetched unconditionally (unlike Build/Deploy/Scale events above, a
     `draft`/`validated` application already has real audit entries —
