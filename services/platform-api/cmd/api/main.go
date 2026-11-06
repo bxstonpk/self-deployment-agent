@@ -124,6 +124,14 @@ func main() {
 	backupService.SetNotifier(notificationService)
 	backupService.SetWaker(databaseService.Wake)
 	admins := service.NewEmailAdminDirectory(userRepo, cfg.AdminEmails)
+	isApprover := func(email string) bool {
+		for _, k := range cfg.ApproverKeys {
+			if strings.EqualFold(k.Email, email) {
+				return true
+			}
+		}
+		return false
+	}
 	alertRepo := postgres.NewAlertRepo(pool)
 	alertService := service.NewAlertService(alertRepo, applicationRepo, ownerRepo, notificationService, admins,
 		cfg.Alerts, func() (float64, error) { return hostdisk.UsedPercent(cfg.BackupDir) })
@@ -172,14 +180,7 @@ func main() {
 		policy.APIKeyMaxTTL = cfg.APIKeyMaxTTL
 		authService := service.NewAuthService(postgres.NewAuthRepo(pool), userRepo, departmentRepo, auditService, policy)
 		authenticator = httpapi.NewTokenAuthenticator(authService)
-		authHandler = httpapi.NewAuthHandler(authService, cfg.PortalURL, admins.IsAdmin, func(email string) bool {
-			for _, k := range cfg.ApproverKeys {
-				if strings.EqualFold(k.Email, email) {
-					return true
-				}
-			}
-			return false
-		})
+		authHandler = httpapi.NewAuthHandler(authService, cfg.PortalURL, admins.IsAdmin, isApprover)
 		log.Printf("auth: token mode — sessions %s, API keys %s (max %s), devices approved at %s/device",
 			cfg.SessionTTL, cfg.APIKeyTTL, cfg.APIKeyMaxTTL, cfg.PortalURL)
 	}
@@ -249,6 +250,11 @@ func main() {
 	policyHandler.SetDevCopies(true)
 	proxyHandler := httpapi.NewProxyHandler(scaleService, trafficRecorder)
 
+	// Every build's kept source, readable at any time (not only while it
+	// waits for approval): the application's and its dev copy's.
+	sourceHandler := httpapi.NewSourceHandler(service.NewSourceHistoryService(applicationRepo, ownerRepo, buildRepo,
+		deploymentRepo, sources, devCopyRepo, userRepo, admins, isApprover))
+
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Authenticator:      authenticator,
 		Admin:              adminHandler,
@@ -274,6 +280,7 @@ func main() {
 		Governance:         httpapi.NewGovernanceHandler(governanceService),
 		TestRuns:           httpapi.NewTestRunHandler(testRunService),
 		DevCopies:          httpapi.NewDevCopyHandler(devCopyService, cfg.PublicBaseURL),
+		Sources:            sourceHandler,
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,

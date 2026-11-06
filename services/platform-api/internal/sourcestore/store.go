@@ -84,3 +84,16 @@ func (s *Store) PurgeApplication(_ context.Context, applicationID string) error 
 	}
 	return nil
 }
+
+// Size is a kept archive's size, or an error if none was kept.
+func (s *Store) Size(applicationID, buildID string) (int64, error) {
+	p, err := s.path(applicationID, buildID)
+	if err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}

@@ -33,6 +33,7 @@ type RouterConfig struct {
 	Governance    *GovernanceHandler
 	TestRuns      *TestRunHandler
 	DevCopies     *DevCopyHandler
+	Sources       *SourceHandler
 	// Auth serves /auth/*. Nil under the dev-header mode, which has no
 	// accounts to sign in to.
 	Auth *AuthHandler
@@ -116,6 +117,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Post("/{id}/validate", cfg.Validation.Validate)
 		r.Post("/{id}/build", cfg.Builds.TriggerBuild)
 		r.Get("/{id}/builds/latest", cfg.Builds.LatestBuild)
+		if cfg.Sources != nil {
+			r.Get("/{id}/sources", cfg.Sources.List)
+			r.Get("/{id}/sources/{buildId}", cfg.Sources.Source)
+		}
 		r.Post("/{id}/deploy", cfg.Deploys.TriggerDeploy)
 		r.Get("/{id}/deployments/latest", cfg.Deploys.LatestDeployment)
 		r.Get("/{id}/deployments", cfg.Deploys.DeploymentHistory)
