@@ -16,6 +16,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Departments } from "./pages/Departments";
 import { Standards } from "./pages/Standards";
 import { Approvals } from "./pages/Approvals";
+import { Handoffs } from "./pages/Handoffs";
 // Loaded when opened: it carries the markdown renderer and the signing code,
 // which nobody else needs.
 const ApprovalDetail = lazy(() => import("./pages/ApprovalDetail").then((m) => ({ default: m.ApprovalDetail })));
@@ -144,6 +145,12 @@ function Layout({ children }: { children: React.ReactNode }) {
               </span>
             </NavLink>
           )}
+          {(isAdmin || isApprover) && (
+            <NavLink to="/handoff" className="nav-link">
+              <NavIcon d={ICONS.handoff} />
+              <span>IT handoff</span>
+            </NavLink>
+          )}
           {isAdmin && (
             <NavLink to="/dashboard" className="nav-link">
               <NavIcon d={ICONS.dashboard} />
@@ -221,6 +228,7 @@ const ICONS = {
   reports: "M4 20V10M10 20V4M16 20v-7M22 20H2",
   auditLog: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h8",
   accessKeys: "M15.5 7.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0zM12 11v10M12 17h3M12 20h2",
+  handoff: "M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8",
 };
 
 function NavIcon({ d }: { d: string }) {
@@ -252,6 +260,14 @@ function App() {
               <Suspense fallback={<p className="hint">Loading…</p>}>
                 <ApprovalDetail />
               </Suspense>
+            </RequireIdentity>
+          }
+        />
+        <Route
+          path="/handoff"
+          element={
+            <RequireIdentity>
+              <Handoffs />
             </RequireIdentity>
           }
         />

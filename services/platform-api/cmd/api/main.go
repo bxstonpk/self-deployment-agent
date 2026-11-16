@@ -220,6 +220,21 @@ func main() {
 	}, auditService)
 	deployService.SetDevCopies(devCopyService)
 	governanceService.SetDevCopies(devCopyService)
+	// IT handoff (DEC-033): every production deployment that goes live is
+	// packed as one .tar for IT, which administrators and approvers download.
+	handoffService := service.NewHandoffService(service.HandoffDeps{
+		Repo: postgres.NewHandoffRepo(pool), Apps: applicationRepo, Owners: ownerRepo, Users: userRepo,
+		Deployments: deploymentRepo, Builds: buildRepo, Sources: sources, BaseImages: baseImageRepo,
+		Dockerfile: buildengine.GenerateDockerfile, Images: runtime, Database: backupService, Secrets: secretRepo,
+		Copies: devCopyService, Admins: admins, IsApprover: isApprover, Audit: auditService, Dir: cfg.HandoffDir,
+	})
+	if n, err := handoffService.Recover(ctx); err != nil {
+		log.Printf("handoff: %v", err)
+	} else if n > 0 {
+		log.Printf("handoff: closed %d package(s) a restart interrupted", n)
+	}
+	deployService.SetPromotionHook(handoffService.Promoted)
+	resources.SetHandoffs(handoffService)
 	log.Printf("test runs: %d at a time, each service %d MB and %.1f CPUs, at most %s a run",
 		cfg.TestRunConcurrent, cfg.TestRunMemoryMB, cfg.TestRunCPUs, cfg.TestRunTimeout)
 	var approvalHandler *httpapi.ApprovalHandler
@@ -281,6 +296,7 @@ func main() {
 		TestRuns:           httpapi.NewTestRunHandler(testRunService),
 		DevCopies:          httpapi.NewDevCopyHandler(devCopyService, cfg.PublicBaseURL),
 		Sources:            sourceHandler,
+		Handoffs:           httpapi.NewHandoffHandler(handoffService),
 		Auth:               authHandler,
 		AuthMode:           cfg.AuthMode,
 		PlatformEnv:        cfg.PlatformEnv,

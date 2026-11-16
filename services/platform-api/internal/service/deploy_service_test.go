@@ -1166,3 +1166,42 @@ func TestInitiateDeploy_UngatedEnvironmentNeedsNoReviewDocument(t *testing.T) {
 		t.Fatalf("dev isn't gated by default, so no review document is needed: %v", err)
 	}
 }
+
+// DEC-033: what goes live is handed to IT. The hook hears of every
+// deployment that went live (it decides itself what to pack), and of none
+// that didn't.
+func TestDeploymentThatGoesLiveIsToldToTheHandoffHook(t *testing.T) {
+	app, build := builtApp("app-1", "overtime")
+	svc, _, _, runtime, _, _ := newDeployService(app, build, "owner-1")
+	var told []domain.Deployment
+	svc.SetPromotionHook(func(_ context.Context, a domain.Application, d domain.Deployment) {
+		if a.ID != "app-1" {
+			t.Errorf("hook told of %s", a.ID)
+		}
+		told = append(told, d)
+	})
+
+	d, err := svc.InitiateDeploy(reviewed(), "app-1", "owner-1", domain.EnvironmentProduction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(told) != 0 {
+		t.Fatalf("told before approval: %+v", told)
+	}
+	if _, err := svc.DecideApproval(context.Background(), d.ID, "owner-1", true, "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if len(told) != 1 || told[0].ID != d.ID || told[0].Environment != domain.EnvironmentProduction ||
+		told[0].Status != domain.DeploymentRunning {
+		t.Fatalf("told %+v", told)
+	}
+
+	runtime.healthCheckErr = errors.New("unhealthy")
+	failed, err := svc.InitiateDeploy(context.Background(), "app-1", "owner-1", domain.EnvironmentDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != domain.DeploymentFailed || len(told) != 1 {
+		t.Fatalf("a failed deployment (%s) told the hook: %d", failed.Status, len(told))
+	}
+}

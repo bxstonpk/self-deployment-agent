@@ -2711,6 +2711,102 @@ which stops every container the way a reboot does. It refuses to run if
   restart;
 - the item written before the restart was still there.
 
+## How the IT handoff works (DEC-033)
+
+This platform is the company's development server; IT runs the
+applications for real. Only the applications promoted to production are
+handed to IT, each as one `.tar` (the platform owner, 2026-11-16).
+
+- **When.** Every deployment that goes live calls the deployment
+  pipeline's promotion hook (`DeploymentService.SetPromotionHook`), after
+  any dev data has been copied in. `HandoffService.Promoted` packs it in
+  the background if it is a **production** deployment of an application
+  that is **not a dev copy**; anything else is ignored. A rollback in
+  production goes through the same pipeline, so what is packed is always
+  what runs. Administrators and approvers can make it again,
+  `POST /applications/{id}/handoffs` (`202`; `409 in_progress` while one is
+  being made, `409 not_in_production` without a running production
+  deployment).
+- **One at a time.** Packages are made one after another across the
+  platform (each holds its database dump in memory). An application
+  promoted again while its package is being made gets another one, of what
+  then runs, when the first finishes.
+- **What is in it** (`internal/service/handoff_package.go`), all under
+  `<app>-handoff/`: `images/images.tar` (`docker save` of the deployment's
+  images, which keeps their command, environment and ports),
+  `database/01-data.sql` (a dump made the way backups are, the database
+  woken if asleep), `source/` (the build's kept source, each service with
+  the Dockerfile the platform built it with in place of any it carried; no
+  links, nothing outside the folder), `docker-compose.yml` (the database
+  with the dump mounted as its init script, the services with the
+  `DATABASE_*` variables the platform gave them, and an nginx `web` proxy),
+  `proxy/default.conf` (`/` the default service, `/<service>/` the others
+  with that prefix removed, as on the platform), `.env.example`,
+  `deployment.yaml`, a `README.md` (owners, services, settings, the
+  database, the addresses of other systems found in the source outside
+  tests, how to rebuild from source) and `SHA256SUMS`.
+- **Settings by name only.** `.env.example` lists the employee-managed
+  secrets' names, empty; their values are never read. The database gets a
+  new password IT chooses.
+- **Who.** `GET /handoffs`, the download `GET /handoffs/{packageId}/file`
+  and making one again are for administrators (`PLATFORM_ADMIN_EMAILS`) and
+  approvers (`PLATFORM_APPROVER_KEYS`) only; anyone else gets `403`. Making
+  one again and every download are audited (`handoff.build`,
+  `handoff.download`, with the package's SHA-256); a promotion's own
+  package has no human actor and isn't.
+- **Kept.** One ready package per application: a newer one marks the older
+  `replaced` and deletes its file; a failed one leaves the ready one in
+  place and says why. Files are in the `platform-handoffs` volume
+  (`HANDOFF_DIR`, `/var/lib/platform/handoffs/<app-id>/<package-id>.tar`)
+  and go with the application. A restart marks packages it interrupted
+  `failed` and removes their half-written files (migration
+  `0030_handoff_packages.sql`).
+
+### Known gaps
+
+- **Only the MySQL path ran for real.** A Postgres application's
+  `docker-compose.yml` (`postgres:16-alpine`, `pg_isready`) is generated
+  but has not been started from a package.
+- **Public images are pulled.** The package runs `nginx:1.30-alpine` and
+  the database image from Docker Hub; a machine without internet access
+  needs them brought separately (the README says so).
+- **Large packages.** The Portal fetches the download with the session's
+  headers, so the browser holds the whole file while it downloads. A
+  package is the size of the images plus the dump; nothing bounds it.
+- **The address search is a hint.** It finds URLs and IPv4 addresses in
+  the source; it can't tell which the application really calls, and it
+  misses addresses that only exist in settings.
+
+### Verifying it
+
+```bash
+services/mcp-server/.venv/Scripts/python.exe services/platform-api/scripts/verify_handoff.py
+```
+
+Run on the local stack (2026-11-16), all checks passed. A React + Go +
+MySQL application with a setting was built from the templates, deployed
+to production and approved with a real signed approval; platform-api ran
+with that approver key. Going live packed it by itself (trigger
+`promotion`). An owner who is neither administrator nor approver got `403`
+for the list and for making one. An item was saved in production, the
+approver made the package again (`202`, a second request `409`), the new
+one became the ready one and the first was `replaced` with its file gone.
+The download was the recorded size and SHA-256, named
+`<app>-handoff-<date>.tar`; both actions were in the audit log; the
+setting's value appeared nowhere in the 36 MB file while its name was in
+`.env.example`; all 21 files matched `SHA256SUMS`; the dump held the item.
+Then, from the package alone: `docker load` read both images,
+`docker compose up` imported the database, and the application answered at
+`/api/` (connected, with the item), `/` (the React page and its 166 KB
+bundle) and an API `404` through the proxy. Deleting the application
+removed its packages from the volume. Unit tests:
+`internal/service/handoff_service_test.go` (contents, unsafe source paths,
+SHA256SUMS, access, replacement, failure, a promotion during a build,
+restart recovery, purge) and `deploy_service_test.go` (the hook hears of a
+deployment that went live, not of one that failed). **Not verified:** the
+Portal page in a real browser (vitest only; the gateway serves `/handoff`
+as the Portal), the Postgres path, and the LAN server (not deployed).
+
 ## What's deliberately NOT here yet
 
 Each will land as its own feature branch/PR, per the Application Lifecycle:

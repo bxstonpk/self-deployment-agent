@@ -54,6 +54,16 @@ app doesn't pretend to offer anything they can't actually deliver.
   last use and expiry. Each can be revoked, which takes effect on the
   key's very next request. A key can also be issued by hand for a machine
   that can't run the sign-in; its value is shown exactly once.
+- **IT handoff** (`Handoffs.tsx`, `/handoff`, in the menu for
+  administrators and approvers only) — every application promoted to
+  production, with its package for IT (DEC-033): the `.tar` the platform
+  made when the production deployment went live, its size and when it was
+  made, **Download .tar** and **Make again** (of what runs in production
+  now). A package being made shows as such and the page refreshes every
+  10 s until it's done; a failed one shows why, beside the ready one it
+  didn't replace. The download is fetched with the session's headers (a
+  plain link can't carry them), so the browser holds the whole file while
+  it downloads. The platform audits every download.
 - **Application list** (`ApplicationList.tsx`) — every registered
   application, with client-side search-by-name and filter-by-lifecycle-status.
 - **Register application** (`RegisterApplication.tsx`) — name/description/

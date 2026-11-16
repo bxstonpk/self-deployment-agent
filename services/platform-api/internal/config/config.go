@@ -96,6 +96,8 @@ type Config struct {
 	BackupDir         string
 	// SourceDir keeps every build's source archive, for approvers to review.
 	SourceDir string
+	// HandoffDir keeps the IT handoff packages (DEC-033).
+	HandoffDir string
 	BackupHour        int
 	BackupLocation    *time.Location
 	BackupFullWeekday time.Weekday
@@ -272,6 +274,7 @@ func Load() (Config, error) {
 		BackupEnabled:                getEnv("BACKUP_ENABLED", "true") != "false",
 		BackupDir:                    getEnv("BACKUP_DIR", "/var/lib/platform/backups"),
 		SourceDir:                    getEnv("SOURCE_DIR", "/var/lib/platform/sources"),
+		HandoffDir:                   getEnv("HANDOFF_DIR", "/var/lib/platform/handoffs"),
 		BackupHour:                   backupHour,
 		BackupLocation:               backupLocation,
 		BackupFullWeekday:            fullWeekday,

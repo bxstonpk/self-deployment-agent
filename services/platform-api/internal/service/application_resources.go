@@ -32,6 +32,7 @@ type ApplicationResources struct {
 	secrets   SecretInjector
 	backups   BackupPurger
 	sources   BackupPurger
+	handoffs  BackupPurger
 }
 
 // BackupPurger is the part of database backups (FR-064) that deleting an
@@ -47,6 +48,10 @@ func (r *ApplicationResources) SetBackups(b BackupPurger) { r.backups = b }
 
 // SetSources makes Deprovision delete the application's kept build sources.
 func (r *ApplicationResources) SetSources(p BackupPurger) { r.sources = p }
+
+// SetHandoffs makes Deprovision delete the application's IT handoff
+// packages (DEC-033).
+func (r *ApplicationResources) SetHandoffs(p BackupPurger) { r.handoffs = p }
 
 func NewApplicationResources(databases DatabaseLifecycle, secrets SecretInjector) *ApplicationResources {
 	return &ApplicationResources{databases: databases, secrets: secrets}
@@ -93,6 +98,11 @@ func (r *ApplicationResources) Deprovision(ctx context.Context, applicationID st
 	if r.sources != nil {
 		if err := r.sources.PurgeApplication(ctx, applicationID); err != nil {
 			return fmt.Errorf("delete kept build sources: %w", err)
+		}
+	}
+	if r.handoffs != nil {
+		if err := r.handoffs.PurgeApplication(ctx, applicationID); err != nil {
+			return fmt.Errorf("delete IT handoff packages: %w", err)
 		}
 	}
 	if err := r.secrets.DeleteAllForApplication(ctx, applicationID); err != nil {

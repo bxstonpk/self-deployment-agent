@@ -511,6 +511,34 @@ func (s *BackupService) Restore(ctx context.Context, applicationID, backupID, re
 }
 
 // HasDatabase says whether an application has a live database.
+// HandoffDump is the application's database as it is now, dumped the way a
+// backup is, for an IT handoff package (DEC-033). A database asleep with
+// its application wakes for it. domain.ErrDatabaseNotProvisioned if the
+// application has none.
+func (s *BackupService) HandoffDump(ctx context.Context, applicationID string) (HandoffDatabaseDump, error) {
+	db, err := s.databases.GetLiveForApplication(ctx, applicationID)
+	if err != nil {
+		return HandoffDatabaseDump{}, err
+	}
+	spec, err := s.spec(ctx, db)
+	if err != nil {
+		return HandoffDatabaseDump{}, err
+	}
+	if err := s.wakeDB(ctx, applicationID); err != nil {
+		return HandoffDatabaseDump{}, err
+	}
+	dump, err := s.runtime.DumpDatabase(ctx, db.ContainerID, spec)
+	if err != nil {
+		return HandoffDatabaseDump{}, err
+	}
+	engine := db.Engine
+	if engine == "" {
+		engine = "postgres"
+	}
+	return HandoffDatabaseDump{Engine: engine, DatabaseName: db.DatabaseName, Username: db.Username,
+		Dump: dump, TakenAt: s.now()}, nil
+}
+
 func (s *BackupService) HasDatabase(ctx context.Context, applicationID string) (bool, error) {
 	if _, err := s.databases.GetLiveForApplication(ctx, applicationID); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {

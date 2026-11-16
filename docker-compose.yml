@@ -130,6 +130,9 @@ services:
       # Every build's source archive, kept so an approver can review exactly
       # what was built before signing; deleted with its application.
       - platform-sources:/var/lib/platform/sources
+      # IT handoff packages (DEC-033): one .tar per application promoted to
+      # production, for administrators and approvers to download for IT.
+      - platform-handoffs:/var/lib/platform/handoffs
     extra_hosts:
       # Deployment health checks (Module J) reach a just-started sibling
       # container via this host, since the container's own "localhost"
@@ -176,3 +179,4 @@ volumes:
   pgdata:
   platform-backups:
   platform-sources:
+  platform-handoffs:
