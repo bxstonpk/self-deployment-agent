@@ -104,6 +104,9 @@ type DeploymentService struct {
 	approvalEnvs    map[domain.Environment]bool
 	signedApprovals bool
 	notifyApprovers func(ctx context.Context, app domain.Application, deployment domain.Deployment)
+
+	// promoted: see SetPromotionHook.
+	promoted func(ctx context.Context, app domain.Application, deployment domain.Deployment)
 }
 
 // SetApprovalEnvironments sets which environments' deployments need approval.
@@ -647,7 +650,18 @@ func (s *DeploymentService) deployAndActivate(ctx context.Context, app domain.Ap
 	if deployment.DevDataFrom != nil && deployment.DevDataCopiedAt == nil && s.devCopies != nil {
 		deployment = s.copyDevData(ctx, app, deployment)
 	}
+	// DEC-033: what is now live is handed to IT (the hook packs production
+	// deployments in the background), after the dev data is in.
+	if s.promoted != nil {
+		s.promoted(context.WithoutCancel(ctx), app, deployment)
+	}
 	return deployment, nil
+}
+
+// SetPromotionHook is told of every deployment that goes live: the IT
+// handoff (DEC-033). It must not block.
+func (s *DeploymentService) SetPromotionHook(hook func(ctx context.Context, app domain.Application, deployment domain.Deployment)) {
+	s.promoted = hook
 }
 
 // copyDevData fills a newly live production deployment's database from the

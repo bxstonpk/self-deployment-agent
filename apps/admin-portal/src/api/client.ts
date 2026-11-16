@@ -659,6 +659,61 @@ export function getBuildSource(identity: Identity, applicationId: string, buildI
   );
 }
 
+// --- IT handoff (DEC-033) ---
+// Every application promoted to production here is packed as one .tar for
+// IT. Administrators and approvers only.
+
+export interface HandoffPackage {
+  id: string;
+  deployment_id: string;
+  trigger: "promotion" | "manual";
+  status: "building" | "ready" | "failed" | "replaced";
+  requested_by?: string;
+  error?: string;
+  file_name?: string;
+  size_bytes?: number;
+  sha256?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface HandoffEntry {
+  application_id: string;
+  application_name: string;
+  // The package to download, if one is ready.
+  ready: HandoffPackage | null;
+  // The newest attempt when it isn't the ready one: being made, or failed.
+  latest: HandoffPackage | null;
+}
+
+export function listHandoffs(identity: Identity): Promise<{ handoffs: HandoffEntry[] }> {
+  return request(identity, "GET", "/handoffs");
+}
+
+// Make the application's package again, of what runs in production now.
+export function rebuildHandoff(identity: Identity, applicationId: string): Promise<{ handoff: HandoffPackage }> {
+  return request(identity, "POST", `/applications/${encodeURIComponent(applicationId)}/handoffs`);
+}
+
+// The package's .tar. Not a plain link: the download needs the identity
+// headers. Audited by the platform.
+export async function downloadHandoff(identity: Identity, packageId: string): Promise<Blob> {
+  const res = await fetch(`${BASE_URL}/handoffs/${encodeURIComponent(packageId)}/file`, {
+    headers: identityHeaders(identity),
+  });
+  if (!res.ok) {
+    let message = `Platform API returned HTTP ${res.status}`;
+    try {
+      const parsed = (await res.json()) as { error?: { message?: string } };
+      message = parsed.error?.message ?? message;
+    } catch {
+      // not JSON
+    }
+    throw new ApiError(res.status, "handoff_unavailable", message);
+  }
+  return res.blob();
+}
+
 export function decideApproval(
   identity: Identity,
   deploymentId: string,

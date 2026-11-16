@@ -353,6 +353,25 @@ and Go templates, it:
 The API answered through the gateway connected to its MySQL, and the
 frontend was served. See section 8.
 
+### Production goes to IT (DEC-033)
+
+This platform is the development server; IT runs the applications for
+real. When a production deployment goes live, the platform packs it for
+IT as one `.tar`, by itself. Administrators and approvers download it from
+the Portal's **IT handoff** page (every download is audited) and give it
+to IT. Only promoted applications are packed.
+
+The package runs anywhere with Docker, from itself alone:
+`sha256sum -c SHA256SUMS`, `docker load -i images/images.tar`, fill in
+`.env` from `.env.example`, `docker compose up -d`. It holds the images
+(`docker save`), the production database as a dump (imported on the first
+start), the build's source with the Dockerfiles the platform used, a proxy
+that lays the application out as here (`/` and `/api/`), and a README with
+the owners, the settings, and the addresses of other systems found in the
+source. The settings' values (passwords, webhooks) are **not** in it: IT
+asks the owners. Don't hand over `docker export` of the containers: it
+keeps neither how they run nor the database's data, which is in a volume.
+
 ## 6. Security, in one place
 
 - **Who can get an account:** anyone with the enrollment code and an email
@@ -412,6 +431,7 @@ frontend was served. See section 8.
 | Development governance over real stdio: start, scaffold, a blocked library, an exception decided, the real build, no profile | `services/mcp-server/scripts/verify_governance.py` |
 | Tests run by the platform over real stdio: pass, fail, busy, tested deploy, the approver's report, source mismatch | `services/mcp-server/scripts/verify_test_runs.py` |
 | Dev copies over real stdio: own database and address, no approval, data kept, Claude's test data, data into the first production as signed, reset, archive | `services/mcp-server/scripts/verify_dev_copies.py` |
+| IT handoff: promoted to production with a signed approval, packed by itself, made again with new data, downloaded, then run from the package alone with `docker load` + `docker compose up` | `services/platform-api/scripts/verify_handoff.py` |
 | Gateway routes, installers on Windows and Linux, a real Claude Code deploy | described in sections 4–5; run by hand for PR "LAN onboarding" |
 
 ## 9. สรุปภาษาไทย (Quick start)
@@ -442,5 +462,7 @@ frontend was served. See section 8.
 - **Backend (เลือกหนึ่ง):** Python, JavaScript, TypeScript หรือ Go
 - **ฐานข้อมูล:** MySQL
 - **โครงโปรเจกต์:** ใช้ templates ที่ติดมากับ skill
+
+**ส่งต่อให้ IT (DEC-033):** แพลตฟอร์มนี้เป็น server สำหรับพัฒนา ส่วน IT เป็นผู้ขึ้นระบบจริง แอปไหนที่ production deploy ขึ้นรันสำเร็จ แพลตฟอร์มจะทำชุดส่งมอบเป็นไฟล์ `.tar` ให้เองโดยอัตโนมัติ (แอปที่ไม่ได้ promote จะไม่ถูกส่ง) ผู้ดูแลระบบหรือผู้อนุมัติดาวน์โหลดได้ที่หน้า **IT handoff** ใน Portal (ทุกการดาวน์โหลดถูกบันทึกใน audit log) แล้วส่งให้ IT ในไฟล์มี image ของแอป ข้อมูลฐานข้อมูล source พร้อม Dockerfile และ README บอกวิธีรัน IT รันได้ด้วย `docker load -i images/images.tar` แล้ว `docker compose up -d` หลังกรอก `.env` ค่า secret (รหัสผ่าน, webhook) ไม่อยู่ในไฟล์ มีแค่ชื่อ IT ต้องขอค่าจากเจ้าของแอป อย่าส่งไฟล์จาก `docker export` เพราะไม่มีข้อมูลฐานข้อมูลและไม่มีคำสั่งรันของแอป
 
 ถ้าเครื่องหาย หรือเลิกใช้เครื่องนั้น ให้เข้า Admin Portal ที่หน้า **Access keys** แล้วกด **Revoke** key ของเครื่องนั้น

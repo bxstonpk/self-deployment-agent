@@ -34,6 +34,7 @@ type RouterConfig struct {
 	TestRuns      *TestRunHandler
 	DevCopies     *DevCopyHandler
 	Sources       *SourceHandler
+	Handoffs      *HandoffHandler
 	// Auth serves /auth/*. Nil under the dev-header mode, which has no
 	// accounts to sign in to.
 	Auth *AuthHandler
@@ -121,6 +122,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Get("/{id}/sources", cfg.Sources.List)
 			r.Get("/{id}/sources/{buildId}", cfg.Sources.Source)
 		}
+		if cfg.Handoffs != nil {
+			r.Post("/{id}/handoffs", cfg.Handoffs.Rebuild)
+		}
 		r.Post("/{id}/deploy", cfg.Deploys.TriggerDeploy)
 		r.Get("/{id}/deployments/latest", cfg.Deploys.LatestDeployment)
 		r.Get("/{id}/deployments", cfg.Deploys.DeploymentHistory)
@@ -205,6 +209,15 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/export", cfg.Audit.Export)
 		r.Get("/integrity", cfg.Audit.VerifyIntegrity)
 	})
+
+	if cfg.Handoffs != nil {
+		r.Route("/handoffs", func(r chi.Router) {
+			useDevGuard(r, cfg)
+			r.Use(RequireAuth(cfg.Authenticator))
+			r.Get("/", cfg.Handoffs.List)
+			r.Get("/{packageId}/file", cfg.Handoffs.Download)
+		})
+	}
 
 	r.Route("/notifications", func(r chi.Router) {
 		useDevGuard(r, cfg)

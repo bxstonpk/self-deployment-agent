@@ -66,6 +66,7 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | DEC-030 | Security & Operations | An administrator's suspension of any application | Platform owner | Before Production Go-Live | **Decided (2026-10-26)** |
 | DEC-031 | Security & Operations | HTTPS on the platform's address | Platform owner | Before Production Go-Live | **Decided (2026-10-30)** |
 | DEC-032 | Process & Governance | RESTful APIs, and state in the address | Platform owner | Before Production Go-Live | **Decided (2026-10-30)** |
+| DEC-033 | Process & Governance | Handing promoted applications to IT | Platform owner | Before Production Go-Live | **Decided (2026-11-16)** |
 
 ---
 
@@ -420,6 +421,17 @@ Decision IDs (`DEC-001`, `DEC-002`, …) are numbered sequentially and are owned
 | Decision Owner | Platform owner |
 | Status | **Decided (2026-10-30)** |
 | Resolution | **Chosen by the owner:** every application's API is RESTful, and anything a page connects to or searches for goes through parameters in the URL, so going Back or opening the address directly shows the same thing without setting it again. No `/#/` addresses. **Implementation choices, not separately decided:** the build refuses routing on the `#`, both the routers' hash modes (`HashRouter`, `createHashRouter`, `createWebHashHistory`, `createHashHistory`) and the same done by hand (a `hashchange` listener, assigning `location.hash`, a `#/` address in code), like a forbidden library, and `check_project` reports them; an approved exception (kind `other`, subject `hash-routing`) lets them through. Whether an API is RESTful can't be checked reliably from its source, so that part is a published rule (`GET /standards`, the templates' `STANDARD.md`, the skill) that the approver checks in REVIEW.md. The templates show both: path routes with the app's base, `?q=` search, `GET /items/{id}`. |
+
+#### DEC-033 — Handing Promoted Applications to IT
+
+| Field | Detail |
+|---|---|
+| Topic | What leaves this platform when an application goes to production for real |
+| Question | This platform is the company's development server; IT runs the applications in production. When an application is promoted, what does IT receive, when, and how? |
+| Decision Owner | Platform owner |
+| Status | **Decided (2026-11-16)** |
+| Resolution | **Chosen by the owner:** only the applications promoted to production are handed to IT, not every application. Each is handed over as a `.tar`. The platform makes it **by itself when a production deployment goes live** (and an administrator or approver can make it again); **administrators and approvers download it from the Portal** and give it to IT; the application's **settings travel by name only, never their values** (IT asks the owners). **Implementation choices, not separately decided:** the `.tar` holds the images as `docker save` (which keeps how they run; `docker export` of a container keeps only its files and none of its volumes, so it carries no database data), a dump of the database made the way backups are, the build's source with the Dockerfile the platform built each service with, and a `docker-compose.yml`, `.env.example`, proxy configuration and README to run it with Docker anywhere, laid out as on the platform (`/` the frontend, `/<service>/` the others). One package is kept per application, the newest; every download is audited. What IT does with it (Docker, another platform) is IT's choice. |
+| Target Phase | Before Production Go-Live |
 
 ---
 
