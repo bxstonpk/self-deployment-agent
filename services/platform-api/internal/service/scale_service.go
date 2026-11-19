@@ -9,6 +9,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -153,12 +154,99 @@ func (s *ScaleService) InitializeForDeployment(ctx context.Context, deploymentID
 	return nil
 }
 
-// CleanupForDeployment removes runtime state for a superseded deployment —
-// it's no longer live, so neither the proxy nor the sweeper should
-// consider it. Containers are stopped by the caller (deploy_service.go),
-// which already has their IDs from the supersede flow.
+// CleanupForDeployment retires a superseded deployment's services: it stops
+// the container each one is running now, then removes their runtime state,
+// so neither the proxy nor the sweeper considers them again.
+//
+// The caller (deploy_service.go) stops the containers the deployment was
+// first started with, but a service that scaled to zero and was woken again
+// runs in a container only this state knows. Deleting the state without
+// stopping it left that container running for good, unseen by anything:
+// found on the LAN host on 2026-11-19 as 38 superseded deployments' API
+// containers, ~1.4 GB of memory and swap, which also kept every
+// application's database awake (it sleeps only when none of the
+// application's containers runs).
 func (s *ScaleService) CleanupForDeployment(ctx context.Context, deploymentID string) error {
+	states, err := s.states.ListForDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
+	for _, st := range states {
+		if st.ContainerID == nil {
+			continue
+		}
+		if err := s.runtime.Stop(ctx, *st.ContainerID); err != nil {
+			log.Printf("scale: stop %s/%s of a superseded deployment: %v (the orphan sweep retries)", deploymentID, st.ServiceName, err)
+		}
+	}
 	return s.states.DeleteForDeployment(ctx, deploymentID)
+}
+
+// PlatformContainerLister lists every application container (running or
+// not) the platform started (internal/runtimeengine).
+type PlatformContainerLister interface {
+	ListPlatformContainers(ctx context.Context) ([]domain.PlatformContainer, error)
+}
+
+// containerKeepingStatuses are the deployment states whose containers are
+// meant to exist: live, or on their way to it. Suspended is among them
+// because Resume starts and health-checks its containers before it marks
+// the deployment Running again; Suspend stops them itself.
+var containerKeepingStatuses = map[domain.DeploymentStatus]bool{
+	domain.DeploymentSuspended:       true,
+	domain.DeploymentRunning:         true,
+	domain.DeploymentScanning:        true,
+	domain.DeploymentPendingApproval: true,
+	domain.DeploymentDeploying:       true,
+	domain.DeploymentHealthCheck:     true,
+}
+
+// SweepOrphans removes application containers whose deployment is no longer
+// live (superseded, failed, rejected, archived) or no longer exists. It is
+// the net under every path that retires a deployment: whatever one of them
+// misses (a cold start that raced a supersede, a stop that failed, a
+// restart mid-deploy) is removed here instead of running for good. Returns
+// how many it removed.
+func (s *ScaleService) SweepOrphans(ctx context.Context) (int, error) {
+	lister, ok := s.runtime.(PlatformContainerLister)
+	if !ok {
+		return 0, nil
+	}
+	containers, err := lister.ListPlatformContainers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	statuses := map[string]domain.DeploymentStatus{}
+	for _, c := range containers {
+		if c.DeploymentID == "" {
+			continue
+		}
+		status, seen := statuses[c.DeploymentID]
+		if !seen {
+			d, err := s.deployments.GetByID(ctx, c.DeploymentID)
+			switch {
+			case errors.Is(err, domain.ErrNotFound):
+				status = "" // its application is gone
+			case err != nil:
+				log.Printf("scale: orphan sweep: deployment %s: %v", c.DeploymentID, err)
+				continue
+			default:
+				status = d.Status
+			}
+			statuses[c.DeploymentID] = status
+		}
+		if containerKeepingStatuses[status] {
+			continue
+		}
+		if err := s.runtime.Stop(ctx, c.ID); err != nil {
+			log.Printf("scale: orphan sweep: remove %s: %v", c.Name, err)
+			continue
+		}
+		removed++
+		log.Printf("scale: removed %s, its deployment %s is %q", c.Name, c.DeploymentID, status)
+	}
+	return removed, nil
 }
 
 // ServiceForPath resolves the short application address, /{app}/{rest}: if

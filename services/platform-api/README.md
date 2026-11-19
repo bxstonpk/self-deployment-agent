@@ -214,6 +214,27 @@ weren't specifically exercised by a slow-enough operation during
 verification — worth an audit, not something this fix claims to have
 swept comprehensively.
 
+**A build a restart interrupted is closed when platform-api starts.**
+- **The problem.** A build runs inside platform-api's own process. If
+  platform-api restarts mid-build, the build never ends. While it is the
+  application's latest build, every new build is refused as already in
+  flight.
+- **Where it happened.** On the LAN host on 2026-11-16, a platform deploy
+  restarted platform-api during an employee's build of
+  `sti-production-report-dev`, and the dev copy could not be built again.
+- **The fix.** `BuildRepo.FailUnfinished` runs at start, the same way
+  interrupted test runs are closed:
+  - every queued or in-progress build is marked `failed` (category
+    `platform`, "the platform restarted during this build");
+  - an application left at `build` whose live deployment kept serving goes
+    back to `running`, as a failed rebuild leaves it;
+  - an application with no live deployment stays at `build`, which a new
+    build starts from.
+- **Verified** with `scripts/verify_orphans.py`: a build was restarted out
+  from under platform-api while in progress. After the restart it was
+  `failed` with that detail, the application was `running` again, and the
+  next build and deploy went through.
+
 ## How Deploy works (Module J)
 
 `POST /applications/{id}/deploy` — body `{"environment": "dev"}` (or
@@ -349,6 +370,49 @@ traffic path, not a platform management endpoint.
 4. **Scale events (FR-056)** — every transition (`initial_activation`,
    `cold_start`, `idle_timeout`) is recorded and queryable via
    `GET /applications/{id}/scale-events`.
+5. **No container outlives its deployment.**
+   - **The leak.** When a new version went live, the platform stopped the
+     containers the old deployment was first started with, then deleted
+     its runtime state. A service that had scaled to zero and been woken
+     ran in a container only that state knew, so it was never stopped and
+     nothing knew of it again.
+     - Found on the LAN host on 2026-11-19: 38 API containers of superseded
+       deployments, some running since 2026-10-28.
+     - Every application's database stayed awake, because a database
+       sleeps only when none of its application's containers is running.
+     - Removing them took the host from 1845 to 1257 MB of memory in use
+       and from 1668 to 814 MB of swap.
+   - **The fix.**
+     - `ScaleService.CleanupForDeployment` stops the container each service
+       is running now before it deletes the state.
+     - An orphan sweep (`ScaleService.SweepOrphans`) runs at start and
+       every minute. It removes every `platform-run-*` container whose
+       deployment is superseded, failed, rejected, archived or gone. It
+       catches whatever any path misses, for example a cold start that
+       raced a supersede, a stop that failed, or a restart mid-deploy.
+     - It keeps the containers of running and in-flight deployments, and
+       of suspended ones, because Resume starts and health-checks them
+       before it marks the deployment Running again.
+     - Database containers (`platform-db-*`) and build and test containers
+       are never touched.
+     - `Stop` treats a container that is already gone as stopped: a
+       superseded deployment's containers are stopped from its record and
+       again from its runtime state.
+   - **Verified** with `scripts/verify_orphans.py` on the local stack (all
+     checks pass):
+     - an API that scaled to zero and was woken runs in a new container
+       (`platform-run-<id>-api`), and deploying the next version leaves no
+       container of the old one;
+     - with the API asleep, the application's database sleeps;
+     - a container started by hand with a superseded deployment's label is
+       removed by the sweep within a minute, and one with the live
+       deployment's label is kept.
+   - **Not verified:** the script was not run against the old code to watch
+     it fail. The old `CleanupForDeployment` stopped nothing, so the unit
+     test `TestCleanupForDeployment_StopsTheContainerAColdStartMade` cannot
+     pass against it (by reading, not run). On the
+     LAN host the 38 containers were removed by hand before this change, so
+     the sweep's first run there has nothing to remove.
 
 **A documented race, not a hidden one:** the idle sweeper and a concurrent
 cold-start aren't coordinated by a shared lock (see the comment on

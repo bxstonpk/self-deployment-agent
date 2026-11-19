@@ -188,6 +188,13 @@ func main() {
 	// DEC-017: who may approve, and which environments need it.
 	deployService.SetApprovalEnvironments(cfg.ApprovalEnvironments)
 	deployHandler := httpapi.NewDeployHandler(deployService, applicationRepo, cfg.PublicBaseURL)
+	// A build runs in this process: one a restart interrupted never ends,
+	// and would refuse every later build of its application.
+	if n, err := buildRepo.FailUnfinished(ctx); err != nil {
+		log.Printf("builds: %v", err)
+	} else if n > 0 {
+		log.Printf("builds: closed %d build(s) a restart interrupted", n)
+	}
 	// Tests run by the platform (DEC-029 part 2), in the build sandbox.
 	testRunRepo := postgres.NewTestRunRepo(pool)
 	if n, err := testRunRepo.FailUnfinished(ctx); err != nil {
@@ -304,6 +311,16 @@ func main() {
 	})
 
 	go runScaleSweeper(ctx, scaleService, cfg.ScaleSweepInterval, cfg.ScaleToZeroIdleTimeout)
+	// Application containers whose deployment is no longer live, whatever
+	// path left them: once at start, then every minute.
+	go func() {
+		if n, err := scaleService.SweepOrphans(ctx); err != nil {
+			log.Printf("orphan containers: %v", err)
+		} else if n > 0 {
+			log.Printf("orphan containers: removed %d whose deployment is no longer live", n)
+		}
+		runEvery(ctx, "orphan containers", time.Minute, scaleService.SweepOrphans, "removed %d whose deployment is no longer live")
+	}()
 	go runMetricsSampler(ctx, metricsService, cfg.MetricsSampleInterval)
 	go runHostSampler(ctx, hostSampler, 5*time.Second)
 	go runHealthSweeper(ctx, healthService, cfg.HealthSweepInterval)

@@ -432,6 +432,7 @@ keeps neither how they run nor the database's data, which is in a volume.
 | Tests run by the platform over real stdio: pass, fail, busy, tested deploy, the approver's report, source mismatch | `services/mcp-server/scripts/verify_test_runs.py` |
 | Dev copies over real stdio: own database and address, no approval, data kept, Claude's test data, data into the first production as signed, reset, archive | `services/mcp-server/scripts/verify_dev_copies.py` |
 | IT handoff: promoted to production with a signed approval, packed by itself, made again with new data, downloaded, then run from the package alone with `docker load` + `docker compose up` | `services/platform-api/scripts/verify_handoff.py` |
+| No container outlives its deployment: a woken API is stopped when the next version goes live, the database then sleeps, the orphan sweep removes a stray container within a minute; a build a restart interrupted is closed as failed and the next build goes through | `services/platform-api/scripts/verify_orphans.py` |
 | Gateway routes, installers on Windows and Linux, a real Claude Code deploy | described in sections 4–5; run by hand for PR "LAN onboarding" |
 
 ## 9. สรุปภาษาไทย (Quick start)
