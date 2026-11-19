@@ -120,3 +120,34 @@ func scanBuildRow(row rowScanner) (domain.Build, error) {
 	}
 	return b, nil
 }
+
+// FailUnfinished closes the builds a restart interrupted. A build runs in
+// platform-api's own process, so one still queued or in progress when it
+// starts can never finish, and while it is the application's latest build
+// every new one is refused as already in flight: found on the LAN host when
+// a platform deploy restarted platform-api mid-build (2026-11-16) and the
+// employee's dev copy could not be built again. An application whose live
+// deployment kept serving goes back to Running, as a failed rebuild leaves
+// it (BuildService.TriggerBuild); one with none stays at Build, which a new
+// build starts from.
+func (r *BuildRepo) FailUnfinished(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.pool.QueryRow(ctx, `
+		WITH failed AS (
+			UPDATE builds SET status = 'failed', error_category = 'platform',
+				error_detail = 'the platform restarted during this build; nothing was built. Build again.',
+				completed_at = now()
+			WHERE status IN ('queued', 'in_progress')
+			RETURNING application_id
+		), restored AS (
+			UPDATE applications a SET lifecycle_status = 'running', updated_at = now()
+			WHERE a.id IN (SELECT application_id FROM failed) AND a.lifecycle_status = 'build'
+				AND EXISTS (SELECT 1 FROM deployments d WHERE d.application_id = a.id AND d.status = 'running')
+			RETURNING a.id
+		)
+		SELECT count(*) FROM failed`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("close interrupted builds: %w", err)
+	}
+	return n, nil
+}

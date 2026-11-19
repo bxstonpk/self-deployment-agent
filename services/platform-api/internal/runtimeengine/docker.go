@@ -220,6 +220,12 @@ func (r *DockerRuntime) HealthCheck(ctx context.Context, url string, timeout tim
 func (r *DockerRuntime) Stop(ctx context.Context, containerID string) error {
 	timeout := 5
 	if err := r.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout}); err != nil {
+		// Already gone is what stopping is for: a superseded deployment's
+		// containers are stopped from its record and again from its
+		// runtime state (ScaleService.CleanupForDeployment).
+		if client.IsErrNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("stop container: %w", err)
 	}
 	// Module S: the log stream ends when the container does. Wait for its
