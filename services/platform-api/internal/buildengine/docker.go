@@ -25,7 +25,8 @@ import (
 )
 
 type DockerEngine struct {
-	cli *client.Client
+	cli   *client.Client
+	bases *basePuller
 }
 
 // NewDockerEngine wraps a shared *client.Client — see
@@ -33,17 +34,21 @@ type DockerEngine struct {
 // package, internal/imagescan, and internal/runtimeengine alike, rather
 // than each opening its own connection to the daemon.
 func NewDockerEngine(cli *client.Client) *DockerEngine {
-	return &DockerEngine{cli: cli}
+	e := &DockerEngine{cli: cli}
+	e.bases = newBasePuller(e.pullImage)
+	return e
 }
 
 func (e *DockerEngine) Build(ctx context.Context, req service.BuildEngineRequest) (map[string]string, error) {
 	imageRefs := make(map[string]string, len(req.Services))
 
 	for name, spec := range req.Services {
-		buildContext, err := buildServiceContext(req.SourceArchive, name, spec)
+		dockerfile := GenerateDockerfile(spec.Runtime, spec.BaseImage, spec.Port)
+		buildContext, err := serviceContext(req.SourceArchive, name, dockerfile)
 		if err != nil {
 			return nil, &domain.BuildFailure{Category: domain.ErrorCategorySource, Service: name, Detail: err.Error()}
 		}
+		e.bases.refresh(ctx, dockerfile)
 
 		tag := fmt.Sprintf("platform-build/%s-%s:%s", sanitizeTag(req.ApplicationName), sanitizeTag(name), shortID(req.BuildID))
 

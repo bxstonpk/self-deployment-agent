@@ -214,6 +214,38 @@ weren't specifically exercised by a slow-enough operation during
 verification — worth an audit, not something this fix claims to have
 swept comprehensively.
 
+**A build pulls its base images first.**
+- **The problem.** A build used the base image the host had pulled first,
+  for good. When a base image got a CRITICAL vulnerability that was already
+  fixed on Docker Hub, every build that used it was refused by the image
+  scan until someone ran `docker pull` on the host by hand.
+- **Where it happened.** On the LAN host, twice:
+  - 2026-10-29: brotli-libs in `nginx:1.30-alpine`;
+  - 2026-11-23: nginx 1.30.6 itself (four CRITICAL CVEs), fixed in 1.30.7
+    on Docker Hub since 2026-11-18. Every React and Vue deploy was refused.
+  `apk upgrade` in the image can't fix the second kind: nginx comes from
+  nginx.org's repository, not Alpine's.
+- **The fix.** Before a build or a test run, `internal/buildengine`
+  (`basePuller`) pulls every image the generated Dockerfile builds `FROM`:
+  - each image at most once an hour, to stay well inside Docker Hub's
+    anonymous pull limit;
+  - each pull at most 3 minutes;
+  - if a pull fails, it is logged, the build goes on with the cached image,
+    and the next build tries again. A registry that can't be reached never
+    stops a build.
+- **Verified** on the local stack, whose cached `nginx:1.30-alpine` was the
+  same stale nginx 1.30.6 image:
+  - `verify_lan_stack.py` (`RUNTIMES=go`) passed: React + Go + MySQL built,
+    passed the image scan and deployed;
+  - Docker's events showed one pull each of `node:22-alpine`,
+    `nginx:1.30-alpine`, `golang:1.25-alpine` and `alpine:3.21` before the
+    build;
+  - afterwards the host's `nginx:1.30-alpine` was nginx 1.30.8.
+- **Not verified:** a build with the registry unreachable (covered by a
+  unit test only). The platform gateway's own nginx
+  (`deploy/gateway/Dockerfile`) is still whatever was pulled when the
+  gateway image was last built; this change doesn't touch it.
+
 **A build a restart interrupted is closed when platform-api starts.**
 - **The problem.** A build runs inside platform-api's own process. If
   platform-api restarts mid-build, the build never ends. While it is the

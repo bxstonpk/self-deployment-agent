@@ -92,11 +92,15 @@ func (e *DockerEngine) RunTests(ctx context.Context, req service.TestEngineReque
 	for _, name := range names {
 		spec := req.Services[name]
 		res := domain.ServiceTestResult{Service: name, Runtime: spec.Runtime}
-		buildContext, err := serviceContext(req.SourceArchive, name, GenerateTestDockerfile(spec.Runtime, spec.BaseImage))
+		dockerfile := GenerateTestDockerfile(spec.Runtime, spec.BaseImage)
+		buildContext, err := serviceContext(req.SourceArchive, name, dockerfile)
 		if err != nil {
 			res.Status, res.Output = domain.TestRunFailed, err.Error()
 			results = append(results, res)
 			continue
+		}
+		if e.bases != nil {
+			e.bases.refresh(ctx, dockerfile)
 		}
 		tag := fmt.Sprintf("platform-test/%s-%s:%s", sanitizeTag(req.ApplicationName), sanitizeTag(name), shortID(req.RunID))
 		runID := req.RunID
